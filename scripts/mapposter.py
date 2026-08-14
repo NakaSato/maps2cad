@@ -185,7 +185,7 @@ def main():
     for ring in buildings:
         bx, by = to_utm.transform(*zip(*ring))
         ax.fill(bx, by, facecolor=st["bld_face"], edgecolor=st["bld_edge"],
-                lw=0.4, zorder=4)
+                lw=0.4, zorder=2.6)  # below roads: road network stays on top
     for name, plon, plat in pois:
         px_, py_ = to_utm.transform(plon, plat)
         if ux0 < px_ < ux1 and uy0 < py_ < uy1:
