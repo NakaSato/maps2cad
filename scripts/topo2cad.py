@@ -57,6 +57,12 @@ def fetch_osm(s, w, n, e):
       way["building"]({s},{w},{n},{e});
       relation["building"]({s},{w},{n},{e});
       way["highway"]({s},{w},{n},{e});
+      way["waterway"]({s},{w},{n},{e});
+      way["natural"="water"]({s},{w},{n},{e});
+      way["leisure"~"^(park|garden|pitch|playground|golf_course)$"]({s},{w},{n},{e});
+      way["landuse"~"^(grass|forest|meadow|orchard|farmland|cemetery)$"]({s},{w},{n},{e});
+      way["railway"]({s},{w},{n},{e});
+      way["barrier"]({s},{w},{n},{e});
       node["name"]({s},{w},{n},{e});
     );
     out tags geom;
@@ -136,32 +142,54 @@ def main():
     print("Fetching OSM data (Overpass)...")
     elements = fetch_osm(s, w, n, e)
     buildings, roads, pois = [], [], []
+    water, green, rails, barriers = [], [], [], []
     for el in elements:
         tags = el.get("tags", {})
         if el["type"] == "node" and best_name(tags):
             pois.append((best_name(tags), el["lon"], el["lat"]))
         elif el["type"] == "way" and "geometry" in el:
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
+            name = best_name(tags)
             if "building" in tags:
-                buildings.append((best_name(tags), pts))
+                buildings.append((name, pts))
             elif "highway" in tags:
-                roads.append((best_name(tags), pts))
+                roads.append((name, pts))
+            elif "waterway" in tags or tags.get("natural") == "water":
+                water.append((name, pts))
+            elif "leisure" in tags or "landuse" in tags:
+                green.append((name, pts))
+            elif "railway" in tags:
+                rails.append((name, pts))
+            elif "barrier" in tags:
+                barriers.append((name, pts))
         elif el["type"] == "relation" and "building" in tags:
             for m in el.get("members", []):
                 if m.get("role") == "outer" and "geometry" in m:
                     pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
                     buildings.append((best_name(tags), pts))
                     break
-    print(f"OSM: {len(buildings)} buildings, {len(roads)} road segments, {len(pois)} named POIs")
+    print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
+          f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, {len(pois)} POIs")
 
     # ---- DXF -------------------------------------------------------------
     doc = ezdxf.new("R2010", setup=True)
     msp = doc.modelspace()
-    for name, color in [("CONTOURS", 8), ("CONTOUR_LABELS", 8),
-                        ("BUILDINGS", 4), ("BUILDING_NAMES", 2),
-                        ("ROADS", 5), ("ROAD_NAMES", 3),
-                        ("POI", 6), ("POI_NAMES", 6), ("CENTER", 1)]:
-        doc.layers.add(name, color=color)
+    # (layer, color, lineweight 1/100 mm) — roads/buildings heavy, context thin
+    for name, color, lw in [("CONTOURS", 8, 13), ("CONTOUR_LABELS", 8, 13),
+                            ("BUILDINGS", 4, 50), ("BUILDING_NAMES", 2, 25),
+                            ("ROADS", 30, 35), ("ROAD_NAMES", 30, 25),
+                            ("WATER", 5, 18), ("WATER_NAMES", 5, 18),
+                            ("GREEN", 3, 13), ("GREEN_NAMES", 3, 13),
+                            ("RAIL", 250, 18), ("BARRIERS", 9, 13),
+                            ("POI", 6, 18), ("POI_NAMES", 6, 18),
+                            ("NORTH_ARROW", 7, 35), ("CENTER", 1, 35)]:
+        layer = doc.layers.add(name, color=color)
+        layer.dxf.lineweight = lw
+    # Site-plan layers, empty and ready to draw on (OSM has no private parcels):
+    prop = doc.layers.add("PROPERTY_LINE", color=1, linetype="PHANTOM")
+    prop.dxf.lineweight = 70
+    setb = doc.layers.add("SETBACK", color=2, linetype="DASHED")
+    setb.dxf.lineweight = 25
 
     for lev, pts in contours:
         msp.add_polyline3d([(x, y, lev) for x, y in pts],
@@ -191,11 +219,41 @@ def main():
                 msp.add_text(name, height=5.0,
                              dxfattribs={"layer": "ROAD_NAMES"}).set_placement(upts[mid])
 
+    def draw_lines(features, layer, name_layer=None, text_h=4.0):
+        labeled = set()
+        for name, pts in features:
+            for run in clip_runs(pts, s, w, n, e):
+                ux, uy = to_utm.transform(*zip(*run))
+                upts = list(zip(ux, uy))
+                closed = run[0] == run[-1]
+                msp.add_lwpolyline(upts, close=closed, dxfattribs={"layer": layer})
+                if name_layer and name and name not in labeled:
+                    labeled.add(name)
+                    msp.add_text(name, height=text_h,
+                                 dxfattribs={"layer": name_layer}
+                                 ).set_placement(upts[len(upts) // 2])
+
+    draw_lines(water, "WATER", "WATER_NAMES")
+    draw_lines(green, "GREEN", "GREEN_NAMES")
+    draw_lines(rails, "RAIL")
+    draw_lines(barriers, "BARRIERS")
+
     for name, plon, plat in pois:
         px, py = to_utm.transform(plon, plat)
         msp.add_circle((px, py), radius=2, dxfattribs={"layer": "POI"})
         msp.add_text(name, height=4.0,
                      dxfattribs={"layer": "POI_NAMES"}).set_placement((px + 3, py))
+
+    # North arrow at top-right corner (drawing is true-north-up in UTM)
+    nx, ny = to_utm.transform(e, n)
+    ax_, ay = nx - a.radius * 0.06, ny - a.radius * 0.10
+    sz = a.radius * 0.04
+    msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": "NORTH_ARROW"})
+    msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6), (ax_ + sz * 0.3, ay - sz * 0.6),
+                   (ax_, ay + sz * 0.8)], dxfattribs={"layer": "NORTH_ARROW"})
+    msp.add_text("N", height=sz * 0.6,
+                 dxfattribs={"layer": "NORTH_ARROW"}).set_placement(
+        (ax_ - sz * 0.2, ay + sz * 1.2))
 
     cx, cy = to_utm.transform(a.lon, a.lat)
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "CENTER"})
