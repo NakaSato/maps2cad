@@ -21,6 +21,17 @@ uv run scripts/topo2cad.py \
   --out output/topo_gps_1km.dxf
 ```
 
+## B&W poster-style map (PNG + PDF)
+
+```bash
+uv run scripts/mapposter.py --lat 14.8165 --lon 100.5116 --radius 150 \
+  --dem dem/dem_n14_e100.tif --out output/poster_150m.png --title "ผังบริเวณ / SITE MAP"
+```
+
+Black-and-white print map: buildings filled black, road widths by class,
+contours light gray, Thai labels (Sarabun/Noto Sans Thai), north arrow,
+GPS pin, scale bar, and frame. Writes both .png (300 dpi) and .pdf.
+
 ## Convert DXF to PDF
 
 ```bash
