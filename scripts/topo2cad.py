@@ -121,22 +121,50 @@ def fetch_ms_buildings(s, w, n, e, cache_dir):
                 if geom["type"] != "Polygon":
                     continue
                 ring = geom["coordinates"][0]
-                lon0, lat0 = ring[0]
-                if s <= lat0 <= n and w <= lon0 <= e:
+                if any(s <= la <= n and w <= lo <= e for lo, la in ring):
                     footprints.append([(lo, la) for lo, la in ring])
     return footprints
 
 
-def clip_runs(pts, s, w, n, e, margin=0.0005):
-    """Split a lon/lat polyline into runs of points inside the bbox (+margin)."""
-    runs, cur = [], []
-    for lon, lat in pts:
-        if (s - margin) <= lat <= (n + margin) and (w - margin) <= lon <= (e + margin):
-            cur.append((lon, lat))
+def _clip_seg(x1, y1, x2, y2, xmin, ymin, xmax, ymax):
+    """Liang-Barsky segment/box clip; returns clipped endpoints or None."""
+    dx, dy = x2 - x1, y2 - y1
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x1 - xmin), (dx, xmax - x1), (-dy, y1 - ymin), (dy, ymax - y1)):
+        if p == 0:
+            if q < 0:
+                return None
         else:
+            r = q / p
+            if p < 0:
+                if r > t1:
+                    return None
+                t0 = max(t0, r)
+            else:
+                if r < t0:
+                    return None
+                t1 = min(t1, r)
+    return (x1 + t0 * dx, y1 + t0 * dy), (x1 + t1 * dx, y1 + t1 * dy)
+
+
+def clip_runs(pts, s, w, n, e, margin=0.0005):
+    """Clip a lon/lat polyline to the bbox, cutting segments at the box edges."""
+    xmin, xmax = w - margin, e + margin
+    ymin, ymax = s - margin, n + margin
+    runs, cur = [], []
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        seg = _clip_seg(x1, y1, x2, y2, xmin, ymin, xmax, ymax)
+        if seg is None:
             if len(cur) >= 2:
                 runs.append(cur)
             cur = []
+            continue
+        (a1, b1), (a2, b2) = seg
+        if not cur or abs(cur[-1][0] - a1) > 1e-9 or abs(cur[-1][1] - b1) > 1e-9:
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = [(a1, b1)]
+        cur.append((a2, b2))
     if len(cur) >= 2:
         runs.append(cur)
     return runs
