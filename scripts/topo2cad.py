@@ -42,14 +42,19 @@ def parse_args():
     p.add_argument("--lat", type=float, required=True)
     p.add_argument("--lon", type=float, required=True)
     p.add_argument("--radius", type=float, default=500.0, help="meters")
+    p.add_argument("--width", type=float, help="full box width in meters (overrides radius)")
+    p.add_argument("--height", type=float, help="full box height in meters (overrides radius)")
     p.add_argument("--dem", required=True)
     p.add_argument("--out", required=True)
     return p.parse_args()
 
 
-def bbox_around(lat, lon, radius_m):
-    dlat = radius_m / 111320.0
-    dlon = radius_m / (111320.0 * math.cos(math.radians(lat)))
+def bbox_around(lat, lon, radius_m, width_m=None, height_m=None):
+    """Square box of +/-radius_m, or a width_m x height_m rectangle if given."""
+    half_w = width_m / 2 if width_m else radius_m
+    half_h = height_m / 2 if height_m else radius_m
+    dlat = half_h / 111320.0
+    dlon = half_w / (111320.0 * math.cos(math.radians(lat)))
     return lat - dlat, lon - dlon, lat + dlat, lon + dlon  # S, W, N, E
 
 
@@ -176,7 +181,7 @@ def best_name(tags):
 
 def main():
     a = parse_args()
-    s, w, n, e = bbox_around(a.lat, a.lon, a.radius)
+    s, w, n, e = bbox_around(a.lat, a.lon, a.radius, a.width, a.height)
     to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32647", always_xy=True)
 
     # ---- DEM -> contours -------------------------------------------------
@@ -324,8 +329,10 @@ def main():
 
     # North arrow at top-right corner (drawing is true-north-up in UTM)
     nx, ny = to_utm.transform(e, n)
-    ax_, ay = nx - a.radius * 0.06, ny - a.radius * 0.10
-    sz = a.radius * 0.04
+    sx0, sy0 = to_utm.transform(w, s)
+    span_x, span_y = nx - sx0, ny - sy0
+    ax_, ay = nx - span_x * 0.03, ny - span_y * 0.05
+    sz = min(span_x, span_y) * 0.02
     msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": "NORTH_ARROW"})
     msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6), (ax_ + sz * 0.3, ay - sz * 0.6),
                    (ax_, ay + sz * 0.8)], dxfattribs={"layer": "NORTH_ARROW"})

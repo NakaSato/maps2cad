@@ -20,7 +20,7 @@ import numpy as np
 import rasterio
 from rasterio.windows import from_bounds
 from rasterio.transform import xy as px2geo
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, zoom
 from skimage import measure
 from pyproj import Transformer
 import matplotlib
@@ -35,13 +35,19 @@ ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
 
 # B&W poster palette vs. the CAD-style color palette (สีเดิม)
 STYLES = {
-    "bw": {"contour": "0.8", "road": "black", "road_name": "0.25",
-           "water": "0.55", "bld_face": "0.2", "bld_edge": "black",
+    "bw": {"contour": "0.8", "contour_lbl": "0.55", "road": "black",
+           "road_name": "0.25", "water": "0.55", "water_fill": "0.88",
+           "green_fill": "0.94", "path": "0.35", "barrier": "0.45",
+           "bld_face": "0.2", "bld_edge": "black",
            "poi": "black", "pin": "black"},
-    "color": {"contour": "0.75", "road": "#e07b00", "road_name": "#b36200",
-              "water": "#1f5fbf", "bld_face": "#bfeef0", "bld_edge": "#00a0a8",
+    "color": {"contour": "0.75", "contour_lbl": "0.5", "road": "#e07b00",
+              "road_name": "#b36200", "water": "#1f5fbf",
+              "water_fill": "#cfe6fa", "green_fill": "#d9edd0",
+              "path": "#8a6d4b", "barrier": "0.45",
+              "bld_face": "#bfeef0", "bld_edge": "#00a0a8",
               "poi": "#c400c4", "pin": "red"},
 }
+PATHS = {"footway", "path", "track", "steps", "cycleway", "bridleway"}
 
 
 def thai_font():
@@ -57,6 +63,8 @@ def main():
     p.add_argument("--lat", type=float, required=True)
     p.add_argument("--lon", type=float, required=True)
     p.add_argument("--radius", type=float, default=150.0)
+    p.add_argument("--width", type=float, help="full box width in meters (overrides radius)")
+    p.add_argument("--height", type=float, help="full box height in meters (overrides radius)")
     p.add_argument("--dem", required=True)
     p.add_argument("--out", default="poster.png")
     p.add_argument("--title", default="ผังบริเวณ / SITE MAP")
@@ -65,7 +73,7 @@ def main():
     args = p.parse_args()
     st = STYLES[args.style]
 
-    s, w, n, e = bbox_around(args.lat, args.lon, args.radius)
+    s, w, n, e = bbox_around(args.lat, args.lon, args.radius, args.width, args.height)
     to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32647", always_xy=True)
     ux0, uy0 = to_utm.transform(w, s)
     ux1, uy1 = to_utm.transform(e, n)
@@ -81,19 +89,29 @@ def main():
         dem = src.read(1, window=win).astype(float)
         wtrans = src.window_transform(win)
     smooth = gaussian_filter(dem, sigma=1.5)
+    # upsample so contours are smooth curves, not 30m-pixel steps
+    ZF = 8
+    fine = zoom(smooth, ZF, order=3)
     lo, hi = np.nanpercentile(smooth, [2, 98])
     for interval in (0.5, 1, 2, 5, 10, 20, 50):
         if (hi - lo) / interval <= 12:
             break
     for lev in np.arange(math.floor(lo), math.ceil(hi) + interval, interval):
-        for seg in measure.find_contours(smooth, lev):
-            xs, ys = px2geo(wtrans, seg[:, 0], seg[:, 1])
+        for seg in measure.find_contours(fine, lev):
+            xs, ys = px2geo(wtrans, seg[:, 0] / ZF, seg[:, 1] / ZF)
             cx, cy = to_utm.transform(xs, ys)
             ax.plot(cx, cy, color=st["contour"], lw=0.5, zorder=1)
+            if len(seg) > 40 * ZF:  # elevation label on long contours
+                mi = len(cx) // 2
+                ax.text(cx[mi], cy[mi], f"{lev:g}", fontsize=6.5,
+                        color=st["contour_lbl"], ha="center", va="center",
+                        zorder=1.2,
+                        bbox=dict(facecolor="white", edgecolor="none",
+                                  alpha=0.8, pad=0.3))
 
     # OSM + MS buildings
     elements = fetch_osm(s, w, n, e)
-    buildings, pois = [], []
+    buildings, pois, roads_draw = [], [], []
     for el in elements:
         tags = el.get("tags", {})
         if el["type"] == "node" and best_name(tags):
@@ -103,24 +121,65 @@ def main():
             if "building" in tags:
                 buildings.append(pts)
             elif "highway" in tags:
-                lw = ROAD_W.get(tags["highway"], 0.7)
+                runs = []
                 for run in clip_runs(pts, s, w, n, e):
                     bx, by = to_utm.transform(*zip(*run))
-                    ax.plot(bx, by, color=st["road"], lw=lw, zorder=3,
-                            solid_capstyle="round")
-                name = best_name(tags)
-                if name and len(pts) > 1:
-                    mid = len(pts) // 2
-                    mx, my = to_utm.transform(*pts[mid])
-                    if ux0 < mx < ux1 and uy0 < my < uy1:
-                        ax.annotate(name, (mx, my), fontsize=9,
-                                    color=st["road_name"],
-                                    zorder=6, xytext=(2, 2),
-                                    textcoords="offset points")
-            elif "waterway" in tags or tags.get("natural") == "water":
+                    runs.append((list(bx), list(by)))
+                if not runs:
+                    continue
+                if tags["highway"] in PATHS:  # minor paths: dashed single line
+                    for bx, by in runs:
+                        ax.plot(bx, by, color=st["path"], lw=1.0, zorder=2.8,
+                                linestyle=(0, (4, 2.5)))
+                else:
+                    lw = ROAD_W.get(tags["highway"], 0.7)
+                    roads_draw.append((best_name(tags), lw, runs))
+            elif tags.get("natural") == "water":
+                bx, by = to_utm.transform(*zip(*pts))
+                ax.fill(bx, by, facecolor=st["water_fill"],
+                        edgecolor=st["water"], lw=0.8, zorder=0.9)
+            elif "waterway" in tags:
                 for run in clip_runs(pts, s, w, n, e):
                     bx, by = to_utm.transform(*zip(*run))
                     ax.plot(bx, by, color=st["water"], lw=2.0, zorder=2)
+            elif "leisure" in tags or "landuse" in tags:
+                bx, by = to_utm.transform(*zip(*pts))
+                ax.fill(bx, by, facecolor=st["green_fill"],
+                        edgecolor="none", zorder=0.8)
+            elif "barrier" in tags:
+                for run in clip_runs(pts, s, w, n, e):
+                    bx, by = to_utm.transform(*zip(*run))
+                    ax.plot(bx, by, color=st["barrier"], lw=0.6, zorder=2.5)
+    # roads as two parallel lines: colored casing with white fill between
+    for _, lw, runs in roads_draw:
+        for bx, by in runs:
+            ax.plot(bx, by, color=st["road"], lw=lw * 2.5 + 2, zorder=3,
+                    solid_capstyle="round", solid_joinstyle="round")
+    for _, lw, runs in roads_draw:
+        for bx, by in runs:
+            ax.plot(bx, by, color="white", lw=lw * 2.5 - 0.2, zorder=3.1,
+                    solid_capstyle="round", solid_joinstyle="round")
+
+    # every named road: label rotated along its longest run
+    for name, lw, runs in roads_draw:
+        if not name:
+            continue
+        bx, by = max(runs, key=lambda r: len(r[0]))
+        if len(bx) < 2:
+            continue
+        i = len(bx) // 2
+        j = max(i - 1, 0)
+        ang = math.degrees(math.atan2(by[i] - by[j], bx[i] - bx[j]))
+        if ang > 90:
+            ang -= 180
+        elif ang < -90:
+            ang += 180
+        ax.text((bx[j] + bx[i]) / 2, (by[j] + by[i]) / 2, name, fontsize=9,
+                color=st["road_name"], rotation=ang, rotation_mode="anchor",
+                ha="center", va="bottom", zorder=6,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.6,
+                          pad=0.6))
+
     if len(buildings) < 20:
         buildings += fetch_ms_buildings(s, w, n, e, Path(args.dem).parent / "ms_cache")
     for ring in buildings:
@@ -169,12 +228,14 @@ def main():
     for spine in ax.spines.values():
         spine.set_linewidth(2)
     ax.set_title(args.title, fontsize=20, pad=16, weight="bold")
+    extent = (f"พื้นที่ {args.width:g}×{args.height:g} m"
+              if args.width and args.height else f"รัศมี {args.radius:g} m")
     ax.set_xlabel(f"GPS {args.lat}, {args.lon}   |   UTM 47N (EPSG:32647)   |   "
-                  f"รัศมี {args.radius:g} m", fontsize=11, labelpad=10)
+                  f"{extent}", fontsize=11, labelpad=10)
 
     out = Path(args.out)
-    fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(out.with_suffix(".pdf"), dpi=300, bbox_inches="tight",
+    fig.savefig(out, dpi=450, bbox_inches="tight", facecolor="white")
+    fig.savefig(out.with_suffix(".pdf"), dpi=450, bbox_inches="tight",
                 facecolor="white")
     print(f"Saved: {out} and {out.with_suffix('.pdf')} (font: {plt.rcParams['font.family'][0]})")
 
