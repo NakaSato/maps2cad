@@ -33,6 +33,16 @@ from topo2cad import bbox_around, fetch_osm, fetch_ms_buildings, clip_runs, best
 ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
           "tertiary": 1.8, "residential": 1.0, "unclassified": 1.0}
 
+# B&W poster palette vs. the CAD-style color palette (สีเดิม)
+STYLES = {
+    "bw": {"contour": "0.8", "road": "black", "road_name": "0.25",
+           "water": "0.55", "bld_face": "0.2", "bld_edge": "black",
+           "poi": "black", "pin": "black"},
+    "color": {"contour": "0.75", "road": "#e07b00", "road_name": "#b36200",
+              "water": "#1f5fbf", "bld_face": "#bfeef0", "bld_edge": "#00a0a8",
+              "poi": "#c400c4", "pin": "red"},
+}
+
 
 def thai_font():
     names = {f.name for f in font_manager.fontManager.ttflist}
@@ -50,7 +60,10 @@ def main():
     p.add_argument("--dem", required=True)
     p.add_argument("--out", default="poster.png")
     p.add_argument("--title", default="ผังบริเวณ / SITE MAP")
+    p.add_argument("--style", default="bw", choices=STYLES,
+                   help="bw = black & white poster, color = CAD-style colors")
     args = p.parse_args()
+    st = STYLES[args.style]
 
     s, w, n, e = bbox_around(args.lat, args.lon, args.radius)
     to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32647", always_xy=True)
@@ -76,7 +89,7 @@ def main():
         for seg in measure.find_contours(smooth, lev):
             xs, ys = px2geo(wtrans, seg[:, 0], seg[:, 1])
             cx, cy = to_utm.transform(xs, ys)
-            ax.plot(cx, cy, color="0.8", lw=0.5, zorder=1)
+            ax.plot(cx, cy, color=st["contour"], lw=0.5, zorder=1)
 
     # OSM + MS buildings
     elements = fetch_osm(s, w, n, e)
@@ -93,35 +106,37 @@ def main():
                 lw = ROAD_W.get(tags["highway"], 0.7)
                 for run in clip_runs(pts, s, w, n, e):
                     bx, by = to_utm.transform(*zip(*run))
-                    ax.plot(bx, by, color="black", lw=lw, zorder=3,
+                    ax.plot(bx, by, color=st["road"], lw=lw, zorder=3,
                             solid_capstyle="round")
                 name = best_name(tags)
                 if name and len(pts) > 1:
                     mid = len(pts) // 2
                     mx, my = to_utm.transform(*pts[mid])
                     if ux0 < mx < ux1 and uy0 < my < uy1:
-                        ax.annotate(name, (mx, my), fontsize=9, color="0.25",
+                        ax.annotate(name, (mx, my), fontsize=9,
+                                    color=st["road_name"],
                                     zorder=6, xytext=(2, 2),
                                     textcoords="offset points")
             elif "waterway" in tags or tags.get("natural") == "water":
                 for run in clip_runs(pts, s, w, n, e):
                     bx, by = to_utm.transform(*zip(*run))
-                    ax.plot(bx, by, color="0.55", lw=2.0, zorder=2)
+                    ax.plot(bx, by, color=st["water"], lw=2.0, zorder=2)
     if len(buildings) < 20:
         buildings += fetch_ms_buildings(s, w, n, e, Path(args.dem).parent / "ms_cache")
     for ring in buildings:
         bx, by = to_utm.transform(*zip(*ring))
-        ax.fill(bx, by, facecolor="0.2", edgecolor="black", lw=0.4, zorder=4)
+        ax.fill(bx, by, facecolor=st["bld_face"], edgecolor=st["bld_edge"],
+                lw=0.4, zorder=4)
     for name, plon, plat in pois:
         px_, py_ = to_utm.transform(plon, plat)
         if ux0 < px_ < ux1 and uy0 < py_ < uy1:
-            ax.plot(px_, py_, "o", ms=4, color="black", zorder=6)
-            ax.annotate(name, (px_, py_), fontsize=10, color="black", zorder=6,
+            ax.plot(px_, py_, "o", ms=4, color=st["poi"], zorder=6)
+            ax.annotate(name, (px_, py_), fontsize=10, color=st["poi"], zorder=6,
                         xytext=(4, 4), textcoords="offset points")
 
     # pin at GPS point
     gx, gy = to_utm.transform(args.lon, args.lat)
-    ax.plot(gx, gy, marker="v", ms=16, color="black", zorder=7)
+    ax.plot(gx, gy, marker="v", ms=16, color=st["pin"], zorder=7)
     ax.plot(gx, gy, marker=".", ms=5, color="white", zorder=8)
 
     # north arrow (map is true-north-up)
