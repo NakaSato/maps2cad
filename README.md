@@ -21,6 +21,30 @@ uv run scripts/topo2cad.py \
   --out output/topo_gps_1km.dxf
 ```
 
+## Detailed site map (spec v1.0)
+
+Print-ready vector PDF with classified roads, building footprints labeled by
+name or B### code, water, legend, attribution — plus a building inventory CSV
+for the manual name-correction workflow:
+
+```bash
+# 1. Generate map + inventory
+uv run scripts/generate_detailed_site_map.py \
+  --lat 14.8164876968956 --lon 100.511644184589 --width 500 --height 250 \
+  --output output/site_map_detailed.pdf --png output/site_map_detailed.png \
+  --inventory output/building_inventory.csv
+
+# 2. Edit display_name values in the inventory CSV (field-verified names)
+
+# 3. Regenerate with verified names
+uv run scripts/generate_detailed_site_map.py \
+  --lat 14.8164876968956 --lon 100.511644184589 --width 500 --height 250 \
+  --labels-csv output/building_inventory.csv --output output/site_map_named.pdf
+```
+
+Options: `--no-codes` hides B### labels, `--font path.ttf` supplies a custom
+Thai-capable font, `--title` sets the map title.
+
 ## B&W poster-style map (PNG + PDF)
 
 ```bash
