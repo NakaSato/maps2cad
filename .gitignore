@@ -1,0 +1,9 @@
+# Large DEM tiles — re-downloadable via curl (see README.md)
+dem/*.tif
+
+# Generated CAD outputs
+output/
+
+# Python
+__pycache__/
+.venv/
