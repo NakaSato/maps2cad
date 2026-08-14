@@ -45,6 +45,10 @@ for clean printing; `--color` keeps the CAD layer colors on a white background.
 Coordinates are meters in EPSG:32647 (WGS84 / UTM zone 47N — correct for Thailand
 between 96°E and 102°E; use zone 48N / EPSG:32648 east of 102°E).
 
+When OSM has fewer than 20 buildings in the area, the script automatically
+supplements with Microsoft Global ML Building Footprints (AI-detected from
+satellite imagery, unnamed outlines). Tiles are cached in dem/ms_cache/.
+
 Notes: OSM coverage varies — rural Thai areas often lack building footprints.
 The Copernicus DEM is a ~30m surface model (includes vegetation/buildings), fine for
 site context but not survey-grade.

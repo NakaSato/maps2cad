@@ -1,6 +1,9 @@
 # Large DEM tiles — re-downloadable via curl (see README.md)
 dem/*.tif
 
+# Microsoft building footprints cache — auto-downloaded by topo2cad.py
+dem/ms_cache/
+
 # Generated CAD outputs
 output/
 

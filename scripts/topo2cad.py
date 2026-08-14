@@ -12,9 +12,12 @@
 # ///
 """Topo + OSM (buildings w/ names, roads) around a GPS point -> DXF."""
 import argparse
+import gzip
+import json
 import math
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -81,6 +84,47 @@ def fetch_osm(s, w, n, e):
         print(f"All endpoints failed, retrying in {wait}s...")
         time.sleep(wait)
     raise last_err
+
+
+MS_LINKS_URL = ("https://minedbuildings.z5.web.core.windows.net/"
+                "global-buildings/dataset-links.csv")
+
+
+def quadkey(lat, lon, z=9):
+    sl = math.sin(math.radians(lat))
+    x = (lon + 180) / 360
+    y = 0.5 - math.log((1 + sl) / (1 - sl)) / (4 * math.pi)
+    tx, ty = int(x * 2**z), int(y * 2**z)
+    return "".join(str((((ty >> (z - 1 - i)) & 1) << 1) | ((tx >> (z - 1 - i)) & 1))
+                   for i in range(z))
+
+
+def fetch_ms_buildings(s, w, n, e, cache_dir):
+    """Microsoft Global ML Building Footprints intersecting the bbox (unnamed)."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    links = cache_dir / "dataset-links.csv"
+    if not links.exists():
+        print("Downloading MS buildings index...")
+        links.write_bytes(requests.get(MS_LINKS_URL, headers=HEADERS, timeout=300).content)
+    keys = {quadkey(la, lo) for la in (s, n) for lo in (w, e)}
+    urls = [line.split(",")[2] for line in links.read_text().splitlines()
+            if line.split(",")[1:2] and line.split(",")[1] in keys]
+    footprints = []
+    for url in urls:
+        tile = cache_dir / url.rsplit("/quadkey=", 1)[1].replace("/", "_")
+        if not tile.exists():
+            print(f"Downloading MS buildings tile {tile.name}...")
+            tile.write_bytes(requests.get(url, headers=HEADERS, timeout=600).content)
+        with gzip.open(tile, "rt") as f:
+            for line in f:
+                geom = json.loads(line)["geometry"]
+                if geom["type"] != "Polygon":
+                    continue
+                ring = geom["coordinates"][0]
+                lon0, lat0 = ring[0]
+                if s <= lat0 <= n and w <= lon0 <= e:
+                    footprints.append([(lo, la) for lo, la in ring])
+    return footprints
 
 
 def clip_runs(pts, s, w, n, e, margin=0.0005):
@@ -170,6 +214,12 @@ def main():
                     break
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, {len(pois)} POIs")
+
+    if len(buildings) < 20:
+        print("Few OSM buildings — supplementing with Microsoft ML footprints...")
+        ms = fetch_ms_buildings(s, w, n, e, Path(a.dem).parent / "ms_cache")
+        buildings += [(None, pts) for pts in ms]
+        print(f"MS footprints added: {len(ms)}")
 
     # ---- DXF -------------------------------------------------------------
     doc = ezdxf.new("R2010", setup=True)
