@@ -331,9 +331,14 @@ def history_html(limit: int | None = None) -> str:
            '<th>Area</th><th>Export</th><th>Files</th></tr></thead><tbody>']
     for r in rows:
         p = r["params"]
+        # DXF downloads rather than previews: it has no browser viewer, so
+        # /view substitutes the plot PDF, and clicking "DXF" to be handed a
+        # PDF is not what the link says it does. The rest do preview.
         links = " ".join(
-            f'<a href="/view/{r["id"]}/{k}" target="_blank" rel="noopener" '
-            f'title="Preview {k.upper()}">{k.upper()}</a>'
+            (f'<a class="dl-dxf" href="/file/{r["id"]}/dxf" download '
+             f'title="Download the DXF">⤓ DXF</a>' if k == "dxf" else
+             f'<a href="/view/{r["id"]}/{k}" target="_blank" rel="noopener" '
+             f'title="Preview {k.upper()}">{k.upper()}</a>')
             for k in ("dxf", "plot", "pdf", "png", "csv") if r.get(k))
         out.append(
             f'<tr><td>{html.escape(r["when"])}</td>'
@@ -443,6 +448,8 @@ vertical-align:top}
 .hist td.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .hist td.dl{white-space:nowrap}
+/* The CAD file is the deliverable; make it obvious which link hands it over */
+.hist a.dl-dxf{font-weight:600;color:var(--survey)}
 .hist td.dl a{display:inline-block;font-family:ui-monospace,SFMono-Regular,
 Menlo,monospace;font-size:10.5px;letter-spacing:.06em;padding:2px 7px;
 margin:0 3px 3px 0;border:1px solid var(--rule);text-decoration:none;
