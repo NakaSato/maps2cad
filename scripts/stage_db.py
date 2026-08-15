@@ -119,6 +119,30 @@ CREATE TABLE IF NOT EXISTS verified_names (
     PRIMARY KEY (project_name, feature_id)
 );
 
+-- Context linework: canals and ponds, parks and farmland, railways, walls
+-- and fences. One row per OSM feature; the geometry is a MultiLineString of
+-- the runs left after clipping, and a run whose first and last vertex
+-- coincide is drawn as a closed polyline. Only water and green carry a
+-- label, matching topo2cad.py, so label_x is NULL for the other kinds.
+CREATE TABLE IF NOT EXISTS staging_context (
+    id              INTEGER PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    feature_id      TEXT    NOT NULL,
+    osm_id          INTEGER,
+    source          TEXT    NOT NULL DEFAULT 'openstreetmap',
+    kind            TEXT    NOT NULL,   -- water | green | rail | barrier
+    display_name    TEXT,
+    name_th         TEXT,
+    name_en         TEXT,
+    cad_layer       TEXT    NOT NULL,
+    geom_wkb        BLOB    NOT NULL,   -- (Multi)LineString in the project SRID
+    label_x         REAL,
+    label_y         REAL,
+    label_rotation  REAL    NOT NULL DEFAULT 0,
+    length_m        REAL,
+    UNIQUE (project_id, feature_id)
+);
+
 -- Landmarks mapped as a single node — a shrine, a monument, a viewpoint.
 -- Landmarks mapped as an area live in staging_buildings with a cad_layer of
 -- C-SITE-POI, because they already need a polygon, an interior label anchor
@@ -197,6 +221,42 @@ CREATE VIEW cad_labels AS
       FROM staging_buildings
      WHERE display_name <> ''
        AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''
+    UNION ALL
+    -- Context features are labelled once per unique name within their own
+    -- kind, the way topo2cad.py dedupes per layer: one canal mapped as
+    -- several ways still gets one name.
+    SELECT project_id, 'context', name_th,
+           label_x, label_y, label_rotation, 4.0, 'C-ANNO-TEXT-TH', 0.0
+      FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id, kind,
+                                                      display_name
+                                         ORDER BY length_m DESC) AS rn
+              FROM staging_context
+             WHERE display_name IS NOT NULL AND display_name <> ''
+               AND label_x IS NOT NULL)
+     WHERE rn = 1 AND name_th IS NOT NULL AND name_th <> ''
+    UNION ALL
+    SELECT project_id, 'context', name_en,
+           label_x, label_y, label_rotation, 4.0, 'C-ANNO-TEXT-EN',
+           CASE WHEN name_th IS NOT NULL AND name_th <> ''
+                THEN 4.0 * 1.3 ELSE 0.0 END
+      FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id, kind,
+                                                      display_name
+                                         ORDER BY length_m DESC) AS rn
+              FROM staging_context
+             WHERE display_name IS NOT NULL AND display_name <> ''
+               AND label_x IS NOT NULL)
+     WHERE rn = 1 AND name_en IS NOT NULL AND name_en <> ''
+    UNION ALL
+    SELECT project_id, 'context', display_name,
+           label_x, label_y, label_rotation, 4.0, 'C-ANNO-TEXT', 0.0
+      FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id, kind,
+                                                      display_name
+                                         ORDER BY length_m DESC) AS rn
+              FROM staging_context
+             WHERE display_name IS NOT NULL AND display_name <> ''
+               AND label_x IS NOT NULL)
+     WHERE rn = 1 AND COALESCE(name_th, '') = ''
+                  AND COALESCE(name_en, '') = ''
     UNION ALL
     -- Landmark points. label_x/label_y is already clear of the symbol, so
     -- these rows need only the same language stacking as everything else.
@@ -513,6 +573,40 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
     if restored:
         print(f"  restored {restored} field-verified name(s) from a previous "
               "run")
+    return len(rows)
+
+
+def stage_context(conn, project_id, records) -> int:
+    """records: dicts with feature_id, kind, cad_layer, runs (lists of
+    (x, y) in the project SRID), display_name/name_th/name_en and a
+    `labelled` flag. Rail and barrier are drawn but never labelled, so they
+    stage with a NULL anchor and drop out of cad_labels on their own."""
+    from shapely import wkb as shp_wkb
+    from shapely.geometry import LineString, MultiLineString
+
+    rows = []
+    for r in records:
+        runs = [LineString(run) for run in r["runs"] if len(run) >= 2]
+        if not runs:
+            continue
+        geom = runs[0] if len(runs) == 1 else MultiLineString(runs)
+        if r.get("labelled") and (r.get("display_name") or "").strip():
+            lx, ly, rot = line_label_anchor(geom)
+        else:
+            lx, ly, rot = None, None, 0.0
+        th, en = split_by_script(r.get("display_name"), r.get("name_th"),
+                                 r.get("name_en"))
+        rows.append((
+            project_id, r["feature_id"], _osm_id(r["feature_id"]),
+            r.get("source", "openstreetmap"), r["kind"],
+            r.get("display_name") or None, th, en, r["cad_layer"],
+            shp_wkb.dumps(geom), lx, ly, rot, geom.length))
+    conn.executemany(
+        "INSERT OR REPLACE INTO staging_context (project_id, feature_id,"
+        " osm_id, source, kind, display_name, name_th, name_en, cad_layer,"
+        " geom_wkb, label_x, label_y, label_rotation, length_m)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.commit()
     return len(rows)
 
 

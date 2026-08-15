@@ -534,3 +534,105 @@ def test_unnamed_landmark_area_draws_but_does_not_label(db):
     assert conn.execute("SELECT COUNT(*) FROM staging_buildings"
                         ).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM cad_labels").fetchone()[0] == 0
+
+
+# --------------------------------------------------------- context linework
+def _ctx(fid="way/7", kind="water", layer="C-HYDR-WATR", name="คลองอรชร",
+         runs=None, labelled=True, **kw):
+    return {"feature_id": fid, "kind": kind, "cad_layer": layer,
+            "display_name": name, "labelled": labelled,
+            "runs": runs if runs is not None else [[(0, 0), (100, 0)]], **kw}
+
+
+def test_context_multi_run_feature_redraws_as_many_polylines(db):
+    """Clipping the extent can split one canal into several runs. Each run
+    was drawn as its own polyline, so each has to come back as one."""
+    from shapely import wkb
+    from stage_db import stage_context
+
+    conn, pid = db
+    stage_context(conn, pid, [_ctx(runs=[[(0, 0), (50, 0)],
+                                         [(80, 0), (200, 0)]])])
+    geom = wkb.loads(conn.execute("SELECT geom_wkb FROM staging_context"
+                                  ).fetchone()[0])
+    assert geom.geom_type == "MultiLineString"
+    assert len(geom.geoms) == 2
+
+
+def test_context_closed_ring_survives_the_round_trip(db):
+    """A pond or park boundary is drawn as a closed polyline. The flag is
+    recovered from the coordinates, so the ring must stay closed in WKB."""
+    from shapely import wkb
+    from stage_db import stage_context
+
+    conn, pid = db
+    ring = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+    stage_context(conn, pid, [_ctx(kind="green", layer="C-LAND-VEGT",
+                                   name="สวนสาธารณะ", runs=[ring])])
+    coords = list(wkb.loads(
+        conn.execute("SELECT geom_wkb FROM staging_context").fetchone()[0]
+    ).coords)
+    assert coords[0] == coords[-1]
+
+
+def test_rail_and_barrier_stage_but_never_label(db):
+    """topo2cad.py draws these without a name, so they must not acquire one
+    on the way through staging."""
+    from stage_db import stage_context
+
+    conn, pid = db
+    stage_context(conn, pid, [
+        _ctx("way/1", "rail", "C-RAIL-TRAK", "ทางรถไฟสายเหนือ",
+             labelled=False),
+        _ctx("way/2", "barrier", "C-BNDY-BARR", "รั้ว", labelled=False),
+    ])
+    assert conn.execute("SELECT COUNT(*) FROM staging_context"
+                        ).fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM staging_context WHERE"
+                        " label_x IS NOT NULL").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
+                        " feature_class = 'context'").fetchone()[0] == 0
+
+
+def test_context_label_dedupes_within_its_kind(db):
+    """One canal mapped as several ways gets one label, on the longest —
+    the same rule roads follow."""
+    from stage_db import stage_context
+
+    conn, pid = db
+    stage_context(conn, pid, [
+        _ctx("way/1", runs=[[(0, 0), (100, 0)]]),
+        _ctx("way/2", runs=[[(0, 8), (500, 8)]]),
+    ])
+    rows = conn.execute("SELECT text, label_y FROM cad_labels WHERE"
+                        " feature_class = 'context'").fetchall()
+    assert [r["text"] for r in rows] == ["คลองอรชร"]
+    assert rows[0]["label_y"] == 8          # anchored on the longer way
+
+
+def test_context_label_routes_by_script(db):
+    from stage_db import stage_context
+
+    conn, pid = db
+    stage_context(conn, pid, [
+        _ctx("way/1", name="คลองอรชร"),
+        _ctx("way/2", kind="green", layer="C-LAND-VEGT", name="Skyscape",
+             runs=[[(0, 40), (60, 40)]]),
+    ])
+    rows = conn.execute("SELECT text, cad_layer FROM cad_labels WHERE"
+                        " feature_class = 'context'").fetchall()
+    assert {r["text"]: r["cad_layer"] for r in rows} == {
+        "คลองอรชร": "C-ANNO-TEXT-TH",
+        "Skyscape": "C-ANNO-TEXT-EN",
+    }
+
+
+def test_unnamed_context_draws_without_a_label(db):
+    from stage_db import stage_context
+
+    conn, pid = db
+    stage_context(conn, pid, [_ctx(name="")])
+    assert conn.execute("SELECT COUNT(*) FROM staging_context"
+                        ).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
+                        " feature_class = 'context'").fetchone()[0] == 0

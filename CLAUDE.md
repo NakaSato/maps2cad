@@ -131,6 +131,20 @@ carries both, English is stacked one line above Thai via
 `offset_along_normal()`, which offsets square to the label's own rotation —
 a plain -Y nudge would drift off a rotated road label.
 
+**Every feature topo2cad draws, it also stages.** Buildings, roads and
+contours were staged from the start; landmark points (`staging_pois`),
+landmark areas (`staging_buildings` with a `C-SITE-POI` cad_layer) and
+context linework — water, vegetation, rail, barrier (`staging_context`) —
+were added later, each because `db2dxf.py` cannot draw what the staging
+layer does not hold, and a re-issued drawing that silently loses features is
+worse than no re-issue path at all. If you teach `topo2cad.py` to draw
+something new, stage it in the same commit and prove it with a layer-count
+diff of the two DXFs. A `staging_context` row keeps its runs as a
+MultiLineString and recovers the closed flag from `coords[0] == coords[-1]`,
+so a pond stays a closed polyline; rail and barrier stage with a NULL
+`label_x` because `topo2cad.py` never labels them, which drops them out of
+`cad_labels` without a special case.
+
 **Landmarks come in two shapes, and the tag filter is deliberate.** A POI is
 `amenity`/`tourism`/`historic` (`poi_kind()`); the query used to ask for
 `node["name"]`, which over a 770 × 410 m extent at Pathum Wan returned 293

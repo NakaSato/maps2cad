@@ -420,7 +420,7 @@ def road_edges(points, width_m):
 
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
                 contours=(), contour_layers=None,
-                poi_points=(), poi_areas=()):
+                poi_points=(), poi_areas=(), context=()):
     """Stage what was just drawn into the SQLite layer, with CAD label
     anchors precomputed so the drawing step is plain SELECTs."""
     from pyproj import Transformer
@@ -469,6 +469,7 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs) - n_sp
 
     n_p = stage_db.stage_pois(conn, pid, list(poi_points))
+    n_x = stage_db.stage_context(conn, pid, list(context))
 
     r_rows = []
     for rec in road_records:
@@ -489,7 +490,7 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     conn.close()
     print(f"Staged to {a.db}: project '{project}' (id {pid}) — "
           f"{n_b} buildings, {n_r} roads, {n_c} contours, "
-          f"{n_p} POI points, {n_sp} POI areas, "
+          f"{n_p} POI points, {n_sp} POI areas, {n_x} context, "
           f"{labels} CAD labels ready")
 
 
@@ -557,6 +558,7 @@ def main():
         elif el["type"] == "way" and "geometry" in el:
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
             name = best_name(tags)
+            fid = f"{el['type']}/{el['id']}"
             if "building" in tags:
                 buildings.append((names_by_lang(tags), pts,
                                   f"{el['type']}/{el['id']}"))
@@ -564,13 +566,13 @@ def main():
                 roads.append((names_by_lang(tags), tags.get("ref"), pts,
                               tags["highway"], f"{el['type']}/{el['id']}"))
             elif "waterway" in tags or tags.get("natural") == "water":
-                water.append((name, pts))
+                water.append((names_by_lang(tags), pts, fid))
             elif "leisure" in tags or "landuse" in tags:
-                green.append((name, pts))
+                green.append((names_by_lang(tags), pts, fid))
             elif "railway" in tags:
-                rails.append((name, pts))
+                rails.append((names_by_lang(tags), pts, fid))
             elif "barrier" in tags:
-                barriers.append((name, pts))
+                barriers.append((names_by_lang(tags), pts, fid))
             elif poi_kind(tags) and len(pts) >= 3:
                 # A landmark mapped as an area but not tagged `building`:
                 # hospital and school grounds, temple precincts, car parks.
@@ -762,26 +764,38 @@ def main():
                 "name_th": th or "", "name_en": en or "",
                 "carriageway_m": width_m, "runs": road_runs})
 
-    def draw_lines(features, layer, label=False, text_h=4.0):
+    staged_context = []
+
+    def draw_lines(features, kind, layer, label=False, text_h=4.0):
+        """Context linework — canals, parks, railways, walls. Each feature
+        may survive clipping as several runs; every run is staged so
+        db2dxf.py can redraw the same polylines."""
         labeled = set()
-        for name, pts in features:
+        for (th, en), pts, fid in sorted(features, key=lambda f: f[2]):
+            name = th or en
+            runs = []
             for run in clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
                 upts = list(zip(ux, uy))
                 closed = run[0] == run[-1]
                 msp.add_lwpolyline(upts, close=closed,
                                    dxfattribs={"layer": layer})
+                runs.append(upts)
                 if label and name and name not in labeled:
                     labeled.add(name)
                     mid = upts[len(upts) // 2]
-                    mtext(name, mid[0], mid[1], text_h,
-                          layer=LAYERS["anno_th" if is_thai(name)
-                                       else "anno_en"])
+                    mtext_bilingual(th, en, mid[0], mid[1], text_h)
+            if runs:
+                staged_context.append({
+                    "feature_id": fid, "kind": kind, "cad_layer": layer,
+                    "name_th": th or "", "name_en": en or "",
+                    "display_name": name or "", "labelled": bool(label),
+                    "runs": runs})
 
-    draw_lines(water, LAYERS["water"], label=True)
-    draw_lines(green, LAYERS["green"], label=True)
-    draw_lines(rails, LAYERS["rail"])
-    draw_lines(barriers, LAYERS["barrier"])
+    draw_lines(water, "water", LAYERS["water"], label=True)
+    draw_lines(green, "green", LAYERS["green"], label=True)
+    draw_lines(rails, "rail", LAYERS["rail"])
+    draw_lines(barriers, "barrier", LAYERS["barrier"])
 
     # Landmark areas: outline plus a name at a guaranteed interior point,
     # drawn before the point symbols so a symbol inside a campus stays on top
@@ -871,7 +885,8 @@ def main():
     if a.db:
         stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,
                     contours, contour_layers,
-                    poi_points=staged_pois, poi_areas=staged_site_pois)
+                    poi_points=staged_pois, poi_areas=staged_site_pois,
+                    context=staged_context)
     print(f"CRS: EPSG:{utm_epsg} (UTM {utm_label}), units = meters. "
           f"Center at UTM ({cx:.1f}, {cy:.1f})")
 

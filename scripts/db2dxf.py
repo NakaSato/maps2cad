@@ -40,6 +40,10 @@ LAYER_STYLE = {
     "C-ANNO-TEXT": (2, 25),      # language-neutral: B### codes, elevations
     "C-ANNO-TEXT-TH": (2, 25),
     "C-ANNO-TEXT-EN": (7, 25),
+    "C-HYDR-WATR": (5, 18),      # context linework: canals, ponds
+    "C-LAND-VEGT": (3, 13),      # parks, farmland, cemeteries
+    "C-RAIL-TRAK": (250, 18),
+    "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols
     "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
     "C-ANNO-NORT": (7, 35),
@@ -186,6 +190,20 @@ def main(argv=None) -> int:
                                    dxfattribs={"layer": "C-ROAD-EDGE"})
                 n_e += 1
 
+    # Context linework. A run whose first and last vertex coincide was drawn
+    # closed by topo2cad.py — a pond or a park boundary — so the closed flag
+    # is recovered from the coordinates rather than stored beside them.
+    n_x = 0
+    for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_context"
+                            " WHERE project_id = ?", (pid,)):
+        for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
+            coords = list(line.coords)
+            if len(coords) < 2:
+                continue
+            msp.add_lwpolyline(coords, close=coords[0] == coords[-1],
+                               dxfattribs={"layer": row["cad_layer"]})
+            n_x += 1
+
     # Landmark point symbols. The areas came through staging_buildings above
     # already, carrying their own C-SITE-POI cad_layer.
     n_p = 0
@@ -301,7 +319,8 @@ def main(argv=None) -> int:
     print(f"Project '{proj['name']}' (EPSG:{proj['srid']}, "
           f"{proj['width_m']:.0f} x {proj['height_m']:.0f} m)")
     print(f"  {n_b} building outlines, {n_r} road centrelines "
-          f"(+{n_e} edges), {n_c} contours, {n_p} POI symbols, {n_t} MTEXT")
+          f"(+{n_e} edges), {n_c} contours, {n_x} context lines, "
+          f"{n_p} POI symbols, {n_t} MTEXT")
     print(f"Saved: {out}")
     return 0
 
