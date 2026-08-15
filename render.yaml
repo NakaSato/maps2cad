@@ -1,31 +1,46 @@
-# Render blueprint. Deploy with: New > Blueprint, pointed at this repo.
+# Render blueprint. Deploy with: Dashboard > New > Blueprint, pointed at
+# this repo, or `render blueprint launch`.
 #
-# IMPORTANT — the disk below is not available on Render's free plan, and
-# without it this app loses the two things it cannot regenerate:
+# This is configured for the FREE plan, which has no persistent disk and
+# spins the instance down after about 15 minutes idle. Both of those have
+# consequences you should know rather than discover:
 #
-#   * staging.sqlite, including verified_names — the field-verified building
-#     names that survive re-extraction. Losing those destroys field work.
-#   * the DEM tile cache — every cold start re-downloads ~40 MB per
-#     1x1 degree tile from Copernicus before it can draw anything.
+#   * staging.sqlite is lost on every spin-down and every deploy, and with
+#     it verified_names — the field-verified building names that survive
+#     re-extraction. On free, treat every run as throwaway and export the
+#     building inventory CSV if a name matters.
+#   * the DEM tile cache is lost too, so the first CAD export after a cold
+#     start re-downloads ~40 MB from Copernicus before it can draw.
+#   * memory is 512 MB. A CAD run peaks around 165 MB, so this fits, but
+#     there is not much headroom for concurrent generations.
 #
-# A free instance also spins down after idling, so both losses happen
-# routinely, not just on deploy. If you must run on free, delete the `disk:`
-# block and change --data-dir to /tmp/maps2cad, and treat every run as
-# throwaway. See CLAUDE.md for what that costs.
+# To make it durable later, change `plan: free` to `plan: starter` and add:
+#
+#     disk:
+#       name: maps2cad-data
+#       mountPath: /data
+#       sizeGB: 5
+#
+# MAPS2CAD_DATA already points at /data, so nothing else needs to change.
 services:
   - type: web
     name: maps2cad
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter          # `free` has no persistent disk — see above
+    plan: free
     region: singapore      # closest to Thailand; also cuts Overpass latency
     healthCheckPath: /health
-    disk:
-      name: maps2cad-data
-      mountPath: /data
-      sizeGB: 5            # ~40 MB per DEM tile, plus run folders
     envVars:
       - key: MAPS2CAD_DATA
-        value: /data
+        value: /data       # ephemeral on free — see the note above
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Google sign-in is optional. Set these in the Render dashboard, not
+      # here — render.yaml is committed and these are credentials. With them
+      # unset the app runs normally and the Drive button is not shown.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false

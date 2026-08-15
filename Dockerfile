@@ -17,6 +17,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl \
+    # rasterio's bundled GDAL is not quite self-contained: it dynamically
+    # links libexpat, which python:3.12-slim omits. Without this, the app
+    # starts and serves pages fine and only fails at `import rasterio`,
+    # i.e. the first CAD export, with ImportError: libexpat.so.1.
+        libexpat1 \
     # Thai-capable fonts. Without one the site map falls back with a
     # warning and Thai labels render as boxes; the DXF text style names
     # THSarabunNew, which AutoCAD resolves on the client, not here.
@@ -37,4 +42,4 @@ COPY scripts/ ./scripts/
 VOLUME ["/data"]
 
 EXPOSE 8765
-CMD ["sh", "-c", "python scripts/serve.py --host 0.0.0.0 --port ${PORT:-8765} --data-dir /data"]
+CMD ["sh", "-c", "python scripts/serve.py --host 0.0.0.0 --port ${PORT:-8765} --data-dir ${MAPS2CAD_DATA:-/data}"]
