@@ -677,15 +677,16 @@ def stage_roads(conn, project_id, records) -> int:
         rows.append((
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("highway_type"), name, ref, display, th, en,
+            r.get("cad_layer", "C-ROAD-CNTR"),
             r.get("carriageway_m"), shp_wkb.dumps(geom),
             lx, ly, rot, geom.length, minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_roads (project_id, feature_id, osm_id,"
         " highway_type, road_name, road_ref, display_name, name_th, name_en,"
-        " carriageway_m,"
+        " cad_layer, carriageway_m,"
         " geom_wkb, label_x, label_y, label_rotation, length_m,"
         " minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
 

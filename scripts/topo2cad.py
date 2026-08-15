@@ -361,6 +361,10 @@ ROAD_WIDTH_M = {
     "pedestrian": 6.0,
 }
 
+# Drawn as a single line on C-ROAD-PATH with no edge-of-pavement offset.
+PATH_TYPES = {"footway", "path", "cycleway", "steps", "pedestrian",
+              "bridleway", "corridor"}
+
 
 # CAD layer names follow the NCS/AIA convention (discipline-major-minor) so
 # the DXF drops straight into an engineering drawing set. All annotation is
@@ -368,7 +372,13 @@ ROAD_WIDTH_M = {
 LAYERS = {
     "building": "C-BLDG-OUTL",
     "road_edge": "C-ROAD-EDGE",     # the two carriageway edges (double lines)
-    "road_centre": "C-ROAD-CNTR",   # centreline
+    "road_centre": "C-ROAD-CNTR",   # centreline, CENTER linetype
+    # Footways, cycleways and steps are not carriageways: drawing a 1.5 m
+    # path with two offset kerb lines makes it read as a road on the plan.
+    "road_path": "C-ROAD-PATH",
+    # No OSM source for a legal right-of-way, so this is created empty and
+    # ready for a drafter to draw the ROW onto, like C-PROP-LINE.
+    "road_row": "C-ROAD-ROWY",
     # Annotation splits by language so a drafter can LAYFRZ one script and
     # plot a single-language sheet. Language-neutral text (B### codes,
     # contour elevations, the GPS tag, the north arrow) stays on the base
@@ -405,6 +415,12 @@ LAYERS = {
 # the Thai government document standard; AutoCAD substitutes if it is not
 # installed, which is still better than the SHX default that cannot render
 # Thai at all.
+# MTEXT background mask, as a multiple of the text height. 'canvas'
+# means the drawing's own background, so a label crossing a building
+# outline or a road edge cuts a clean hole rather than overprinting.
+# Passing None here would REMOVE the mask, not add one.
+BG_MASK_SCALE = 1.1
+
 TEXT_STYLES = {
     "TH_STYLE": "THSarabunNew.ttf",
     "EN_STYLE": "arial.ttf",
@@ -675,6 +691,7 @@ def main():
                            ("building", 4, 50), ("anno", 2, 25),
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
+                           ("road_path", 8, 13),
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
@@ -687,6 +704,14 @@ def main():
     prop.dxf.lineweight = 70
     setb = doc.layers.add(LAYERS["setback"], color=2, linetype="DASHED")
     setb.dxf.lineweight = 25
+    row = doc.layers.add(LAYERS["road_row"], color=1, linetype="PHANTOM")
+    row.dxf.lineweight = 35
+    # NCS convention: a centreline is drawn with the CENTER linetype so it is
+    # never mistaken for the edge of pavement beside it.
+    doc.layers.get(LAYERS["road_centre"]).dxf.linetype = "CENTER"
+    # Dashes are in drawing units — metres here — so without a scale the
+    # CENTER pattern is sub-millimetre on paper and reads as continuous.
+    doc.header["$LTSCALE"] = 5.0
 
     if a.underlay:
         import underlay as ul
@@ -707,6 +732,9 @@ def main():
             "style": ANNO_STYLE[layer][1]})
         m.set_location((x, y), rotation=rotation,
                        attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        # Background mask: a label crossing a building outline or a road
+        # edge punches a clean hole through it instead of overprinting.
+        m.set_bg_color("canvas", scale=BG_MASK_SCALE)
         return m
 
     def mtext_bilingual(th, en, x, y, height, rotation=0.0, fallback=None):
@@ -794,6 +822,8 @@ def main():
     for (th, en), ref, pts, highway, fid in roads:
         name = th or en
         width_m = ROAD_WIDTH_M.get(highway, 5.0)
+        is_path = highway in PATH_TYPES
+        cad_layer = LAYERS["road_path" if is_path else "road_centre"]
         road_runs = []
         for run in clip_runs(pts, s, w, n, e):
             ux, uy = to_utm.transform(*zip(*run))
@@ -801,17 +831,20 @@ def main():
             if len(upts) < 2:
                 continue
             road_runs.append(upts)
-            for edge in road_edges(upts, width_m):
-                msp.add_lwpolyline(edge,
-                                   dxfattribs={"layer": LAYERS["road_edge"]})
-            msp.add_lwpolyline(upts,
-                               dxfattribs={"layer": LAYERS["road_centre"]})
+            if not is_path:
+                for edge in road_edges(upts, width_m):
+                    msp.add_lwpolyline(
+                        edge, dxfattribs={"layer": LAYERS["road_edge"]})
+            msp.add_lwpolyline(upts, dxfattribs={"layer": cad_layer})
         if road_runs:
             staged_roads.append({
                 "feature_id": fid, "highway_type": highway,
                 "road_name": name, "road_ref": ref,
                 "name_th": th or "", "name_en": en or "",
-                "carriageway_m": width_m, "runs": road_runs})
+                "cad_layer": cad_layer,
+                # 0 tells the staging route not to offset edges either
+                "carriageway_m": 0.0 if is_path else width_m,
+                "runs": road_runs})
 
     # Linear labels are anchored by the same function the staging layer uses,
     # so a drawing and its re-issue put the name in the same place. Anchoring

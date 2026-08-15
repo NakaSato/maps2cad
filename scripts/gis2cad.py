@@ -55,6 +55,12 @@ LAYER_STYLE = {
 }
 
 # Must match TEXT_STYLES in topo2cad.py / db2dxf.py.
+# MTEXT background mask, as a multiple of the text height. 'canvas'
+# means the drawing's own background, so a label crossing a building
+# outline or a road edge cuts a clean hole rather than overprinting.
+# Passing None here would REMOVE the mask, not add one.
+BG_MASK_SCALE = 1.1
+
 TEXT_STYLES = {
     "TH_STYLE": "THSarabunNew.ttf",
     "EN_STYLE": "arial.ttf",
@@ -292,6 +298,7 @@ def main(argv=None) -> int:
             "style": ANNO_TEXT_STYLE[layer]})
         m.set_location((x, y), rotation=rotation,
                        attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        m.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     counts = {"polygon": 0, "line": 0, "point": 0, "label": 0, "edge": 0}
     for path, gdf in frames:

@@ -330,3 +330,43 @@ def test_curation_does_not_change_key_precedence():
     # ...and an uncurated amenity does not mask a curated tourism value
     assert poi_kind({"amenity": "restaurant",
                      "tourism": "museum"}) == ("tourism", "museum")
+
+
+# --------------------------------------------------------- road drafting
+def test_pedestrian_ways_are_not_carriageways():
+    """A 1.5 m footpath drawn with two offset kerb lines reads as a road on
+    the plan, so footways go on C-ROAD-PATH as a single line."""
+    from topo2cad import LAYERS, PATH_TYPES
+
+    for kind in ("footway", "path", "cycleway", "steps", "pedestrian"):
+        assert kind in PATH_TYPES
+    for kind in ("motorway", "trunk", "primary", "residential", "service",
+                 "track", "unclassified"):
+        assert kind not in PATH_TYPES
+    assert LAYERS["road_path"] == "C-ROAD-PATH"
+
+
+def test_road_layers_follow_the_ncs_split():
+    """Centreline, edge of pavement, path and right-of-way are separate so a
+    drafter can isolate one without freezing the map."""
+    from topo2cad import LAYERS
+
+    assert LAYERS["road_centre"] == "C-ROAD-CNTR"
+    assert LAYERS["road_edge"] == "C-ROAD-EDGE"
+    assert LAYERS["road_path"] == "C-ROAD-PATH"
+    assert LAYERS["road_row"] == "C-ROAD-ROWY"
+    assert len({LAYERS["road_centre"], LAYERS["road_edge"],
+                LAYERS["road_path"], LAYERS["road_row"]}) == 4
+
+
+def test_every_road_class_has_a_width():
+    """road_edges() falls back to 5 m for an unknown class, but the classes
+    that actually carry traffic should be explicit."""
+    from topo2cad import ROAD_WIDTH_M
+
+    for kind in ("motorway", "trunk", "primary", "secondary", "tertiary",
+                 "residential", "service", "unclassified"):
+        assert ROAD_WIDTH_M[kind] > 0
+    # a trunk road is wider than a residential street, or the plan lies
+    assert ROAD_WIDTH_M["trunk"] > ROAD_WIDTH_M["residential"]
+    assert ROAD_WIDTH_M["residential"] > ROAD_WIDTH_M["footway"]

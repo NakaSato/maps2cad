@@ -34,6 +34,8 @@ LAYER_STYLE = {
     "C-BLDG-OUTL": (4, 50),
     "C-ROAD-EDGE": (30, 35),
     "C-ROAD-CNTR": (8, 9),
+    "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
+    "C-ROAD-ROWY": (1, 35),      # right of way, empty and ready to draw
     "C-TOPO-CONT": (8, 13),
     "C-TOPO-MAJR": (8, 25),   # index contours: heavier, labelled
     "C-TOPO-MINR": (8, 9),    # intermediate contours
@@ -56,6 +58,12 @@ LAYER_STYLE = {
 # Must match TEXT_STYLES / ANNO_STYLE in topo2cad.py — both routes have to
 # hand a drafter the same drawing. AutoCAD renders Thai as ??? without a
 # text style bound to a font that carries the Thai block.
+# MTEXT background mask, as a multiple of the text height. 'canvas'
+# means the drawing's own background, so a label crossing a building
+# outline or a road edge cuts a clean hole rather than overprinting.
+# Passing None here would REMOVE the mask, not add one.
+BG_MASK_SCALE = 1.1
+
 TEXT_STYLES = {
     "TH_STYLE": "THSarabunNew.ttf",
     "EN_STYLE": "arial.ttf",
@@ -163,6 +171,9 @@ def main(argv=None) -> int:
         layer.dxf.lineweight = lw
     doc.layers.get("C-PROP-LINE").dxf.linetype = "PHANTOM"
     doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
+    doc.layers.get("C-ROAD-ROWY").dxf.linetype = "PHANTOM"
+    doc.layers.get("C-ROAD-CNTR").dxf.linetype = "CENTER"
+    doc.header["$LTSCALE"] = 5.0
 
     # ---- geometry: three SELECTs -------------------------------------
     n_b = 0
@@ -180,16 +191,21 @@ def main(argv=None) -> int:
     for row in conn.execute("SELECT geom_wkb, carriageway_m, cad_layer"
                             " FROM staging_roads WHERE project_id = ?",
                             (pid,)):
-        width = row["carriageway_m"] or 5.0
+        # A footway stages with carriageway_m = 0 and its own cad_layer, so
+        # it draws as one line with no edge of pavement — matching
+        # topo2cad.py, which never offsets a 1.5 m path.
+        width = row["carriageway_m"]
+        width = 5.0 if width is None else width
         for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
             coords = list(line.coords)
             msp.add_lwpolyline(coords,
                                dxfattribs={"layer": row["cad_layer"]})
             n_r += 1
-            for edge in road_edges(coords, width):
-                msp.add_lwpolyline(edge,
-                                   dxfattribs={"layer": "C-ROAD-EDGE"})
-                n_e += 1
+            if width > 0:
+                for edge in road_edges(coords, width):
+                    msp.add_lwpolyline(edge,
+                                       dxfattribs={"layer": "C-ROAD-EDGE"})
+                    n_e += 1
 
     # Context linework. A run whose first and last vertex coincide was drawn
     # closed by topo2cad.py — a pond or a park boundary — so the closed flag
@@ -250,6 +266,7 @@ def main(argv=None) -> int:
                 (lx, ly),
                 rotation=row["label_rotation"],
                 attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+            m.set_bg_color("canvas", scale=BG_MASK_SCALE)
             n_t += 1
 
         # Contour elevations are not in the view (they are numbers, not
@@ -267,6 +284,7 @@ def main(argv=None) -> int:
                                rotation=row["label_rotation"],
                                attachment_point=
                                MTextEntityAlignment.MIDDLE_CENTER)
+                m.set_bg_color("canvas", scale=BG_MASK_SCALE)
                 n_t += 1
 
     # Site marker at the staged centre, in project metres
@@ -295,6 +313,7 @@ def main(argv=None) -> int:
                                        "style": "EN_STYLE"})
     n.set_location((ax_, ay + sz * 1.5),
                    attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+    n.set_bg_color("canvas", scale=BG_MASK_SCALE)
     n_t += 1
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
     m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",
@@ -302,6 +321,7 @@ def main(argv=None) -> int:
                                   "style": "EN_STYLE"})
     m.set_location((cx + 40, cy),
                    attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+    m.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     if a.sheet:
         import datetime

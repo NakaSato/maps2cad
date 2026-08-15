@@ -127,6 +127,25 @@ without redoing the arithmetic.
 rotated along the centreline and the route `ref` is a separate MTEXT offset
 perpendicular, so name and number never overprint.
 
+**Road layers follow the NCS split, and a footway is not a carriageway.**
+`C-ROAD-CNTR` carries centrelines with the **CENTER** linetype (with
+`$LTSCALE` 5.0 — the pattern is in drawing units, i.e. metres, so unscaled
+dashes are sub-millimetre on paper and read as continuous), `C-ROAD-EDGE`
+the two offset edges of pavement, `C-ROAD-PATH` footways, cycleways and
+steps as a *single* line with no offset — a 1.5 m path drawn with two kerb
+lines reads as a road — and `C-ROAD-ROWY` is created empty with a PHANTOM
+linetype for a drafter to draw the legal right-of-way onto, since OSM has no
+source for one. `PATH_TYPES` decides the split; a path stages with
+`carriageway_m = 0`, which is what tells `db2dxf.py` to skip its edges too.
+
+**All annotation carries a background mask** (`set_bg_color("canvas",
+scale=1.1)`), so a label crossing a building outline or a road edge cuts
+through it instead of overprinting. Note `set_bg_color(None)` *removes* a
+mask rather than adding one — passing None is the easy mistake, and it fails
+silently because the text still draws. All three writers do this, including
+`db2dxf.py`'s contour elevations, north arrow and GPS tag, which sit outside
+its label loop and were missed on the first pass.
+
 **Annotation splits by script, onto three layers.** `C-ANNO-TEXT-TH` carries
 Thai, `C-ANNO-TEXT-EN` carries Latin, and `C-ANNO-TEXT` keeps everything
 language-neutral — B### codes, contour elevations, the GPS tag, the north
