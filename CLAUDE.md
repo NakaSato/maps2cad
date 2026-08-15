@@ -93,16 +93,27 @@ at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows
 1. Expect the question "why does the PDF have fewer buildings than the CAD file"
 and answer with this, not with a bug hunt.
 
-**Default extent is 560 × 520 m** across the CLI tools and the web form, and
-the default sheet is **A3**. A3 is 420 × 297 mm; after the title block and
-margins `sheet.py` leaves a 290 × 273 mm viewport, so 1:2000 holds at most
-580 × 546 m. 560 × 520 plots at 280 × 260 mm — a round scale, so the title
-block's มาตราส่วน is one a reviewing agency expects, with ~5 mm of air on
-each side and an aspect (1.08:1) close to the viewport's own 1.06:1 so the
-paper is used in both directions. Changing the frame proportions, the
-title-block width or this default breaks that relationship; recompute with
-`fitting_scale()` before touching any of them. `topo2cad.py` still accepts
-`--radius` for a square box.
+**Default extent is 1000 × 750 m** across the CLI tools and the web form,
+with A3 the default sheet. These do not combine at 1:2000: after the title
+block and margins `sheet.py` leaves a 290 × 273 mm A3 viewport, which caps
+1:2000 at 580 × 546 m, so 1000 × 750 plots at **1:5000 on A3**, 1:2500 on A2
+and 1:2000 on A1. All are round scales a reviewer accepts, but the extent
+and the sheet are now chosen independently — check `fitting_scale()` for the
+combination you need rather than assuming 1:2000. `topo2cad.py` still
+accepts `--radius` for a square box.
+
+**The extent is drawn, on `C-ANNO-EXTN`.** Both CAD routes close a rectangle
+on the requested extent, derived from the centre and the nominal width and
+height so they agree to the millimetre. It is a *crop line, not a clip*:
+`clip_runs()` deliberately runs linework ~55 m past the boundary
+(`margin=0.0005°`) so roads cross the border cleanly, and building
+footprints are never cut, so a building straddling the edge stays a whole
+footprint. At 14.8165, 100.5116 that is 84 of 609 entities crossing the
+line, almost all of it roads. A drafter clips the viewport to this
+rectangle; do not "fix" the overhang by trimming geometry, or the DXF stops
+carrying real footprints. `generate_detailed_site_map.py` needs none of
+this — matplotlib clips to `set_xlim`/`set_ylim` and the axes spines already
+draw the frame.
 
 The previous default was 770 × 410 m, and its comment claimed the same
 1:2000-on-A3 property. That was true only of a bare map frame: 770 m needs

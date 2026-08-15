@@ -79,14 +79,13 @@ def parse_args():
     a = p.parse_args()
     if not a.out and not a.outdir:
         p.error("give either --out <file.dxf> or --outdir <dir>")
-    # Default extent: 560 x 520 m. A3 is 420 x 297 mm, and after the title
-    # block and margins sheet.py leaves a 290 x 273 mm viewport, so 1:2000
-    # holds at most 580 x 546 m. 560 x 520 plots at 280 x 260 mm — a round
-    # scale with ~5 mm of air on each side, and near the viewport's own
-    # 1.06:1 aspect so the paper is used in both directions.
+    # Default extent: 1000 x 750 m. This does not fit A3 at 1:2000 (that
+    # caps at 580 x 546 m) — sheet.py falls back to 1:5000 there, 1:2500 on
+    # A2 and 1:2000 on A1. All are round scales a reviewer accepts, but
+    # check --sheet against the scale you need before plotting.
     # An explicit --radius still wins, so square boxes keep working.
     if a.radius is None and a.width is None and a.height is None:
-        a.width, a.height = 560.0, 520.0
+        a.width, a.height = 1000.0, 750.0
     if a.radius is not None and a.width is None and a.height is None:
         pass          # radius-only run: bbox_around uses the radius
     if a.outdir:
@@ -386,6 +385,10 @@ LAYERS = {
     "site_poi": "C-SITE-POI",
     "north": "C-ANNO-NORT",
     "site": "C-ANNO-GPSP",
+    # The requested extent, drawn as a closed rectangle. Features are not
+    # trimmed to it — a building straddling the edge stays whole — so this
+    # is the crop line a drafter trims or clips a viewport to.
+    "extent": "C-ANNO-EXTN",
     "property": "C-PROP-LINE",
     "setback": "C-PROP-SETB",
 }
@@ -669,6 +672,7 @@ def main():
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
+                           ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(LAYERS[key], color=color)
         layer.dxf.lineweight = lw
@@ -922,6 +926,11 @@ def main():
     cx, cy = to_utm.transform(a.lon, a.lat)
     ext_w = a.width or (a.radius * 2)
     ext_h = a.height or (a.radius * 2)
+    # Crop rectangle on the requested extent
+    hw, hh = ext_w / 2, ext_h / 2
+    msp.add_lwpolyline([(cx - hw, cy - hh), (cx + hw, cy - hh),
+                        (cx + hw, cy + hh), (cx - hw, cy + hh)],
+                       close=True, dxfattribs={"layer": LAYERS["extent"]})
     ax_ = cx + (ext_w / 2) * 0.94
     ay = cy + (ext_h / 2) * 0.90
     sz = min(ext_w, ext_h) * 0.02

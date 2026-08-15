@@ -46,6 +46,7 @@ LAYER_STYLE = {
     "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols
     "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
+    "C-ANNO-EXTN": (7, 35),      # crop rectangle on the requested extent
     "C-ANNO-NORT": (7, 35),
     "C-ANNO-GPSP": (1, 35),
     "C-PROP-LINE": (1, 70),
@@ -277,6 +278,10 @@ def main(argv=None) -> int:
     # North arrow, derived from the staged extent (drawing furniture, so it
     # is not staged — the drawing is true-north-up in UTM either way)
     half_w, half_h = proj["width_m"] / 2, proj["height_m"] / 2
+    # Crop rectangle, from the same staged extent topo2cad.py draws it from
+    msp.add_lwpolyline([(cx - half_w, cy - half_h), (cx + half_w, cy - half_h),
+                        (cx + half_w, cy + half_h), (cx - half_w, cy + half_h)],
+                       close=True, dxfattribs={"layer": "C-ANNO-EXTN"})
     ax_ = cx + half_w * 0.94
     ay = cy + half_h * 0.90
     sz = min(proj["width_m"], proj["height_m"]) * 0.02

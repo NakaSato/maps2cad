@@ -149,10 +149,10 @@ def parse_form(form: dict[str, list[str]]) -> dict:
 
     lat = number(lat_s, "Latitude", -90, 90)
     lon = number(lon_s, "Longitude", -180, 180)
-    # 560 x 520 m plots at 280 x 260 mm — a round 1:2000 inside the
-    # 290 x 273 mm viewport an A3 sheet leaves after its title block
-    width = number(one("width", "560"), "Width", 20, 20000)
-    height = number(one("height", "520"), "Height", 20, 20000)
+    # 1000 x 750 m — larger than A3 holds at 1:2000, so a sheet export
+    # lands on 1:5000 (A3), 1:2500 (A2) or 1:2000 (A1)
+    width = number(one("width", "1000"), "Width", 20, 20000)
+    height = number(one("height", "750"), "Height", 20, 20000)
 
     export = one("export", "both")
     if export not in ("both", "cad", "map"):
@@ -530,10 +530,10 @@ that resolves the B### codes.</p>
     <div class="grid g2" style="gap:12px">
       <div><label for="width">Width (m)</label>
         <input type="number" id="width" name="width" step="any" min="20"
-               value="{val('width', 560)}"></div>
+               value="{val('width', 1000)}"></div>
       <div><label for="height">Height (m)</label>
         <input type="number" id="height" name="height" step="any" min="20"
-               value="{val('height', 520)}"></div>
+               value="{val('height', 750)}"></div>
     </div>
   </div>
   <div class="grid g3" style="margin-top:16px">

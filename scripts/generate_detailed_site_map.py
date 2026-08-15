@@ -121,11 +121,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Latitude in decimal degrees (WGS 84, -90..90)")
     p.add_argument("--lon", type=float, required=True,
                    help="Longitude in decimal degrees (WGS 84, -180..180)")
-    # 560 x 520 m plots at 280 x 260 mm — a round 1:2000 inside the
-    # 290 x 273 mm viewport an A3 sheet leaves after its title block
-    p.add_argument("--width", type=float, default=560.0,
+    # 1000 x 750 m: wider than A3 holds at 1:2000, so the standard profile
+    # reports the scale it actually achieved rather than a nominal one
+    p.add_argument("--width", type=float, default=1000.0,
                    help="East-west coverage in metres, centred on the site")
-    p.add_argument("--height", type=float, default=520.0,
+    p.add_argument("--height", type=float, default=750.0,
                    help="North-south coverage in metres, centred on the site")
     p.add_argument("--output",
                    help="Output PDF path (must end in .pdf). Not needed when "
