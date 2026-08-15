@@ -26,6 +26,7 @@ import html
 import json
 import math
 import mimetypes
+import os
 import re
 import shutil
 import sqlite3
@@ -1407,14 +1408,35 @@ drawing.</p>
 
 
 def main(argv=None):
-    global STAGING_DB
+    global STAGING_DB, OUT, DEM_DIR
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--db", default=str(STAGING_DB),
-                    help="SQLite staging database to browse and write to")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="0.0.0.0 to accept connections from outside this "
+                         "machine, which containers need")
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("PORT") or 8765),
+                    help="defaults to $PORT when set, which is how most "
+                         "hosts tell an app where to listen")
+    ap.add_argument("--data-dir", metavar="DIR",
+                    default=os.environ.get("MAPS2CAD_DATA"),
+                    help="Put the DEM cache, run folders and staging "
+                         "database under DIR instead of alongside the repo. "
+                         "Point this at a mounted volume when deploying, or "
+                         "every generated file and every field-verified name "
+                         "dies with the container.")
+    ap.add_argument("--db", default=None,
+                    help="SQLite staging database to browse and write to "
+                         "(default: <data-dir>/staging.sqlite)")
     a = ap.parse_args(argv)
-    STAGING_DB = Path(a.db).resolve()
+    if a.data_dir:
+        root = Path(a.data_dir).resolve()
+        DEM_DIR = root / "dem"
+        OUT = root / "web"
+        STAGING_DB = root / "staging.sqlite"
+        for d in (DEM_DIR, OUT):
+            d.mkdir(parents=True, exist_ok=True)
+    if a.db:
+        STAGING_DB = Path(a.db).resolve()
 
     if not GEN.is_file():
         print(f"ERROR: {GEN} not found", file=sys.stderr)

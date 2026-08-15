@@ -1,0 +1,31 @@
+# Render blueprint. Deploy with: New > Blueprint, pointed at this repo.
+#
+# IMPORTANT — the disk below is not available on Render's free plan, and
+# without it this app loses the two things it cannot regenerate:
+#
+#   * staging.sqlite, including verified_names — the field-verified building
+#     names that survive re-extraction. Losing those destroys field work.
+#   * the DEM tile cache — every cold start re-downloads ~40 MB per
+#     1x1 degree tile from Copernicus before it can draw anything.
+#
+# A free instance also spins down after idling, so both losses happen
+# routinely, not just on deploy. If you must run on free, delete the `disk:`
+# block and change --data-dir to /tmp/maps2cad, and treat every run as
+# throwaway. See CLAUDE.md for what that costs.
+services:
+  - type: web
+    name: maps2cad
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # `free` has no persistent disk — see above
+    region: singapore      # closest to Thailand; also cuts Overpass latency
+    healthCheckPath: /health
+    disk:
+      name: maps2cad-data
+      mountPath: /data
+      sizeGB: 5            # ~40 MB per DEM tile, plus run folders
+    envVars:
+      - key: MAPS2CAD_DATA
+        value: /data
+      - key: PYTHONUNBUFFERED
+        value: "1"

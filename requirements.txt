@@ -1,5 +1,22 @@
+# Union of every scripts/*.py PEP 723 header. The scripts normally declare
+# their own dependencies and `uv run` installs them per-script, but a
+# container has no uv: serve.py's script_cmd() falls back to sys.executable,
+# so every dependency of every script it shells out to must already be in
+# the environment. Regenerate by reading the `# /// script` blocks.
+
+# CAD export path — topo2cad.py, db2dxf.py, gis2cad.py, dxfdiff.py, sheet.py
+ezdxf
+rasterio
+numpy
+scipy
+scikit-image
+requests
+
+# Site-map path — generate_detailed_site_map.py, mapposter.py, dxf2pdf.py
 osmnx==2.1.1
 geopandas>=1.0
 matplotlib>=3.9
+
+# Shared
 shapely>=2.0
 pyproj>=3.6
