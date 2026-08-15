@@ -270,3 +270,63 @@ def test_poi_kind_ignores_ordinary_features():
                  {"shop": "convenience"}, {"name": "Level 3", "level": "3"},
                  {"amenity": ""}, {}):
         assert poi_kind(tags) is None
+
+
+# ------------------------------------------------- landmark curation
+@pytest.mark.parametrize("tags", [
+    {"amenity": "place_of_worship"},   # วัด — the primary Thai landmark
+    {"amenity": "school"},
+    {"amenity": "hospital"},
+    {"amenity": "police"},
+    {"amenity": "townhall"},
+    {"amenity": "post_office"},
+    {"amenity": "marketplace"},
+    {"amenity": "fuel"},               # ปั๊มน้ำมัน is real wayfinding here
+    {"tourism": "museum"},
+    {"historic": "monument"},
+])
+def test_submission_keeps_civic_landmarks(tags):
+    assert poi_kind(tags) is not None
+
+
+@pytest.mark.parametrize("tags", [
+    {"amenity": "restaurant"},
+    {"amenity": "cafe"},
+    {"amenity": "fast_food"},
+    {"amenity": "atm"},
+    {"amenity": "bureau_de_change"},
+    {"amenity": "bar"},
+    {"amenity": "bicycle_parking"},
+    {"amenity": "photo_booth"},
+    {"amenity": "car_wash"},
+    {"tourism": "artwork"},
+])
+def test_submission_drops_commercial_clutter(tags):
+    """105 of 144 landmark nodes over 770 x 410 m in Pathum Wan were food,
+    drink and money. A reviewing officer locates a parcel by วัด and
+    โรงเรียน, not by which cafe was trading when the survey ran."""
+    assert poi_kind(tags) is None
+
+
+def test_all_poi_restores_everything():
+    assert poi_kind({"amenity": "restaurant"}, curated=False) == \
+        ("amenity", "restaurant")
+    assert poi_kind({"tourism": "artwork"}, curated=False) == \
+        ("tourism", "artwork")
+
+
+def test_historic_is_kept_whole():
+    """historic=* is small and every value of it is worth drawing, so it is
+    not enumerated — a new value must not silently vanish."""
+    for value in ("monument", "memorial", "ruins", "city_gate", "stupa"):
+        assert poi_kind({"historic": value}) == ("historic", value)
+
+
+def test_curation_does_not_change_key_precedence():
+    """A curated feature tagged on two keys still reports one class, so it
+    cannot be staged twice."""
+    assert poi_kind({"tourism": "museum",
+                     "amenity": "school"}) == ("amenity", "school")
+    # ...and an uncurated amenity does not mask a curated tourism value
+    assert poi_kind({"amenity": "restaurant",
+                     "tourism": "museum"}) == ("tourism", "museum")

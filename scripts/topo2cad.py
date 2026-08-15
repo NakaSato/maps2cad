@@ -65,6 +65,12 @@ def parse_args():
                    help="Plot scale denominator for --sheet (1:SCALE), or "
                         "'fit' to pick the largest round scale that shows "
                         "the whole extent")
+    p.add_argument("--all-poi", action="store_true",
+                   help="Draw every amenity/tourism/historic feature instead "
+                        "of only the civic landmarks a submission needs. At a "
+                        "dense site this is mostly restaurants and cafes: 144 "
+                        "landmark points instead of 9 over 770 x 410 m in "
+                        "central Bangkok.")
     p.add_argument("--names-only", action="store_true",
                    help="Label only buildings that carry an OSM name. The "
                         "default also labels unnamed footprints with their "
@@ -288,13 +294,51 @@ def best_name(tags):
 # and a label onto the sheet.
 POI_KEYS = ("amenity", "tourism", "historic")
 
+# ...but most of what those keys return is not what a submission drawing is
+# for. Over a 770 x 410 m extent at Pathum Wan, 105 of 144 landmark nodes are
+# restaurants, cafes, ATMs and money changers. A ผังบริเวณ is read by an
+# officer locating a parcel, and they locate it by วัด, โรงเรียน, โรงพยาบาล,
+# สถานีตำรวจ, ที่ว่าการอำเภอ — civic and institutional fixtures that outlast
+# any tenant. These are the values kept by default; --all-poi restores the
+# unfiltered behaviour. A value missing here is a one-line addition.
+POI_SUBMISSION = {
+    "amenity": {
+        # worship and education — the two most-used Thai landmarks
+        "place_of_worship", "monastery",
+        "school", "university", "college", "kindergarten",
+        # health
+        "hospital", "clinic",
+        # civil authority and public service
+        "police", "fire_station", "townhall", "courthouse", "embassy",
+        "public_building", "community_centre", "post_office", "prison",
+        # public fixtures a reviewer will recognise on the ground
+        "marketplace", "bus_station", "library",
+        "fuel",          # ปั๊มน้ำมัน is a genuine wayfinding landmark here
+    },
+    "tourism": {"museum", "attraction", "viewpoint", "zoo", "aquarium",
+                "theme_park"},
+    # historic=* is small and inherently submission-relevant — a monument,
+    # ruins, a city gate are all worth drawing — so it is kept whole.
+    "historic": None,
+}
 
-def poi_kind(tags):
-    """(key, value) of the landmark tag on this feature, or None. Ordered,
-    so a hospital tagged both amenity and tourism reports as amenity."""
+
+def poi_kind(tags, curated=True):
+    """(key, value) of the landmark tag on this feature, or None.
+
+    Ordered, so a hospital tagged both amenity and tourism reports as
+    amenity. `curated` keeps only the values a submission drawing needs;
+    pass False for every amenity/tourism/historic feature OSM holds.
+    """
     for key in POI_KEYS:
-        if tags.get(key):
-            return (key, tags[key])
+        value = tags.get(key)
+        if not value:
+            continue
+        if not curated:
+            return (key, value)
+        allowed = POI_SUBMISSION.get(key, set())
+        if allowed is None or value in allowed:
+            return (key, value)
     return None
 
 
@@ -552,14 +596,18 @@ def main():
     elements = fetch_osm(s, w, n, e)
     buildings, roads, pois = [], [], []
     site_pois = []
+
+    def kind_of(tags):
+        return poi_kind(tags, curated=not a.all_poi)
+
     water, green, rails, barriers = [], [], [], []
     for el in elements:
         tags = el.get("tags", {})
-        if el["type"] == "node" and poi_kind(tags) and best_name(tags):
+        if el["type"] == "node" and kind_of(tags) and best_name(tags):
             # Unnamed landmark nodes (a waste basket, a bicycle stand) carry
             # no information a drafter can use, so a name is still required
             pois.append((names_by_lang(tags), el["lon"], el["lat"],
-                         poi_kind(tags), f"node/{el['id']}"))
+                         kind_of(tags), f"node/{el['id']}"))
         elif el["type"] == "way" and "geometry" in el:
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
             name = best_name(tags)
@@ -578,15 +626,15 @@ def main():
                 rails.append((names_by_lang(tags), pts, fid))
             elif "barrier" in tags:
                 barriers.append((names_by_lang(tags), pts, fid))
-            elif poi_kind(tags) and len(pts) >= 3:
+            elif kind_of(tags) and len(pts) >= 3:
                 # A landmark mapped as an area but not tagged `building`:
                 # hospital and school grounds, temple precincts, car parks.
                 # A landmark that IS a building came through the branch
                 # above and already has its outline and name.
                 site_pois.append((names_by_lang(tags), pts,
-                                  f"{el['type']}/{el['id']}", poi_kind(tags)))
+                                  f"{el['type']}/{el['id']}", kind_of(tags)))
         elif el["type"] == "relation":
-            if "building" in tags or poi_kind(tags):
+            if "building" in tags or kind_of(tags):
                 for m in el.get("members", []):
                     if m.get("role") == "outer" and "geometry" in m:
                         pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
@@ -596,7 +644,7 @@ def main():
                         elif len(pts) >= 3:
                             site_pois.append(
                                 (names_by_lang(tags), pts,
-                                 f"relation/{el['id']}", poi_kind(tags)))
+                                 f"relation/{el['id']}", kind_of(tags)))
                         break
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "

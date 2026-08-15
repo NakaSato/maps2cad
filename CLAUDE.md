@@ -145,11 +145,26 @@ so a pond stays a closed polyline; rail and barrier stage with a NULL
 `label_x` because `topo2cad.py` never labels them, which drops them out of
 `cad_labels` without a special case.
 
-**Landmarks come in two shapes, and the tag filter is deliberate.** A POI is
-`amenity`/`tourism`/`historic` (`poi_kind()`); the query used to ask for
-`node["name"]`, which over a 770 × 410 m extent at Pathum Wan returned 293
-nodes of which 186 were mall floor markers, shop brands, benches and bus
-stops — each drawing a symbol and a label. Points land on `C-ANNO-SYMB` with
+**Landmarks come in two shapes, and the tag filter is deliberate — twice
+over.** A POI is `amenity`/`tourism`/`historic` (`poi_kind()`); the query
+used to ask for `node["name"]`, which over a 770 × 410 m extent at Pathum Wan
+returned 293 nodes of which 186 were mall floor markers, shop brands, benches
+and bus stops — each drawing a symbol and a label.
+
+Those three keys are then curated down to `POI_SUBMISSION`, because the keys
+alone still return the wrong thing: of the 144 landmark nodes left at that
+extent, 105 were restaurants, cafés, ATMs and money changers. A ผังบริเวณ is
+read by an officer locating a parcel, and they locate it by วัด, โรงเรียน,
+โรงพยาบาล, สถานีตำรวจ — civic fixtures that outlast any tenant — so the
+default keeps worship, education, health, civil authority and public
+fixtures, plus `fuel` (ปั๊มน้ำมัน is genuine wayfinding here) and all of
+`historic`, which is small and inherently relevant. That is 144 → 9 points
+and 10 → 2 areas at Pathum Wan, the survivors being the Royal Thai Police
+headquarters and โรงเรียนวัดปทุมวนาราม. `--all-poi` restores the unfiltered
+behaviour; adding a value is a one-line edit. Note `poi_kind()` falls
+*through* a rejected value rather than returning None, so a feature tagged
+`amenity=restaurant` + `tourism=museum` is still drawn as the museum.
+The Overpass query stays broad on purpose, so `--all-poi` needs no refetch. Points land on `C-ANNO-SYMB` with
 the name offset `POI_LABEL_DX` (3 m) in x, and a name is required, so an
 unnamed bicycle stand adds nothing. Areas *without* a `building` tag —
 hospital and school grounds, temple precincts, car parks — go on
