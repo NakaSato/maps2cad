@@ -65,6 +65,12 @@ def parse_args():
                    help="Plot scale denominator for --sheet (1:SCALE), or "
                         "'fit' to pick the largest round scale that shows "
                         "the whole extent")
+    p.add_argument("--underlay", metavar="RASTER",
+                   help="Attach a georeferenced image (GeoTIFF) as a tracing "
+                        "underlay at true scale, beneath the linework. Use "
+                        "this where OSM and the ML footprints have nothing "
+                        "and the buildings have to be traced from imagery "
+                        "you own. Must already be in the drawing's UTM CRS.")
     p.add_argument("--all-poi", action="store_true",
                    help="Draw every amenity/tourism/historic feature instead "
                         "of only the civic landmarks a submission needs. At a "
@@ -681,6 +687,15 @@ def main():
     prop.dxf.lineweight = 70
     setb = doc.layers.add(LAYERS["setback"], color=2, linetype="DASHED")
     setb.dxf.lineweight = 25
+
+    if a.underlay:
+        import underlay as ul
+        try:
+            print(ul.describe(ul.attach(doc, msp, a.underlay, utm_epsg,
+                                        dxf_path=a.out)))
+        except ul.UnderlayError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
 
     def mtext(label, x, y, height, rotation=0.0, layer=None):
         """MTEXT anchored Middle Center on the annotation layer, so the

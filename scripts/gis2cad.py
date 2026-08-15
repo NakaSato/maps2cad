@@ -6,6 +6,7 @@
 #   "shapely>=2.0",
 #   "pyproj>=3.6",
 #   "ezdxf",
+#   "rasterio",
 # ]
 # ///
 """Convert your own GIS data into the CAD drawing.
@@ -209,6 +210,12 @@ def main(argv=None) -> int:
     ap.add_argument("--epsg", type=int,
                     help="force a projected CRS instead of deriving the "
                          "UTM zone from the data")
+    ap.add_argument("--underlay", metavar="RASTER",
+                    help="Attach a georeferenced image (GeoTIFF) as a tracing "
+                         "underlay at true scale, on its own layer beneath "
+                         "the linework. Must already be in the drawing's UTM "
+                         "CRS. The DXF stores a path, not the pixels, so keep "
+                         "the image beside the .dxf file.")
     ap.add_argument("--no-labels", action="store_true")
     ap.add_argument("--db", metavar="PATH",
                     help="Also stage these features into the SQLite layer, "
@@ -264,6 +271,19 @@ def main(argv=None) -> int:
         layer.dxf.lineweight = lw
     doc.layers.get("C-PROP-LINE").dxf.linetype = "PHANTOM"
     doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
+
+    if a.underlay:
+        import underlay as ul
+        try:
+            # `out` is resolved further down; the underlay only needs
+            # the directory, to store a path relative to the drawing.
+            dxf_path = a.out or Path(a.input[0]).with_suffix(".dxf")
+            info = ul.attach(doc, msp, a.underlay, epsg,
+                             dxf_path=dxf_path)
+            print(ul.describe(info))
+        except ul.UnderlayError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
 
     def mtext(text, x, y, height=3.5, rotation=0.0):
         layer = anno_layer_for(text)
