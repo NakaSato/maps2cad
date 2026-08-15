@@ -520,30 +520,41 @@ def merge_ml_footprints(buildings, ms_rings) -> int:
 
     `buildings` is mutated in place. Returns how many were added.
     """
+    keep = new_ml_rings([ext for _n, (ext, _h), _f in buildings], ms_rings)
+    for i, ring in keep:
+        buildings.append(((None, None), (ring, []), f"ms/{i:05d}"))
+    return len(keep)
+
+
+def new_ml_rings(existing_rings, ms_rings):
+    """ML footprints no existing building already covers.
+
+    Returns [(index_in_ms_rings, ring), ...]; the index keeps the ms/#####
+    feature ids stable against the fetched list rather than the kept one.
+    Shared with mapposter.py, which holds bare rings rather than the tuples
+    the CAD path uses.
+    """
     from shapely.geometry import Polygon
     from shapely.strtree import STRtree
 
-    existing = []
-    for _names, (ext, _holes), _fid in buildings:
-        if len(ext) >= 3:
-            try:
-                poly = Polygon(ext)
-                existing.append(poly if poly.is_valid else poly.buffer(0))
-            except Exception:
-                continue
-
-    tree = STRtree(existing) if existing else None
-    added = 0
-    for i, ring in enumerate(ms_rings):
+    def as_poly(ring):
         if len(ring) < 3:
-            continue
+            return None
         try:
             poly = Polygon(ring)
             if not poly.is_valid:
                 poly = poly.buffer(0)
         except Exception:
-            continue
-        if poly.is_empty or poly.area <= 0:
+            return None
+        return None if poly.is_empty or poly.area <= 0 else poly
+
+    existing = [p for p in (as_poly(r) for r in existing_rings) if p]
+    tree = STRtree(existing) if existing else None
+
+    keep = []
+    for i, ring in enumerate(ms_rings):
+        poly = as_poly(ring)
+        if poly is None:
             continue
         if tree is not None:
             # query() is a bounding-box prefilter, so measure the real
@@ -553,20 +564,13 @@ def merge_ml_footprints(buildings, ms_rings) -> int:
             # entirely while they cover only a fraction of it. Judging by
             # the footprint's own area alone admits that blob and duplicates
             # every building under it.
-            duplicate = False
-            for j in tree.query(poly):
-                other = existing[j]
-                smaller = min(poly.area, other.area)
-                if smaller <= 0:
-                    continue
-                if poly.intersection(other).area / smaller > ML_OVERLAP_MAX:
-                    duplicate = True
-                    break
-            if duplicate:
+            if any(poly.intersection(existing[j]).area
+                   / min(poly.area, existing[j].area) > ML_OVERLAP_MAX
+                   for j in tree.query(poly)
+                   if min(poly.area, existing[j].area) > 0):
                 continue
-        buildings.append(((None, None), (ring, []), f"ms/{i:05d}"))
-        added += 1
-    return added
+        keep.append((i, ring))
+    return keep
 
 
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,

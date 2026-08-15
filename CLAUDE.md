@@ -102,10 +102,10 @@ smaller-area rule leaves 0. Note the drawing still carries 7 near-duplicate
 pairs at that site from OSM alone — `building` and `building:part` on the
 same structure — which is upstream data, not this merge.
 
-**`mapposter.py` still uses the old fewer-than-20 rule**, and
-`generate_detailed_site_map.py` deliberately adds nothing (its spec forbids
-inventing features), so the three tools legitimately show different building
-counts at the same coordinate. `generate_detailed_site_map.py`
+`mapposter.py` shares the rule through `new_ml_rings()` and reports the same
+counts. `generate_detailed_site_map.py` deliberately adds nothing — its spec
+forbids inventing features — so the site map still shows fewer buildings
+than the DXF at the same coordinate, and that remains expected, not a bug. `generate_detailed_site_map.py`
 deliberately does not — its spec forbids inventing features, so it renders only
 what OSM has. On a rural site this is a large difference, not a rounding error:
 at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows

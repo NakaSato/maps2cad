@@ -9,6 +9,7 @@
 #   "pyproj",
 #   "requests",
 #   "matplotlib",
+#   "shapely>=2.0",   # new_ml_rings(), shared with topo2cad.py
 # ]
 # ///
 """Black-and-white poster-style site map (PNG + PDF) around a GPS point."""
@@ -28,7 +29,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager, patches
 
-from topo2cad import (bbox_around, fetch_osm, fetch_ms_buildings, clip_runs,
+from topo2cad import (bbox_around, fetch_osm, fetch_ms_buildings,
+                      new_ml_rings, clip_runs,
                       best_name, utm_transformer)
 
 ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
@@ -69,6 +71,9 @@ def main():
     p.add_argument("--dem", required=True)
     p.add_argument("--out", default="poster.png")
     p.add_argument("--title", default="ผังบริเวณ / SITE MAP")
+    p.add_argument("--no-ml", action="store_true",
+                   help="Do not supplement with Microsoft ML building "
+                        "footprints (same flag as topo2cad.py)")
     p.add_argument("--style", default="bw", choices=STYLES,
                    help="bw = black & white poster, color = CAD-style colors")
     args = p.parse_args()
@@ -187,8 +192,14 @@ def main():
                 bbox=dict(facecolor="white", edgecolor="none", alpha=0.6,
                           pad=0.6))
 
-    if len(buildings) < 20:
-        buildings += fetch_ms_buildings(s, w, n, e, Path(args.dem).parent / "ms_cache")
+    # Same rule as topo2cad.py: supplement everywhere, not only where OSM is
+    # nearly empty, and drop footprints an OSM building already covers.
+    if not args.no_ml:
+        ms = fetch_ms_buildings(s, w, n, e, Path(args.dem).parent / "ms_cache")
+        keep = new_ml_rings(buildings, ms)
+        buildings += [ring for _i, ring in keep]
+        print(f"MS footprints: {len(ms)} available, {len(keep)} added, "
+              f"{len(ms) - len(keep)} already mapped in OSM")
     for ring in buildings:
         bx, by = to_utm.transform(*zip(*ring))
         ax.fill(bx, by, facecolor=st["bld_face"], edgecolor=st["bld_edge"],
