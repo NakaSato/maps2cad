@@ -303,18 +303,8 @@ def main(argv=None) -> int:
     ax_ = cx + half_w * 0.94
     ay = cy + half_h * 0.90
     sz = min(proj["width_m"], proj["height_m"]) * 0.02
-    msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": "C-ANNO-NORT"})
-    msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6),
-                   (ax_ + sz * 0.3, ay - sz * 0.6),
-                   (ax_, ay + sz * 0.8)],
-                  dxfattribs={"layer": "C-ANNO-NORT"})
-    n = msp.add_mtext("N", dxfattribs={"layer": "C-ANNO-TEXT",
-                                       "char_height": sz * 0.6,
-                                       "style": "EN_STYLE"})
-    n.set_location((ax_, ay + sz * 1.5),
-                   attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
-    n.set_bg_color("canvas", scale=BG_MASK_SCALE)
-    n_t += 1
+    import blocks
+    blocks.add_north_arrow(doc, msp, ax_, ay, sz, "C-ANNO-NORT")
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
     m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",
                       dxfattribs={"layer": "C-ANNO-TEXT", "char_height": 5.0,

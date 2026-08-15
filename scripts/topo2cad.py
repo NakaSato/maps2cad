@@ -982,12 +982,8 @@ def main():
     ax_ = cx + (ext_w / 2) * 0.94
     ay = cy + (ext_h / 2) * 0.90
     sz = min(ext_w, ext_h) * 0.02
-    msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": LAYERS["north"]})
-    msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6),
-                   (ax_ + sz * 0.3, ay - sz * 0.6),
-                   (ax_, ay + sz * 0.8)],
-                  dxfattribs={"layer": LAYERS["north"]})
-    mtext("N", ax_, ay + sz * 1.5, sz * 0.6)
+    import blocks
+    blocks.add_north_arrow(doc, msp, ax_, ay, sz, LAYERS["north"])
 
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
     mtext(f"GPS {a.lat},{a.lon}", cx + 40, cy, 5.0)
