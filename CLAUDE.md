@@ -84,9 +84,28 @@ exists because large areas have no OSM or ML data at all — at 12.526,
 102.15982 the nearest ML footprint is 3.19 km away, so an empty drawing there
 is correct, not a bug. Check with a coverage query before hunting for one.
 
-**Sparse-data fallback, and why the two stacks disagree.** When OSM returns fewer
-than 20 buildings, `topo2cad.py` and `mapposter.py` supplement with Microsoft ML
-footprints (unnamed, cached in `dem/ms_cache/`). `generate_detailed_site_map.py`
+**ML footprints supplement OSM everywhere, not only where OSM is empty.**
+`topo2cad.py` used to fetch them only when OSM returned fewer than 20
+buildings; at Pathum Wan that drew 274 OSM buildings while 69 further ML
+footprints sat on ground OSM has nothing for. A building missing from a site
+plan is a worse error than one whose outline came from a model, and the
+inventory CSV records `source` either way. `--no-ml` opts out.
+`merge_ml_footprints()` deduplicates: a footprint is dropped when it
+overlaps an existing building by more than half of **whichever of the two is
+smaller**. Both weaker rules were tried and measured first — a
+representative-point-inside test let 12 duplicate pairs through (a modelled
+outline and a traced one disagree by a metre or two, so the point lands just
+outside), and testing only what fraction of the ML footprint itself is
+covered let 11 through (the ML layer merges rows of small buildings into one
+blob that covers each entirely while they cover little of it). The
+smaller-area rule leaves 0. Note the drawing still carries 7 near-duplicate
+pairs at that site from OSM alone — `building` and `building:part` on the
+same structure — which is upstream data, not this merge.
+
+**`mapposter.py` still uses the old fewer-than-20 rule**, and
+`generate_detailed_site_map.py` deliberately adds nothing (its spec forbids
+inventing features), so the three tools legitimately show different building
+counts at the same coordinate. `generate_detailed_site_map.py`
 deliberately does not — its spec forbids inventing features, so it renders only
 what OSM has. On a rural site this is a large difference, not a rounding error:
 at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows

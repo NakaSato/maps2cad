@@ -71,6 +71,13 @@ def parse_args():
                         "this where OSM and the ML footprints have nothing "
                         "and the buildings have to be traced from imagery "
                         "you own. Must already be in the drawing's UTM CRS.")
+    p.add_argument("--no-ml", action="store_true",
+                   help="Do not supplement with Microsoft ML building "
+                        "footprints. The default adds every ML footprint "
+                        "OSM has no building for, because a missing building "
+                        "is a worse error on a site plan than one whose "
+                        "outline came from a model — the inventory CSV "
+                        "records the source of each either way.")
     p.add_argument("--all-poi", action="store_true",
                    help="Draw every amenity/tourism/historic feature instead "
                         "of only the civic landmarks a submission needs. At a "
@@ -487,6 +494,81 @@ def road_edges(points, width_m):
     return edges or [list(line.coords)]
 
 
+# Fraction of an ML footprint that must already be covered by a building
+# before it counts as a duplicate rather than a new one. Half is well clear
+# of the metre-scale disagreement between a traced and a modelled outline,
+# and well below the >90% a genuine duplicate shows.
+ML_OVERLAP_MAX = 0.5
+
+
+def merge_ml_footprints(buildings, ms_rings) -> int:
+    """Append ML footprints that no OSM building already covers.
+
+    OSM and the ML layer overlap heavily in mapped areas — 272 ML footprints
+    against 274 OSM buildings at Pathum Wan — so adding all of them would
+    double-draw most of the block.
+
+    A footprint counts as already mapped when it overlaps an existing
+    building by more than half of whichever of the two is smaller. Two
+    weaker rules were tried and measured at Pathum Wan first: testing
+    whether its representative point falls inside a building let 12
+    duplicate pairs through, because a modelled outline and a traced one
+    disagree by a metre or two and the point lands just outside; testing
+    only what fraction of the ML footprint itself is covered let 11 through,
+    because the ML layer merges rows of small buildings into one blob that
+    covers each of them entirely while they cover little of it.
+
+    `buildings` is mutated in place. Returns how many were added.
+    """
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+
+    existing = []
+    for _names, (ext, _holes), _fid in buildings:
+        if len(ext) >= 3:
+            try:
+                poly = Polygon(ext)
+                existing.append(poly if poly.is_valid else poly.buffer(0))
+            except Exception:
+                continue
+
+    tree = STRtree(existing) if existing else None
+    added = 0
+    for i, ring in enumerate(ms_rings):
+        if len(ring) < 3:
+            continue
+        try:
+            poly = Polygon(ring)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+        except Exception:
+            continue
+        if poly.is_empty or poly.area <= 0:
+            continue
+        if tree is not None:
+            # query() is a bounding-box prefilter, so measure the real
+            # intersection. Compare against the *smaller* of the two areas,
+            # not the ML footprint's own: the ML layer often merges a row of
+            # small OSM buildings into one blob, which covers each of them
+            # entirely while they cover only a fraction of it. Judging by
+            # the footprint's own area alone admits that blob and duplicates
+            # every building under it.
+            duplicate = False
+            for j in tree.query(poly):
+                other = existing[j]
+                smaller = min(poly.area, other.area)
+                if smaller <= 0:
+                    continue
+                if poly.intersection(other).area / smaller > ML_OVERLAP_MAX:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+        buildings.append(((None, None), (ring, []), f"ms/{i:05d}"))
+        added += 1
+    return added
+
+
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
                 contours=(), contour_layers=None,
                 poi_points=(), poi_areas=(), context=()):
@@ -700,12 +782,17 @@ def main():
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas")
 
-    if len(buildings) < 20:
-        print("Few OSM buildings — supplementing with Microsoft ML footprints...")
+    if not a.no_ml:
+        # Always supplement, not only when OSM is nearly empty. The old
+        # "fewer than 20" rule meant a mapped area got OSM alone: at Pathum
+        # Wan that drew 274 buildings while 64 further ML footprints sat on
+        # ground OSM has nothing for. A building missing from a site plan is
+        # a worse error than one whose outline came from a model.
+        print("Supplementing with Microsoft ML footprints...")
         ms = fetch_ms_buildings(s, w, n, e, Path(a.dem).parent / "ms_cache")
-        buildings += [((None, None), (pts, []), f"ms/{i:05d}")
-                      for i, pts in enumerate(ms)]
-        print(f"MS footprints added: {len(ms)}")
+        added = merge_ml_footprints(buildings, ms)
+        print(f"MS footprints: {len(ms)} available, {added} added, "
+              f"{len(ms) - added} already mapped in OSM")
 
     # ---- DXF -------------------------------------------------------------
     doc = ezdxf.new("R2010", setup=True)
