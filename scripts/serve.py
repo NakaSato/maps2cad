@@ -440,11 +440,29 @@ pre.log{background:var(--faint);border:1px solid var(--rule);padding:14px 16px;
 overflow-x:auto;font-size:12.5px;line-height:1.65;margin:22px 0 0;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
 .back{display:inline-block;margin-top:26px;font-size:14.5px}
-#busy{display:none;margin-top:20px;font-size:14.5px;color:var(--soft)}
+/* Generating takes 18-105 s depending on whether the DEM tile is cached,
+   so the wait needs a real indicator, not a disabled button. */
+#busy{display:none;margin-top:20px}
 #busy.on{display:block}
-@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
-#busy span{animation:pulse 1.2s ease-in-out infinite}
-@media (prefers-reduced-motion:reduce){#busy span{animation:none}}
+.load{border:1px solid var(--rule);border-left:3px solid var(--survey);
+padding:14px 16px;background:var(--faint)}
+.load-head{display:flex;justify-content:space-between;align-items:baseline;
+gap:12px}
+.load-title{font-size:14.5px;color:var(--ink);font-weight:600}
+.load-time{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:20px;color:var(--survey);font-variant-numeric:tabular-nums;
+letter-spacing:.02em}
+.load-note{font-size:13px;color:var(--soft);margin-top:6px}
+/* Indeterminate: the server sends nothing until it is finished, so a
+   percentage would be invented. A sweep says "working" without lying. */
+.load-bar{position:relative;height:3px;background:var(--rule);margin-top:12px;
+overflow:hidden}
+.load-bar::after{content:"";position:absolute;inset:0 auto 0 0;width:40%;
+background:var(--survey);animation:sweep 1.6s cubic-bezier(.4,0,.2,1) infinite}
+@keyframes sweep{0%{left:-40%}100%{left:100%}}
+.load.over .load-time{color:var(--marker)}
+@media (prefers-reduced-motion:reduce){
+.load-bar::after{animation:none;width:100%;opacity:.4}}
 footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);
 font-size:12.5px;color:var(--soft);font-family:ui-monospace,SFMono-Regular,
 Menlo,monospace}
@@ -491,7 +509,50 @@ def page(title: str, body: str) -> bytes:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title><style>{CSS}</style></head>
-<body><div class="wrap"><div class="frame">{body}</div></div></body></html>
+<body><div class="wrap"><div class="frame">{body}</div></div>
+<script>
+// Any form holding a #busy panel shows it on submit and runs a countdown
+// from that form's estimate. The server streams nothing back until the
+// whole job is done, so this is a timer, not progress — when the estimate
+// runs out it says so and counts up rather than sitting at zero pretending.
+(function(){{
+  function pad(n){{return (n<10?'0':'')+n;}}
+  function clock(s){{var m=Math.floor(Math.abs(s)/60);return (s<0?'+':'')+m+':'+pad(Math.abs(s)%60);}}
+  document.querySelectorAll('form').forEach(function(form){{
+    var busy = form.querySelector('#busy'); if(!busy) return;
+    form.addEventListener('submit', function(){{
+      var btn = form.querySelector('button[type=submit]') || form.querySelector('button');
+      if(btn){{ btn.disabled = true; btn.textContent = btn.dataset.busy || 'Working…'; }}
+      busy.classList.add('on');
+      var panel = busy.querySelector('.load');
+      var est = parseInt(panel && panel.dataset.estimate || '45', 10);
+      var timeEl = busy.querySelector('.load-time');
+      var noteEl = busy.querySelector('.load-over');
+      var left = est, elapsed = 0;
+      if(timeEl) timeEl.textContent = clock(left);
+      setInterval(function(){{
+        elapsed++; left--;
+        if(timeEl) timeEl.textContent = clock(left);
+        if(left < 0 && panel && !panel.classList.contains('over')){{
+          panel.classList.add('over');
+          if(noteEl) noteEl.style.display = 'block';
+        }}
+      }}, 1000);
+    }});
+  }});
+  // Coming back via the back button must not leave a dead spinner up
+  window.addEventListener('pageshow', function(){{
+    document.querySelectorAll('#busy').forEach(function(b){{
+      b.classList.remove('on');
+      var p = b.querySelector('.load'); if(p) p.classList.remove('over');
+    }});
+    document.querySelectorAll('button[data-idle]').forEach(function(b){{
+      b.disabled = false; b.textContent = b.dataset.idle;
+    }});
+  }});
+}})();
+</script>
+</body></html>
 """.encode()
 
 
@@ -535,7 +596,7 @@ DXF in true UTM metres — double-line roads, contours, and every building label
 at its centre — plus a print-ready site map sheet and the building inventory CSV
 that resolves the B### codes.</p>
 {err}
-<form method="post" action="/generate" onsubmit="go()">
+<form method="post" action="/generate">
   <div class="grid g2">
     <div><label for="coords">Coordinates (latitude, longitude)</label>
       <input type="text" id="coords" name="coords" placeholder="15.83384548, 104.39445555"
@@ -587,10 +648,19 @@ that resolves the B### codes.</p>
     <legend>Title block</legend>
     <div class="grid g2">{gov_inputs}</div>
   </fieldset>
-  <button type="submit">Generate</button>
-  <div id="busy"><span>Fetching OpenStreetMap data and rendering — usually
-  15–40 seconds. The first CAD export at a new location also downloads a ~40 MB
-  elevation tile.</span></div>
+  <button type="submit" data-idle="Generate" data-busy="Generating…">
+  Generate</button>
+  <div id="busy"><div class="load" data-estimate="60">
+    <div class="load-head"><span class="load-title">Generating…</span>
+      <span class="load-time">1:00</span></div>
+    <div class="load-bar"></div>
+    <p class="load-note">Querying Overpass, reading the elevation tile,
+    tracing contours and drawing. Measured runs take 18–105 s; the first
+    export in a new 1°×1° square also downloads a ~40 MB elevation tile.</p>
+    <p class="load-note load-over" style="display:none">Over the estimate —
+    still working. A cold start or a fresh elevation tile adds a minute or
+    so. Leave this tab open.</p>
+  </div></div>
 </form>
 <h2>Staged projects <a href="/projects">Browse and edit names →</a></h2>
 <p class="note">Correct building names on a staged project and re-issue the
@@ -602,13 +672,6 @@ Nothing mapped at your site? <a href="/import">Import your own GIS data →</a><
 <script>
 function toggleGov(){{document.getElementById('gov').style.display =
   document.getElementById('profile').value === 'government' ? 'block' : 'none';}}
-function go(){{document.getElementById('busy').classList.add('on');
-  document.querySelector('button').disabled = true;
-  document.querySelector('button').textContent = 'Generating…';}}
-window.addEventListener('pageshow', function(){{
-  var b = document.querySelector('button');
-  b.disabled = false; b.textContent = 'Generate';
-  document.getElementById('busy').classList.remove('on');}});
 </script>""")
 
 
@@ -1011,9 +1074,19 @@ applies to this page only.</p>
         <option value="5000">1:5,000</option>
       </select></div>
     <div style="display:flex;align-items:flex-end">
-      <button type="submit" style="margin-top:0">Re-issue drawing</button>
+      <button type="submit" style="margin-top:0" data-idle="Re-issue drawing"
+        data-busy="Re-issuing…">Re-issue drawing</button>
     </div>
   </div>
+  <div id="busy"><div class="load" data-estimate="15">
+    <div class="load-head"><span class="load-title">Re-issuing…</span>
+      <span class="load-time">0:15</span></div>
+    <div class="load-bar"></div>
+    <p class="load-note">Redrawing from the staging database — plain SELECTs,
+    no Overpass and no elevation tile, so this is the fast path.</p>
+    <p class="load-note load-over" style="display:none">Over the estimate —
+    still working.</p>
+  </div></div>
 </form>
 <a class="back" href="/projects">← Projects</a>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
@@ -1040,7 +1113,7 @@ true UTM metres on the same layers, and merged into a project so it shares a
 drawing with the OSM roads and terrain.</p>
 {banner}
 <form method="post" action="/import" enctype="multipart/form-data"
-      onsubmit="go()">
+     >
   <div class="grid g2">
     <div><label for="files">GIS files</label>
       <input type="file" id="files" name="files" multiple
@@ -1061,21 +1134,23 @@ drawing with the OSM roads and terrain.</p>
       <input type="number" id="width" name="width" step="any" min="0"
              value="6"></div>
   </div>
-  <button type="submit">Import and draw</button>
-  <div id="busy"><span>Reading, reprojecting and drawing…</span></div>
+  <button type="submit" data-idle="Import and draw"
+    data-busy="Importing…">Import and draw</button>
+  <div id="busy"><div class="load" data-estimate="20">
+    <div class="load-head"><span class="load-title">Importing…</span>
+      <span class="load-time">0:20</span></div>
+    <div class="load-bar"></div>
+    <p class="load-note">Reading the file, reprojecting to UTM and drawing.
+    No network fetch, so this is usually quick.</p>
+    <p class="load-note load-over" style="display:none">Over the estimate —
+    still working. A large shapefile takes longer.</p>
+  </div></div>
 </form>
 <p class="note">GeoJSON, GeoPackage, KML, GML, or a .zip holding a shapefile
 set. Files without a declared CRS are assumed to be latitude/longitude.</p>
 <a class="back" href="/">← Generate from OpenStreetMap</a>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
 <script>
-function go(){{document.getElementById('busy').classList.add('on');
-  var b=document.querySelector('button'); b.disabled=true;
-  b.textContent='Importing…';}}
-window.addEventListener('pageshow', function(){{
-  var b=document.querySelector('button');
-  b.disabled=false; b.textContent='Import and draw';
-  document.getElementById('busy').classList.remove('on');}});
 </script>""")
 
 
