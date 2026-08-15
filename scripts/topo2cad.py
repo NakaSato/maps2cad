@@ -71,6 +71,11 @@ def parse_args():
                         "this where OSM and the ML footprints have nothing "
                         "and the buildings have to be traced from imagery "
                         "you own. Must already be in the drawing's UTM CRS.")
+    p.add_argument("--mono", action="store_true",
+                   help="Monochrome: every layer on ACI 7, which plots black "
+                        "on white and shows white on a dark model space. The "
+                        "แผนที่สังเขป schematic look; lineweights still "
+                        "separate a trunk road from a footpath.")
     p.add_argument("--no-ml", action="store_true",
                    help="Do not supplement with Microsoft ML building "
                         "footprints. The default adds every ML footprint "
@@ -395,6 +400,10 @@ LAYERS = {
     "anno_en": "C-ANNO-TEXT-EN",
     # NCS splits topography into index (every 5th, heavier and labelled) and
     # intermediate contours, which is what a reviewer expects to see
+    # staging_contours defaults cad_layer to C-TOPO-CONT, so db2dxf.py
+    # defines it; create it here too or the two layer tables disagree even
+    # when every entity matches. Empty unless a contour arrives undifferentiated.
+    "contour_plain": "C-TOPO-CONT",
     "contour_major": "C-TOPO-MAJR",
     "contour_minor": "C-TOPO-MINR",
     "water": "C-HYDR-WATR",
@@ -499,6 +508,19 @@ def road_edges(points, width_m):
 # of the metre-scale disagreement between a traced and a modelled outline,
 # and well below the >90% a genuine duplicate shows.
 ML_OVERLAP_MAX = 0.5
+
+
+def apply_mono(doc, keep=("0",)):
+    """Force every layer to ACI 7 for a monochrome schematic sheet.
+
+    ACI 7 renders black on a white paper layout and white in a dark model
+    space, so one setting suits both. Lineweights are left alone: colour is
+    what the แผนที่สังเขป style drops, while line weight is what still
+    separates a trunk road from a footpath once it has gone.
+    """
+    for layer in doc.layers:
+        if layer.dxf.name not in keep:
+            layer.dxf.color = 7
 
 
 def merge_ml_footprints(buildings, ms_rings) -> int:
@@ -803,7 +825,8 @@ def main():
     msp = doc.modelspace()
     # (layer, color, lineweight 1/100 mm) — roads/buildings heavy, context thin
     add_text_styles(doc)
-    for key, color, lw in [("contour_major", 8, 25), ("contour_minor", 8, 9),
+    for key, color, lw in [("contour_plain", 8, 13),
+                           ("contour_major", 8, 25), ("contour_minor", 8, 9),
                            ("building", 4, 50), ("anno", 2, 25),
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
@@ -1137,6 +1160,9 @@ def main():
         }, size=a.sheet, scale=a.scale)
         print(f"Sheet: {a.sheet} paper space at 1:{a.scale:,}")
 
+    if a.mono:
+        apply_mono(doc)
+        print("Monochrome: all layers set to ACI 7")
     doc.saveas(a.out)
     print(f"Saved: {a.out}")
 

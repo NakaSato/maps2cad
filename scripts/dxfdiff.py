@@ -43,7 +43,12 @@ def survey(path):
             labels[(e.dxf.layer, e.text)].append(
                 (e.dxf.insert.x, e.dxf.insert.y, e.dxf.rotation))
     styles = {s.dxf.name: getattr(s.dxf, "font", "") for s in doc.styles}
-    return counts, labels, styles
+    # The layer table carries colour, linetype and lineweight — a CENTER
+    # centreline, a DASHED crop line, a monochrome sheet. Two drawings can
+    # hold identical geometry and still plot differently, so compare it.
+    layers = {ly.dxf.name: (ly.dxf.color, ly.dxf.linetype, ly.dxf.lineweight)
+              for ly in doc.layers}
+    return counts, labels, styles, layers
 
 
 def main() -> int:
@@ -59,8 +64,8 @@ def main() -> int:
                    help="print only the verdict")
     a = p.parse_args()
 
-    ca, la, sa = survey(a.a)
-    cb, lb, sb = survey(a.b)
+    ca, la, sa, ya = survey(a.a)
+    cb, lb, sb, yb = survey(a.b)
     problems = 0
 
     if not a.quiet:
@@ -110,6 +115,18 @@ def main() -> int:
     if missing_styles:
         print(f"text styles in one only : {missing_styles}")
         problems += len(missing_styles)
+
+    only_layers = sorted(set(ya) ^ set(yb))
+    if only_layers:
+        print(f"layers in one only      : {only_layers}")
+        problems += len(only_layers)
+    differing = [(n, ya[n], yb[n]) for n in sorted(set(ya) & set(yb))
+                 if ya[n] != yb[n]]
+    if differing:
+        print("layer properties differ (colour, linetype, lineweight):")
+        for name, x, y in differing:
+            print(f"    {name:<18} {x}  vs  {y}")
+        problems += len(differing)
 
     if problems:
         print(f"\nDIFFER — {problems} problem(s)")

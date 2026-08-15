@@ -82,6 +82,19 @@ def offset_along_normal(x, y, rotation_deg, distance):
     return (x - distance * math.sin(rad), y + distance * math.cos(rad))
 
 
+def apply_mono(doc, keep=("0",)):
+    """Force every layer to ACI 7 for a monochrome schematic sheet.
+
+    ACI 7 renders black on a white paper layout and white in a dark model
+    space, so one setting suits both. Lineweights are left alone: colour is
+    what the แผนที่สังเขป style drops, while line weight is what still
+    separates a trunk road from a footpath once it has gone.
+    """
+    for layer in doc.layers:
+        if layer.dxf.name not in keep:
+            layer.dxf.color = 7
+
+
 def parts(geom, wanted):
     if geom.is_empty:
         return
@@ -144,6 +157,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-labels", action="store_true",
                     help="geometry only, leave C-ANNO-TEXT empty")
     ap.add_argument("--no-contours", action="store_true")
+    ap.add_argument("--mono", action="store_true",
+                    help="Monochrome: every layer on ACI 7 (same as "
+                         "topo2cad.py --mono)")
     ap.add_argument("--sheet", choices=["A4", "A3", "A2", "A1", "A0"],
                     help="Add a plottable paper-space layout with title block")
     ap.add_argument("--scale", default="fit",
@@ -330,6 +346,8 @@ def main(argv=None) -> int:
         }, size=a.sheet, scale=a.scale)
         print(f"  sheet: {a.sheet} paper space at 1:{a.scale:,}")
 
+    if a.mono:
+        apply_mono(doc)
     doc.saveas(out)
     conn.close()
     print(f"Project '{proj['name']}' (EPSG:{proj['srid']}, "

@@ -96,6 +96,19 @@ def utm_epsg_for(lat: float, lon: float) -> int:
     return (32600 if lat >= 0 else 32700) + zone
 
 
+def apply_mono(doc, keep=("0",)):
+    """Force every layer to ACI 7 for a monochrome schematic sheet.
+
+    ACI 7 renders black on a white paper layout and white in a dark model
+    space, so one setting suits both. Lineweights are left alone: colour is
+    what the แผนที่สังเขป style drops, while line weight is what still
+    separates a trunk road from a footpath once it has gone.
+    """
+    for layer in doc.layers:
+        if layer.dxf.name not in keep:
+            layer.dxf.color = 7
+
+
 def parts(geom, wanted):
     if geom is None or geom.is_empty:
         return
@@ -223,6 +236,9 @@ def main(argv=None) -> int:
                          "CRS. The DXF stores a path, not the pixels, so keep "
                          "the image beside the .dxf file.")
     ap.add_argument("--no-labels", action="store_true")
+    ap.add_argument("--mono", action="store_true",
+                    help="Monochrome: every layer on ACI 7 (same as "
+                         "topo2cad.py --mono)")
     ap.add_argument("--db", metavar="PATH",
                     help="Also stage these features into the SQLite layer, "
                          "merging into --project if it already exists so your "
@@ -365,6 +381,8 @@ def main(argv=None) -> int:
 
     out = Path(a.out) if a.out else Path(a.input[0]).with_suffix(".dxf")
     out.parent.mkdir(parents=True, exist_ok=True)
+    if a.mono:
+        apply_mono(doc)
     doc.saveas(out)
     print(f"Drawn: {counts['polygon']} polygons, {counts['line']} lines "
           f"(+{counts['edge']} edges), {counts['point']} points, "
