@@ -503,6 +503,11 @@ def main():
     from skimage import measure
     import ezdxf
     from ezdxf.enums import MTextEntityAlignment
+    from shapely.geometry import LineString, MultiLineString
+
+    # The staging layer owns the label-anchor rules; both CAD routes call
+    # the same function so a drawing and its re-issue agree on placement.
+    import stage_db as _anchor_rules
 
     a = parse_args()
     s, w, n, e = bbox_around(a.lat, a.lon, a.radius, a.width, a.height)
@@ -668,8 +673,11 @@ def main():
         msp.add_polyline3d([(x, y, lev) for x, y in pts],
                            dxfattribs={"layer": layer})
         if major:
-            mx, my = pts[len(pts) // 2]
-            mtext(f"{lev:g}", mx, my, 2.5)
+            # Same anchor and rotation the staging layer computes, or the
+            # elevation shifts ~20 m between a drawing and its re-issue
+            mx, my, rot = _anchor_rules.line_label_anchor(LineString(pts))
+            if mx is not None:
+                mtext(f"{lev:g}", mx, my, 2.5, rotation=rot)
 
     # Buildings: outline, then a label centred inside every footprint —
     # its name when OSM has one, otherwise a B### code carried in the
@@ -715,7 +723,6 @@ def main():
 
     # Roads: both carriageway edges (CAD convention) plus a thin centreline,
     # labelled once per unique name with its route number.
-    labeled_roads = set()
     staged_roads = []
     for (th, en), ref, pts, highway, fid in roads:
         name = th or en
@@ -732,31 +739,6 @@ def main():
                                    dxfattribs={"layer": LAYERS["road_edge"]})
             msp.add_lwpolyline(upts,
                                dxfattribs={"layer": LAYERS["road_centre"]})
-            key = name or ref
-            if key and key not in labeled_roads:
-                labeled_roads.add(key)
-                # 50% along the run, rotated to read along the centreline
-                i = len(upts) // 2
-                j = max(i - 1, 0)
-                ang = math.degrees(math.atan2(upts[i][1] - upts[j][1],
-                                              upts[i][0] - upts[j][0]))
-                if ang > 90:
-                    ang -= 180
-                elif ang < -90:
-                    ang += 180
-                mx, my = upts[i]
-                mtext_bilingual(th, en, mx, my, 5.0, rotation=ang)
-                if ref:
-                    # Offset perpendicular so the route number never
-                    # overprints the name at the same insertion point.
-                    # The English name already occupies the first slot
-                    # above the Thai one, so clear that too when present.
-                    off = 6.0 + (5.0 * LANG_OFFSET if th and en else 0.0)
-                    rx, ry = offset_along_normal(mx, my, ang, off)
-                    text = f"ทล.{ref}" if not name else ref
-                    mtext(text, rx, ry, 4.0, rotation=ang,
-                          layer=LAYERS["anno_th" if is_thai(text)
-                                       else "anno_en"])
         if road_runs:
             staged_roads.append({
                 "feature_id": fid, "highway_type": highway,
@@ -764,13 +746,62 @@ def main():
                 "name_th": th or "", "name_en": en or "",
                 "carriageway_m": width_m, "runs": road_runs})
 
+    # Linear labels are anchored by the same function the staging layer uses,
+    # so a drawing and its re-issue put the name in the same place. Anchoring
+    # on the first clipped run instead moved names by up to 287 m on a 770 m
+    # extent — a third of the sheet — because staging picks the longest.
+    def runs_geom(runs):
+        lines = [LineString(r) for r in runs if len(r) >= 2]
+        if not lines:
+            return None
+        return lines[0] if len(lines) == 1 else MultiLineString(lines)
+
+    def label_longest(records, key_of, emit):
+        """One label per unique key, placed on the longest feature carrying
+        it — the rule cad_labels applies with ROW_NUMBER ... ORDER BY
+        length_m DESC."""
+        best = {}
+        for rec in records:
+            key = key_of(rec)
+            if not key:
+                continue
+            geom = runs_geom(rec["runs"])
+            if geom is None:
+                continue
+            if key not in best or geom.length > best[key][0].length:
+                best[key] = (geom, rec)
+        for geom, rec in best.values():
+            lx, ly, rot = _anchor_rules.line_label_anchor(geom)
+            if lx is not None:
+                emit(rec, lx, ly, rot)
+
+    def emit_road_name(rec, x, y, rot):
+        mtext_bilingual(rec["name_th"] or None, rec["name_en"] or None,
+                        x, y, 5.0, rotation=rot)
+
+    def emit_road_ref(rec, x, y, rot):
+        # Mirrors the road_ref branch of cad_labels: an unnamed road carries
+        # the Thai 'ทล.' prefix and sits on the anchor, a named one shows a
+        # bare number clear of the name stack above it.
+        th, en, name = rec["name_th"], rec["name_en"], rec["road_name"]
+        if not name:
+            text, off = f"ทล.{rec['road_ref']}", 0.0
+        else:
+            text = rec["road_ref"]
+            off = 6.0 + (5.0 * LANG_OFFSET if th and en else 0.0)
+        rx, ry = offset_along_normal(x, y, rot, off)
+        mtext(text, rx, ry, 4.0, rotation=rot,
+              layer=LAYERS["anno_th" if is_thai(text) else "anno_en"])
+
+    label_longest(staged_roads, lambda r: r["road_name"], emit_road_name)
+    label_longest(staged_roads, lambda r: r["road_ref"], emit_road_ref)
+
     staged_context = []
 
     def draw_lines(features, kind, layer, label=False, text_h=4.0):
         """Context linework — canals, parks, railways, walls. Each feature
         may survive clipping as several runs; every run is staged so
         db2dxf.py can redraw the same polylines."""
-        labeled = set()
         for (th, en), pts, fid in sorted(features, key=lambda f: f[2]):
             name = th or en
             runs = []
@@ -781,10 +812,6 @@ def main():
                 msp.add_lwpolyline(upts, close=closed,
                                    dxfattribs={"layer": layer})
                 runs.append(upts)
-                if label and name and name not in labeled:
-                    labeled.add(name)
-                    mid = upts[len(upts) // 2]
-                    mtext_bilingual(th, en, mid[0], mid[1], text_h)
             if runs:
                 staged_context.append({
                     "feature_id": fid, "kind": kind, "cad_layer": layer,
@@ -796,6 +823,15 @@ def main():
     draw_lines(green, "green", LAYERS["green"], label=True)
     draw_lines(rails, "rail", LAYERS["rail"])
     draw_lines(barriers, "barrier", LAYERS["barrier"])
+
+    # Context names dedupe within their own kind, matching the view's
+    # PARTITION BY project_id, kind, display_name.
+    label_longest(
+        [r for r in staged_context if r["labelled"]],
+        lambda r: (r["kind"], r["display_name"]) if r["display_name"] else None,
+        lambda r, x, y, rot: mtext_bilingual(
+            r["name_th"] or None, r["name_en"] or None, x, y, 4.0,
+            rotation=rot))
 
     # Landmark areas: outline plus a name at a guaranteed interior point,
     # drawn before the point symbols so a symbol inside a campus stays on top
@@ -831,12 +867,16 @@ def main():
                             "x": px, "y": py,
                             "latitude": plat, "longitude": plon})
 
-    # North arrow at top-right corner (drawing is true-north-up in UTM)
-    nx, ny = to_utm.transform(e, n)
-    sx0, sy0 = to_utm.transform(w, s)
-    span_x, span_y = nx - sx0, ny - sy0
-    ax_, ay = nx - span_x * 0.03, ny - span_y * 0.05
-    sz = min(span_x, span_y) * 0.02
+    # North arrow at top-right corner (drawing is true-north-up in UTM).
+    # Sized from the nominal extent rather than the projected bbox corners,
+    # because db2dxf.py only has the nominal metres to work from and the two
+    # differ by ~2 m — bbox_around approximates a degree as 111,320 m.
+    cx, cy = to_utm.transform(a.lon, a.lat)
+    ext_w = a.width or (a.radius * 2)
+    ext_h = a.height or (a.radius * 2)
+    ax_ = cx + (ext_w / 2) * 0.94
+    ay = cy + (ext_h / 2) * 0.90
+    sz = min(ext_w, ext_h) * 0.02
     msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": LAYERS["north"]})
     msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6),
                    (ax_ + sz * 0.3, ay - sz * 0.6),
@@ -844,7 +884,6 @@ def main():
                   dxfattribs={"layer": LAYERS["north"]})
     mtext("N", ax_, ay + sz * 1.5, sz * 0.6)
 
-    cx, cy = to_utm.transform(a.lon, a.lat)
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
     mtext(f"GPS {a.lat},{a.lon}", cx + 40, cy, 5.0)
 

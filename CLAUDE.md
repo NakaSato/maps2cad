@@ -178,9 +178,20 @@ drawing. `--names-only` opts into the stricter behaviour.
 **Two ways to reach a DXF, and they must agree.** `topo2cad.py` draws during
 extraction; `db2dxf.py` draws from the SQLite staging layer (`stage_db.py`)
 using only SELECTs, because label anchors and rotations are computed at staging
-time. Both emit the same NCS layers and the same entity counts — if you change
-drawing rules in one, change the other, and check with a layer-count diff of the
-two outputs. The language split lives in the `cad_labels` view: it emits one
+time. Both emit the same NCS layers, the same entity counts **and the same
+label positions** — if you change drawing rules in one, change the other, and
+prove it with `dxfdiff.py a.dxf b.dxf`, which exits non-zero on any
+difference. Counting entities is not enough on its own: every label can be
+present in both drawings and still sit up to 287 m apart, which is what that
+tool's position pass exists to catch. Linear labels (roads, canals, parks,
+contours) are therefore anchored by calling `stage_db.line_label_anchor()`
+from *both* routes, and deduped by the same "longest feature carrying this
+name" rule the `cad_labels` view applies with `ROW_NUMBER() ... ORDER BY
+length_m DESC`. Do not reintroduce a "label the first clipped run" shortcut
+in `topo2cad.py`; that is precisely the 287 m. Drawing furniture is sized
+from the *nominal* extent in metres, not the projected bbox corners, because
+`db2dxf.py` has only the nominal figure and `bbox_around()` approximates a
+degree as 111,320 m — worth ~2 m on a 770 m extent. The language split lives in the `cad_labels` view: it emits one
 row per language plus a `label_offset` in metres that `db2dxf.py` applies
 perpendicular to `label_rotation`, so the anchor stored per feature stays the
 feature's own point. SQLite has no regex, so any script test happens in Python
