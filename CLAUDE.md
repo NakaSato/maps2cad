@@ -93,11 +93,22 @@ at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows
 1. Expect the question "why does the PDF have fewer buildings than the CAD file"
 and answer with this, not with a bug hunt.
 
-**Default extent is 770 × 410 m** across the CLI tools and the web form, chosen
-because it fills the A3 standard map frame at exactly 1:2000 — a round scale, so
-the title block's มาตราส่วน is one a reviewing agency expects. Changing the frame
-proportions or this default breaks that relationship; recompute before touching
-either. `topo2cad.py` still accepts `--radius` for a square box.
+**Default extent is 560 × 520 m** across the CLI tools and the web form, and
+the default sheet is **A3**. A3 is 420 × 297 mm; after the title block and
+margins `sheet.py` leaves a 290 × 273 mm viewport, so 1:2000 holds at most
+580 × 546 m. 560 × 520 plots at 280 × 260 mm — a round scale, so the title
+block's มาตราส่วน is one a reviewing agency expects, with ~5 mm of air on
+each side and an aspect (1.08:1) close to the viewport's own 1.06:1 so the
+paper is used in both directions. Changing the frame proportions, the
+title-block width or this default breaks that relationship; recompute with
+`fitting_scale()` before touching any of them. `topo2cad.py` still accepts
+`--radius` for a square box.
+
+The previous default was 770 × 410 m, and its comment claimed the same
+1:2000-on-A3 property. That was true only of a bare map frame: 770 m needs
+385 mm against a 290 mm viewport, so `fitting_scale()` actually returned
+1:5000, and the CAD sheet default was A2 to compensate. Do not restore it
+without redoing the arithmetic.
 
 **CAD output follows the NCS/AIA layer convention** (`C-BLDG-OUTL`,
 `C-ROAD-CNTR`, `C-ROAD-EDGE`, `C-ANNO-TEXT`, …) — see `LAYERS` in
@@ -172,9 +183,10 @@ Overpass or the DEM.
 **Sheets are paper space, drawings are model space.** `sheet.py` (imported by
 `topo2cad.py` and `db2dxf.py`, like `topo2cad.py` is by `mapposter.py`) builds a
 paper-space layout named `SHEET` with a viewport locked to a plot scale.
-`fitting_scale()` accounts for the title-block strip, which is why 770 × 410 m
-does not plot at 1:2000 on A3 — only A2 has the width. Never let a sheet crop
-the extent silently; `add_sheet` warns with the scale that would fit. Render the
+`fitting_scale()` accounts for the title-block strip, which is why the usable
+A3 viewport is 290 × 273 mm rather than the full 420 × 297 mm — and why the
+old 770 × 410 m default fell to 1:5000 there. Never let a sheet crop the
+extent silently; `add_sheet` warns with the scale that would fit. Render the
 sheet with `dxf2pdf.py --layout SHEET`, not the default model-space plot.
 
 **Field-verified names are not staged data.** They live in `verified_names`

@@ -149,9 +149,10 @@ def parse_form(form: dict[str, list[str]]) -> dict:
 
     lat = number(lat_s, "Latitude", -90, 90)
     lon = number(lon_s, "Longitude", -180, 180)
-    # 770 x 410 m prints at exactly 1:2000 on an A3 sheet
-    width = number(one("width", "770"), "Width", 20, 20000)
-    height = number(one("height", "410"), "Height", 20, 20000)
+    # 560 x 520 m plots at 280 x 260 mm — a round 1:2000 inside the
+    # 290 x 273 mm viewport an A3 sheet leaves after its title block
+    width = number(one("width", "560"), "Width", 20, 20000)
+    height = number(one("height", "520"), "Height", 20, 20000)
 
     export = one("export", "both")
     if export not in ("both", "cad", "map"):
@@ -166,9 +167,11 @@ def parse_form(form: dict[str, list[str]]) -> dict:
 
     # Plottable paper-space sheet for the DXF (separate from the site map's
     # sheet size above, which is a raster/PDF page)
-    cad_sheet = one("cad_sheet", "A2")
+    # A3 now that the default extent fits it at 1:2000; it was A2 only
+    # because 770 m of width overflowed the A3 viewport.
+    cad_sheet = one("cad_sheet", "A3")
     if cad_sheet not in ("", "none", "A4", "A3", "A2", "A1", "A0"):
-        cad_sheet = "A2"
+        cad_sheet = "A3"
     cad_scale = one("cad_scale", "fit")
     if cad_scale != "fit" and not cad_scale.isdigit():
         cad_scale = "fit"
@@ -400,6 +403,13 @@ letter-spacing:.1em;color:var(--soft);display:block;font-weight:400}
 .card .dlicon{border-left:1px solid var(--rule);display:flex;align-items:center;
 padding:0 12px;font-size:16px;color:var(--soft)}
 .card .dlicon:hover{color:var(--survey);background:var(--faint)}
+/* The CAD export is what most runs are for, so it reads as the one action
+   on the page rather than as one tile among five. */
+.card.primary{border-color:var(--survey);border-width:1.5px}
+.card.primary>a{color:var(--survey);font-weight:600}
+.card.primary a b{color:var(--survey);opacity:.75;font-weight:400}
+.card.primary>a:hover{background:var(--faint)}
+.card.primary .dlicon{border-left-color:var(--survey)}
 .files a:focus-visible,.hist a:focus-visible{outline:2px solid var(--survey);
 outline-offset:1px}
 dl.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
@@ -513,10 +523,10 @@ that resolves the B### codes.</p>
     <div class="grid g2" style="gap:12px">
       <div><label for="width">Width (m)</label>
         <input type="number" id="width" name="width" step="any" min="20"
-               value="{val('width', 770)}"></div>
+               value="{val('width', 560)}"></div>
       <div><label for="height">Height (m)</label>
         <input type="number" id="height" name="height" step="any" min="20"
-               value="{val('height', 410)}"></div>
+               value="{val('height', 520)}"></div>
     </div>
   </div>
   <div class="grid g3" style="margin-top:16px">
@@ -539,7 +549,7 @@ that resolves the B### codes.</p>
   <div class="grid g3" style="margin-top:16px">
     <div><label for="cad_sheet">CAD sheet (paper space)</label>
       <select id="cad_sheet" name="cad_sheet">
-        {opts_sel(["A2", "A3", "A1", "A0", "A4"], v.get('cad_sheet', 'A2'))}
+        {opts_sel(["A3", "A2", "A1", "A0", "A4"], v.get('cad_sheet', 'A3'))}
         <option value="none"{" selected" if v.get('cad_sheet') == 'none' else ""}>No sheet — model space only</option>
       </select></div>
     <div><label for="cad_scale">Plot scale</label>
@@ -593,6 +603,7 @@ def result_page(rec: dict) -> bytes:
                    'alt="Rendered site map"></figure>')
 
     def file_card(kind, tag, label):
+        """Preview is the big target; the small icon downloads."""
         if not rec.get(kind):
             return ""
         return (f'<span class="card"><a href="/view/{jid}/{kind}" '
@@ -600,10 +611,28 @@ def result_page(rec: dict) -> bytes:
                 f'<a class="dlicon" href="/file/{jid}/{kind}" download '
                 f'title="Download {label}">⤓</a></span>')
 
+    def download_card(kind, tag, label, preview_title):
+        """The other way round, for a file with no browser viewer: clicking
+        the card downloads it, and the plot preview moves to the small
+        icon. Clicking 'CAD' and getting a PDF back is the wrong default."""
+        if not rec.get(kind):
+            return ""
+        preview = ""
+        if rec.get("plot"):
+            preview = (f'<a class="dlicon" href="/view/{jid}/{kind}" '
+                       f'target="_blank" rel="noopener" '
+                       f'title="{preview_title}">◱</a>')
+        return (f'<span class="card primary">'
+                f'<a href="/file/{jid}/{kind}" download>'
+                f'<b>{tag}</b>⤓&nbsp; {label}</a>{preview}</span>')
+
     dxf_tag = (f'CAD · {Path(rec["dxf"]).stat().st_size / 1024:.0f} KB'
                if rec.get("dxf") else "CAD")
     links = [
-        file_card("dxf", dxf_tag, "DXF drawing"),
+        download_card("dxf", dxf_tag, "Download DXF",
+                      "Preview the A3 plot instead"),
+        # Kept so the plot PDF still has a download of its own, not only the
+        # preview reachable from the DXF card
         file_card("plot", "A3 plot", "Plot preview"),
         file_card("pdf", "Vector", "Site map PDF"),
         file_card("png", "300 DPI", "Site map PNG"),
@@ -941,7 +970,7 @@ applies to this page only.</p>
   <div class="grid g3">
     <div><label for="cad_sheet">Sheet</label>
       <select id="cad_sheet" name="cad_sheet">
-        <option value="A2">A2</option><option value="A3">A3</option>
+        <option value="A3">A3</option><option value="A2">A2</option>
         <option value="A1">A1</option><option value="A0">A0</option>
         <option value="A4">A4</option>
         <option value="none">No sheet — model space only</option>
@@ -1217,10 +1246,10 @@ drawing.</p>
 
     def redraw(self, pid: int):
         form = self.read_form()
-        sheet = (form.get("cad_sheet") or ["A2"])[0].strip()
+        sheet = (form.get("cad_sheet") or ["A3"])[0].strip()
         scale = (form.get("cad_scale") or ["fit"])[0].strip()
         if sheet not in ("A4", "A3", "A2", "A1", "A0", "none"):
-            sheet = "A2"
+            sheet = "A3"
         if scale != "fit" and not scale.isdigit():
             scale = "fit"
         run = OUT / f"project{pid}-{datetime.now():%Y%m%d-%H%M%S}"

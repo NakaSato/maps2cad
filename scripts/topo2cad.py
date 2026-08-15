@@ -73,10 +73,14 @@ def parse_args():
     a = p.parse_args()
     if not a.out and not a.outdir:
         p.error("give either --out <file.dxf> or --outdir <dir>")
-    # Default extent: 770 x 410 m, which prints at exactly 1:2000 on A3.
+    # Default extent: 560 x 520 m. A3 is 420 x 297 mm, and after the title
+    # block and margins sheet.py leaves a 290 x 273 mm viewport, so 1:2000
+    # holds at most 580 x 546 m. 560 x 520 plots at 280 x 260 mm — a round
+    # scale with ~5 mm of air on each side, and near the viewport's own
+    # 1.06:1 aspect so the paper is used in both directions.
     # An explicit --radius still wins, so square boxes keep working.
     if a.radius is None and a.width is None and a.height is None:
-        a.width, a.height = 770.0, 410.0
+        a.width, a.height = 560.0, 520.0
     if a.radius is not None and a.width is None and a.height is None:
         pass          # radius-only run: bbox_around uses the radius
     if a.outdir:
