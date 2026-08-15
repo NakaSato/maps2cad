@@ -246,7 +246,14 @@ using only SELECTs, because label anchors and rotations are computed at staging
 time. Both emit the same NCS layers, the same entity counts **and the same
 label positions** — if you change drawing rules in one, change the other, and
 prove it with `dxfdiff.py a.dxf b.dxf`, which exits non-zero on any
-difference. Counting entities is not enough on its own: every label can be
+difference. **`dxfdiff` proves the two routes agree, not that either is
+right** — it reported IDENTICAL while both dropped building courtyards, and
+again while both skipped 69 ML footprints per site, because two
+implementations of one mistake look like agreement. `dxfaudit.py` is the
+other half: it re-queries Overpass for the same extent and compares the
+drawing against the source, so a silent loss shows as a shortfall and exits
+non-zero. Run it before a submission, and after any change to what gets
+drawn. Counting entities is not enough on its own: every label can be
 present in both drawings and still sit up to 287 m apart, which is what that
 tool's position pass exists to catch. Linear labels (roads, canals, parks,
 contours) are therefore anchored by calling `stage_db.line_label_anchor()`
