@@ -17,6 +17,7 @@ puts it on without the block needing to know the layer names.
 from __future__ import annotations
 
 NORTH_ARROW = "NORTH_ARROW"
+POI_SYMBOL = "POI_SYMB"
 
 
 def ensure_north_arrow(doc, style: str = "EN_STYLE") -> str:
@@ -43,4 +44,26 @@ def add_north_arrow(doc, layout, x: float, y: float, size: float,
     units. The drawing is true-north-up in UTM, so it is never rotated."""
     ensure_north_arrow(doc, style)
     return layout.add_blockref(NORTH_ARROW, insert=(x, y), dxfattribs={
+        "layer": layer, "xscale": size, "yscale": size, "zscale": size})
+
+
+def ensure_poi_symbol(doc) -> str:
+    """Define the landmark point symbol once per document.
+
+    A circle of radius 1 about the origin, scaled at insertion. As a block
+    rather than a loose circle, a drafter can redefine POI_SYMB once and
+    every landmark on the drawing restyles with it — a triangle for a
+    temple, a cross for a hospital — without touching the geometry.
+    """
+    if POI_SYMBOL in doc.blocks:
+        return POI_SYMBOL
+    blk = doc.blocks.new(name=POI_SYMBOL)
+    blk.add_circle((0, 0), radius=1.0, dxfattribs={"layer": "0"})
+    return POI_SYMBOL
+
+
+def add_poi_symbol(doc, layout, x: float, y: float, size: float, layer: str):
+    """Place a landmark symbol at (x, y); `size` is the circle radius."""
+    ensure_poi_symbol(doc)
+    return layout.add_blockref(POI_SYMBOL, insert=(x, y), dxfattribs={
         "layer": layer, "xscale": size, "yscale": size, "zscale": size})

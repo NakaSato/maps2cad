@@ -510,10 +510,15 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
 
     b_rows = []
     for row in inventory:
-        pts = building_geoms.get(row["feature_id"])
-        if not pts or len(pts) < 3:
+        rings = building_geoms.get(row["feature_id"])
+        if not rings:
             continue
-        poly = Polygon(pts)
+        pts, holes = rings
+        if len(pts) < 3:
+            continue
+        # Holes are staged with the polygon, so db2dxf.py's interiors loop
+        # redraws the same courtyards rather than a solid footprint.
+        poly = Polygon(pts, holes)
         if not poly.is_valid:
             poly = poly.buffer(0)
         if poly.is_empty:
@@ -638,7 +643,8 @@ def main():
             name = best_name(tags)
             fid = f"{el['type']}/{el['id']}"
             if "building" in tags:
-                buildings.append((names_by_lang(tags), pts,
+                # (exterior, holes) — a way has one ring by definition
+                buildings.append((names_by_lang(tags), (pts, []),
                                   f"{el['type']}/{el['id']}"))
             elif "highway" in tags:
                 roads.append((names_by_lang(tags), tags.get("ref"), pts,
@@ -660,17 +666,36 @@ def main():
                                   f"{el['type']}/{el['id']}", kind_of(tags)))
         elif el["type"] == "relation":
             if "building" in tags or kind_of(tags):
+                # A multipolygon carries its courtyards as `inner` members.
+                # Reading only the first `outer` — as this did — draws a
+                # temple or a mall with its atrium filled in solid.
+                outers, inners = [], []
                 for m in el.get("members", []):
-                    if m.get("role") == "outer" and "geometry" in m:
-                        pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
-                        if "building" in tags:
-                            buildings.append((names_by_lang(tags), pts,
-                                              f"relation/{el['id']}"))
-                        elif len(pts) >= 3:
-                            site_pois.append(
-                                (names_by_lang(tags), pts,
-                                 f"relation/{el['id']}", kind_of(tags)))
-                        break
+                    if "geometry" not in m:
+                        continue
+                    ring = [(g["lon"], g["lat"]) for g in m["geometry"]]
+                    if len(ring) < 3:
+                        continue
+                    if m.get("role") == "outer":
+                        outers.append(ring)
+                    elif m.get("role") == "inner":
+                        inners.append(ring)
+                if not outers:
+                    continue
+                fid = f"relation/{el['id']}"
+                # Several outers is several separate buildings sharing one
+                # relation; the holes belong to whichever contains them, and
+                # attaching them all to the first is only right when there
+                # is one, so multi-outer relations keep their rings solid.
+                for i, outer in enumerate(outers):
+                    holes = inners if len(outers) == 1 else []
+                    part_id = fid if len(outers) == 1 else f"{fid}/{i}"
+                    if "building" in tags:
+                        buildings.append((names_by_lang(tags),
+                                          (outer, holes), part_id))
+                    else:
+                        site_pois.append((names_by_lang(tags), outer,
+                                          part_id, kind_of(tags)))
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas")
@@ -678,7 +703,7 @@ def main():
     if len(buildings) < 20:
         print("Few OSM buildings — supplementing with Microsoft ML footprints...")
         ms = fetch_ms_buildings(s, w, n, e, Path(a.dem).parent / "ms_cache")
-        buildings += [((None, None), pts, f"ms/{i:05d}")
+        buildings += [((None, None), (pts, []), f"ms/{i:05d}")
                       for i, pts in enumerate(ms)]
         print(f"MS footprints added: {len(ms)}")
 
@@ -785,11 +810,20 @@ def main():
     inventory = []
     staged_geoms = {}
     counter = 0
-    for (th, en), pts, fid in sorted(buildings, key=lambda b: b[2]):
-        ux, uy = to_utm.transform(*zip(*pts))
+    for (th, en), (ext, holes), fid in sorted(buildings, key=lambda b: b[2]):
+        ux, uy = to_utm.transform(*zip(*ext))
         upts = list(zip(ux, uy))
         msp.add_lwpolyline(upts, close=True,
                            dxfattribs={"layer": LAYERS["building"]})
+        # Courtyards stay open: each inner ring is its own closed polyline
+        # on the same layer, which is how a CAD island reads.
+        uholes = []
+        for hole in holes:
+            hx, hy = to_utm.transform(*zip(*hole))
+            hpts = list(zip(hx, hy))
+            msp.add_lwpolyline(hpts, close=True,
+                               dxfattribs={"layer": LAYERS["building"]})
+            uholes.append(hpts)
         name = th or en
         code = ""
         if not name:
@@ -800,8 +834,11 @@ def main():
         # buildings in a dense extent), so anchor on a guaranteed interior
         # point instead — equivalent to PostGIS ST_PointOnSurface.
         try:
-            poly = Polygon(upts)
-            pt = poly.representative_point() if poly.is_valid else None
+            # With the holes, so a label never lands in the open courtyard
+            poly = Polygon(upts, uholes)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            pt = poly.representative_point() if not poly.is_empty else None
             cx, cy = (pt.x, pt.y) if pt else (float(np.mean(ux)),
                                               float(np.mean(uy)))
         except Exception:
@@ -809,7 +846,7 @@ def main():
         if name or not a.names_only:
             mtext_bilingual(th, en, cx, cy, 3.5,
                             fallback=None if a.names_only else code)
-        staged_geoms[fid] = upts
+        staged_geoms[fid] = (upts, uholes)
         blon, blat = to_wgs.transform(cx, cy)
         inventory.append({"feature_id": fid, "code": code,
                           "osm_name": name or "", "display_name": label,
@@ -961,7 +998,8 @@ def main():
     staged_pois = []
     for (th, en), plon, plat, kind, fid in sorted(pois, key=lambda p: p[4]):
         px, py = to_utm.transform(plon, plat)
-        msp.add_circle((px, py), radius=2, dxfattribs={"layer": LAYERS["poi"]})
+        import blocks
+        blocks.add_poi_symbol(doc, msp, px, py, 2.0, LAYERS["poi"])
         mtext_bilingual(th, en, px + 3, py, 4.0)
         staged_pois.append({"feature_id": fid,
                             "poi_key": kind[0], "poi_type": kind[1],

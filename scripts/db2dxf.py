@@ -228,8 +228,8 @@ def main(argv=None) -> int:
     for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_pois"
                             " WHERE project_id = ?", (pid,)):
         for pt in parts(wkb.loads(row["geom_wkb"]), "Point"):
-            msp.add_circle((pt.x, pt.y), radius=2,
-                           dxfattribs={"layer": row["cad_layer"]})
+            import blocks
+            blocks.add_poi_symbol(doc, msp, pt.x, pt.y, 2.0, row["cad_layer"])
             n_p += 1
 
     n_c = 0

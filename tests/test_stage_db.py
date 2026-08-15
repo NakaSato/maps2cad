@@ -636,3 +636,44 @@ def test_unnamed_context_draws_without_a_label(db):
                         ).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
                         " feature_class = 'context'").fetchone()[0] == 0
+
+
+# ------------------------------------------------------ building holes
+def test_courtyard_survives_staging_and_redraw(db):
+    """A multipolygon building carries its courtyard as an inner ring.
+    Storing only the exterior draws a temple or a mall with its atrium
+    filled in solid."""
+    from shapely import wkb
+    from shapely.geometry import Polygon
+
+    conn, pid = db
+    outer = [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)]
+    hole = [(40, 40), (60, 40), (60, 60), (40, 60), (40, 40)]
+    stage_buildings(conn, pid, [{
+        "feature_id": "relation/1", "source": "openstreetmap",
+        "osm_name": "วัดมีลานกลาง", "code": "", "display_name": "วัดมีลานกลาง",
+        "building_type": None, "geom": Polygon(outer, [hole])}])
+    back = wkb.loads(conn.execute("SELECT geom_wkb FROM staging_buildings"
+                                  ).fetchone()[0])
+    assert len(back.interiors) == 1
+    assert back.area == pytest.approx(100 * 100 - 20 * 20)
+
+
+def test_label_anchor_avoids_the_courtyard(db):
+    """representative_point() on a holed polygon must land in the built
+    part, not in the open middle where the label would sit on nothing."""
+    from shapely.geometry import Point, Polygon
+
+    conn, pid = db
+    outer = [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)]
+    hole = [(20, 20), (80, 20), (80, 80), (20, 80), (20, 20)]
+    poly = Polygon(outer, [hole])
+    stage_buildings(conn, pid, [{
+        "feature_id": "relation/2", "source": "openstreetmap",
+        "osm_name": "", "code": "B001", "display_name": "B001",
+        "building_type": None, "geom": poly}])
+    r = conn.execute("SELECT label_x, label_y FROM staging_buildings"
+                     ).fetchone()
+    anchor = Point(r["label_x"], r["label_y"])
+    assert poly.contains(anchor)          # inside the ring of building...
+    assert not Polygon(hole).contains(anchor)   # ...not in the courtyard

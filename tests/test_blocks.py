@@ -73,3 +73,28 @@ def test_missing_text_style_falls_back_rather_than_raising():
     label = [e for e in doc.blocks.get(blocks.NORTH_ARROW)
              if e.dxftype() == "MTEXT"][0]
     assert label.dxf.style == "Standard"
+
+
+# ------------------------------------------------------- landmark symbol
+def test_poi_symbol_defined_once_and_unit_sized():
+    doc = ezdxf.new("R2010")
+    assert blocks.ensure_poi_symbol(doc) == blocks.POI_SYMBOL
+    blocks.ensure_poi_symbol(doc)
+    assert sum(1 for b in doc.blocks if b.name == blocks.POI_SYMBOL) == 1
+    circle = list(doc.blocks.get(blocks.POI_SYMBOL))[0]
+    assert circle.dxf.radius == pytest.approx(1.0)
+    assert circle.dxf.layer == "0"
+
+
+def test_poi_insert_scales_and_takes_its_layer():
+    """One definition, so redefining POI_SYMB restyles every landmark on
+    the drawing at once."""
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    for x in (100.0, 200.0, 300.0):
+        blocks.add_poi_symbol(doc, msp, x, 50.0, 2.0, "C-ANNO-SYMB")
+    ins = [e for e in msp if e.dxftype() == "INSERT"]
+    assert len(ins) == 3
+    assert sum(1 for b in doc.blocks if b.name == blocks.POI_SYMBOL) == 1
+    assert all(e.dxf.xscale == pytest.approx(2.0) for e in ins)
+    assert all(e.dxf.layer == "C-ANNO-SYMB" for e in ins)
