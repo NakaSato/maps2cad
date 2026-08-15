@@ -25,9 +25,11 @@ import hashlib
 import html
 import json
 import math
+import http.cookies
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -52,6 +54,16 @@ STAGING_DB = BASE.parent / "output" / "staging.sqlite"
 # Generated sheets live under the project's gitignored output/ directory
 OUT = BASE.parent / "output" / "web"
 DEM_DIR = BASE.parent / "dem"
+
+# Google sign-in is optional: with the environment variables unset the app
+# behaves exactly as before and no Drive button is rendered. Imported from
+# the same directory, like sheet.py is by topo2cad.py.
+sys.path.insert(0, str(BASE))
+import gdrive                                              # noqa: E402
+
+SESSIONS = None            # SessionStore, created in main() under data-dir
+PENDING = {}               # oauth state -> (verifier, return_path)
+PENDING_LOCK = threading.Lock()
 DEM_URL = ("https://copernicus-dem-30m.s3.amazonaws.com/"
            "Copernicus_DSM_COG_10_{ns}_00_{ew}_00_DEM/"
            "Copernicus_DSM_COG_10_{ns}_00_{ew}_00_DEM.tif")
@@ -647,6 +659,12 @@ def result_page(rec: dict) -> bytes:
         file_card("csv", "Inventory", "Buildings CSV"),
     ]
 
+    # Only offered when the server has Google credentials — an unconfigured
+    # button that always errors is worse than no button.
+    if gdrive.configured() and rec.get("dxf"):
+        links.append(f'<span class="card"><a href="/drive/{jid}">'
+                     f'<b>Google Drive</b>Save this run</a></span>')
+
     zone = utm_zone_label(p["lat"], p["lon"])
     heading = ("CAD export" if p["export"] == "cad"
                else p["title"] if p["profile"] == "standard"
@@ -1078,6 +1096,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ------------------------------------------------------ Google session
+    def session_id(self):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            return http.cookies.SimpleCookie(raw).get("m2c_sid").value
+        except (AttributeError, http.cookies.CookieError):
+            return None
+
+    def google_session(self):
+        """The signed-in Google session for this browser, or None."""
+        if SESSIONS is None:
+            return None
+        return SESSIONS.get(self.session_id())
+
+    def _redirect(self, to, extra=None):
+        headers = {"Location": to}
+        headers.update(extra or {})
+        self._send(b"", 303, "text/plain", headers)
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
@@ -1114,15 +1153,116 @@ class Handler(BaseHTTPRequestHandler):
                            else 404)
             else:
                 self._send(b"Not found", 404, "text/plain")
+        elif path == "/auth/google":
+            self.auth_start()
+        elif path == "/auth/callback":
+            self.auth_callback()
+        elif path == "/auth/logout":
+            sid = self.session_id()
+            if SESSIONS is not None and sid:
+                SESSIONS.drop(sid)
+            self._redirect("/", {"Set-Cookie":
+                                 "m2c_sid=; Path=/; Max-Age=0; HttpOnly"})
         elif path == "/health":
             self._send(b'{"ok":true}', ctype="application/json")
         elif path.startswith("/file/"):
             self.serve_file(path)
+        elif path.startswith("/drive/"):
+            self.drive_upload(path.strip("/").split("/")[-1])
         elif path.startswith("/view/"):
             self.serve_preview(path)
         else:
             self._send(page("Not found", "<h1>Not found</h1>"
                             '<a class="back" href="/">← Back</a>'), 404)
+
+    # ------------------------------------------------------------ Google
+    def auth_start(self):
+        """Send the browser to Google, remembering where to come back to."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        back = (q.get("next") or ["/"])[0]
+        if not back.startswith("/"):
+            back = "/"          # never bounce to another origin
+        try:
+            url, state, verifier = gdrive.start_login()
+        except gdrive.DriveError as e:
+            return self._send(page("Google sign-in", f"<h1>Not configured</h1>"
+                                   f"<p class='lede'>{html.escape(str(e))}</p>"
+                                   '<a class="back" href="/">← Back</a>'), 503)
+        with PENDING_LOCK:
+            PENDING[state] = (verifier, back)
+        self._redirect(url)
+
+    def auth_callback(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        err = (q.get("error") or [None])[0]
+        state = (q.get("state") or [None])[0]
+        code = (q.get("code") or [None])[0]
+        with PENDING_LOCK:
+            pending = PENDING.pop(state, None) if state else None
+        if err or not code or pending is None:
+            # A missing/unknown state means this callback did not start
+            # here — the whole point of the parameter.
+            why = err or ("that sign-in did not start from this page, or it "
+                          "expired — try again")
+            return self._send(page("Google sign-in", "<h1>Sign-in failed</h1>"
+                                   f"<p class='lede'>{html.escape(why)}</p>"
+                                   '<a class="back" href="/">← Back</a>'), 400)
+        verifier, back = pending
+        try:
+            sess = gdrive.exchange_code(code, verifier)
+            sess["email"] = gdrive.userinfo(sess["access_token"]).get("email", "")
+        except gdrive.DriveError as e:
+            return self._send(page("Google sign-in", "<h1>Sign-in failed</h1>"
+                                   f"<p class='lede'>{html.escape(str(e))}</p>"
+                                   '<a class="back" href="/">← Back</a>'), 502)
+        sid = secrets.token_urlsafe(32)
+        SESSIONS.put(sid, sess)
+        # Secure only over https, or the cookie is dropped on a local http
+        # run and sign-in silently never sticks.
+        secure = "; Secure" if self.headers.get(
+            "X-Forwarded-Proto", "").lower() == "https" else ""
+        self._redirect(back, {"Set-Cookie":
+                              f"m2c_sid={sid}; Path=/; HttpOnly; "
+                              f"SameSite=Lax; Max-Age=2592000{secure}"})
+
+    def drive_upload(self, jid):
+        """Copy one run's outputs into the signed-in user's Drive."""
+        sess = self.google_session()
+        if sess is None:
+            return self._redirect(f"/auth/google?next=/drive/{jid}")
+        with JOBS_LOCK:
+            rec = JOBS.get(jid)
+        if not rec:
+            return self._send(b"Unknown map id", 404, "text/plain")
+        try:
+            token, sess = gdrive.valid_token(sess)
+            SESSIONS.put(self.session_id(), sess)
+            p = rec["params"]
+            project = (rec.get("project")
+                       or f"{p['lat']:.6f}_{p['lon']:.6f}_"
+                          f"{p['width']:.0f}x{p['height']:.0f}")
+            wanted = [("dxf", "image/vnd.dxf"), ("plot", "application/pdf"),
+                      ("pdf", "application/pdf"), ("png", "image/png"),
+                      ("csv", "text/csv")]
+            files = [(Path(rec[k]), mime) for k, mime in wanted if rec.get(k)]
+            result = gdrive.upload_project(token, project, files)
+        except gdrive.DriveError as e:
+            return self._send(page("Google Drive", "<h1>Upload failed</h1>"
+                                   f"<p class='lede'>{html.escape(str(e))}</p>"
+                                   f'<a class="back" href="/">← Back</a>'), 502)
+        skipped = "".join(
+            f"<li>{html.escape(n)} — {html.escape(why)}</li>"
+            for n, why in result["skipped"])
+        self._send(page("Saved to Google Drive", f"""
+<p class="eyebrow">{html.escape(sess.get('email', ''))}</p>
+<h1>Saved to Google Drive</h1>
+<p class="lede">{len(result['uploaded'])} file(s) in
+<code>{html.escape(gdrive.ROOT_FOLDER)}/{html.escape(project)}</code>.</p>
+<div class="files"><span class="card primary">
+<a href="{html.escape(result['link'])}" target="_blank" rel="noopener">
+<b>Google Drive</b>Open the folder</a></span></div>
+{f'<p class="note">Not uploaded:</p><ul>{skipped}</ul>' if skipped else ''}
+<a class="back" href="/">← Generate another</a>"""))
 
     def serve_file(self, path):
         parts = path.strip("/").split("/")
@@ -1437,6 +1577,10 @@ def main(argv=None):
             d.mkdir(parents=True, exist_ok=True)
     if a.db:
         STAGING_DB = Path(a.db).resolve()
+    global SESSIONS
+    SESSIONS = gdrive.SessionStore(
+        (Path(a.data_dir) if a.data_dir else BASE.parent / "output")
+        / "google_sessions.json")
 
     if not GEN.is_file():
         print(f"ERROR: {GEN} not found", file=sys.stderr)
@@ -1449,6 +1593,9 @@ def main(argv=None):
     print(f"History: {restored} previous run(s) restored"
           if restored else "History: no previous runs")
     print(f"Runner: {'uv run' if UV else sys.executable}")
+    print("Google Drive: " + ("sign-in enabled" if gdrive.configured() else
+                              "not configured (set GOOGLE_CLIENT_ID, "
+                              "GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI)"))
     print("Ctrl-C to stop.")
     try:
         srv.serve_forever()

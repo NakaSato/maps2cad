@@ -264,6 +264,25 @@ write PDF/PNG/CSV. Implements a written spec; two layout profiles share one
 
 Invariants worth preserving, all of them load-bearing and test-covered:
 
+**Google sign-in and Drive upload are optional and stdlib-only.**
+`gdrive.py` speaks OAuth 2.0 and Drive v3 over `urllib` rather than pulling
+in `google-api-python-client`, because `serve.py` having no third-party
+dependencies is what lets it run anywhere Python does. With
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI` unset the
+app behaves exactly as before and no Drive card is rendered — never show a
+button that can only error. Sign-in gates *only* the upload; it is not an
+access control, so `serve.py`'s warning about untrusted networks still
+stands. Scope is `drive.file`, which reaches only files this app created:
+do not widen it to `drive`, which would grant read access to everything the
+user owns for no gain. The flow uses PKCE plus a `state` the callback
+requires (an unknown state is a 400), `access_type=offline` and
+`prompt=consent` so a refresh token actually arrives, and a refresh response
+keeps the existing refresh token because Google omits it. Sessions live in
+`<data-dir>/google_sessions.json` at 0600, deliberately *not* in
+`staging.sqlite` — that file holds survey data and gets copied around, and
+refresh tokens have no business travelling with it. Files land in
+`maps2cad/<project>/`, folders reused rather than duplicated.
+
 - **Label placement is scale-aware.** `metres_per_point()` converts sheet points
   to ground metres; `label_fits()` drops or downgrades a label that cannot
   physically fit its footprint. Collision priority is deliberate: verified names
@@ -279,9 +298,7 @@ Invariants worth preserving, all of them load-bearing and test-covered:
 - **A curated labels file is never overwritten**: if `--labels-csv` and
   `--inventory` resolve to the same path, the inventory export is skipped.
 - Polygons render through `polygon_patch()` with real interior rings; never
-  cover holes with opaque patches, or features underneath disappear.
-
-`serve.py` is stdlib-only on purpose (no deps in its header): it runs the
+  cover holes with opaque patches,`serve.py` is stdlib-only on purpose (no deps in its header): it runs the
 scripts as subprocesses through `uv run`, keyed by a hash of the request
 parameters, and serves results from `output/web/` by job id rather than by
 user-supplied path. It also browses and edits the staging database at
