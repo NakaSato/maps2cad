@@ -18,6 +18,7 @@ from __future__ import annotations
 
 NORTH_ARROW = "NORTH_ARROW"
 POI_SYMBOL = "POI_SYMB"
+ONEWAY_ARROW = "ONEWAY_ARROW"
 
 
 def ensure_north_arrow(doc, style: str = "EN_STYLE") -> str:
@@ -67,3 +68,30 @@ def add_poi_symbol(doc, layout, x: float, y: float, size: float, layer: str):
     ensure_poi_symbol(doc)
     return layout.add_blockref(POI_SYMBOL, insert=(x, y), dxfattribs={
         "layer": layer, "xscale": size, "yscale": size, "zscale": size})
+
+
+def ensure_oneway_arrow(doc) -> str:
+    """Define the direction-of-travel arrow once per document.
+
+    Unit length along +X about the origin, so the insertion point sits on
+    the centreline and the block's rotation is the road's bearing. A shaft
+    and an open head rather than a filled triangle: a solid at plot scale
+    fills in to a blob on a 4 m arrow, and an open head still reads at 1:5000.
+    """
+    if ONEWAY_ARROW in doc.blocks:
+        return ONEWAY_ARROW
+    blk = doc.blocks.new(name=ONEWAY_ARROW)
+    blk.add_line((-0.5, 0), (0.5, 0), dxfattribs={"layer": "0"})
+    blk.add_line((0.5, 0), (0.25, 0.18), dxfattribs={"layer": "0"})
+    blk.add_line((0.5, 0), (0.25, -0.18), dxfattribs={"layer": "0"})
+    return ONEWAY_ARROW
+
+
+def add_oneway_arrow(doc, layout, x: float, y: float, size: float,
+                     rotation: float, layer: str):
+    """Place a direction arrow at (x, y), `size` being its length in drawing
+    units and `rotation` the direction of travel in degrees."""
+    ensure_oneway_arrow(doc)
+    return layout.add_blockref(ONEWAY_ARROW, insert=(x, y), dxfattribs={
+        "layer": layer, "xscale": size, "yscale": size, "zscale": size,
+        "rotation": rotation})
