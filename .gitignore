@@ -7,6 +7,16 @@ dem/ms_cache/
 # Generated CAD outputs
 output/
 
+# OSMnx Overpass response cache
+cache/
+
 # Python
 __pycache__/
 .venv/
+.pytest_cache/
+
+# ngrok tunnel config (contains the tunnel password)
+ngrok.yml
+
+# macOS
+.DS_Store

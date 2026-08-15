@@ -8,26 +8,26 @@
 #   "ezdxf",
 #   "pyproj",
 #   "requests",
+#   "shapely>=2.0",
 # ]
 # ///
 """Topo + OSM (buildings w/ names, roads) around a GPS point -> DXF."""
 import argparse
+import csv
 import gzip
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
-import rasterio
-from rasterio.windows import from_bounds
-from rasterio.transform import xy as px2geo
-from scipy.ndimage import gaussian_filter
-from skimage import measure
 from pyproj import Transformer
 import requests
-import ezdxf
+
+# rasterio / scipy / skimage / numpy / ezdxf are imported inside main(): the
+# geometry and CRS helpers below are pure and stay importable (and testable,
+# and usable from mapposter.py) without the DEM and CAD stack.
 
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
@@ -41,12 +41,71 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--lat", type=float, required=True)
     p.add_argument("--lon", type=float, required=True)
-    p.add_argument("--radius", type=float, default=500.0, help="meters")
-    p.add_argument("--width", type=float, help="full box width in meters (overrides radius)")
-    p.add_argument("--height", type=float, help="full box height in meters (overrides radius)")
+    p.add_argument("--radius", type=float,
+                   help="meters; square box of +/-radius instead of a "
+                        "width x height rectangle")
+    p.add_argument("--width", type=float, help="full box width in meters")
+    p.add_argument("--height", type=float, help="full box height in meters")
     p.add_argument("--dem", required=True)
-    p.add_argument("--out", required=True)
-    return p.parse_args()
+    p.add_argument("--out", help="output DXF path (or use --outdir)")
+    p.add_argument("--outdir",
+                   help="Group this run in its own folder under DIR: creates "
+                        "DIR/<lat>_<lon>_<extent>_<timestamp>/site.dxf")
+    p.add_argument("--db", metavar="PATH",
+                   help="Also stage the extracted features into a SQLite "
+                        "database with CAD label anchors precomputed "
+                        "(see scripts/stage_db.py)")
+    p.add_argument("--project", metavar="NAME",
+                   help="Project name for the staging database "
+                        "(default: the coordinate and extent)")
+    p.add_argument("--sheet", choices=["A4", "A3", "A2", "A1", "A0"],
+                   help="Add a plottable paper-space layout at this sheet "
+                        "size, with a title block and a viewport at --scale")
+    p.add_argument("--scale", default="fit",
+                   help="Plot scale denominator for --sheet (1:SCALE), or "
+                        "'fit' to pick the largest round scale that shows "
+                        "the whole extent")
+    p.add_argument("--names-only", action="store_true",
+                   help="Label only buildings that carry an OSM name. The "
+                        "default also labels unnamed footprints with their "
+                        "B### inventory code — without it, areas where OSM "
+                        "has no building names come out entirely unlabelled.")
+    a = p.parse_args()
+    if not a.out and not a.outdir:
+        p.error("give either --out <file.dxf> or --outdir <dir>")
+    # Default extent: 770 x 410 m, which prints at exactly 1:2000 on A3.
+    # An explicit --radius still wins, so square boxes keep working.
+    if a.radius is None and a.width is None and a.height is None:
+        a.width, a.height = 770.0, 410.0
+    if a.radius is not None and a.width is None and a.height is None:
+        pass          # radius-only run: bbox_around uses the radius
+    if a.outdir:
+        extent = (f"{a.width:.0f}x{a.height:.0f}" if a.width and a.height
+                  else f"r{a.radius:.0f}")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        run = Path(a.outdir) / f"{a.lat:.6f}_{a.lon:.6f}_{extent}_{stamp}"
+        run.mkdir(parents=True, exist_ok=True)
+        a.out = str(run / "site.dxf")
+        print(f"Run folder: {run}")
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+    return a
+
+
+def utm_epsg_for(lat, lon):
+    """UTM zone EPSG for a coordinate. Thailand spans 47N and 48N, and a
+    site east of 102°E projected into 47N carries real scale error, so the
+    zone is derived rather than assumed."""
+    zone = min(max(int((lon + 180) // 6) + 1, 1), 60)
+    return (32600 if lat >= 0 else 32700) + zone
+
+
+def utm_transformer(lat, lon):
+    """Returns (transformer to UTM, epsg, human label like '48N')."""
+    epsg = utm_epsg_for(lat, lon)
+    zone = epsg - (32600 if lat >= 0 else 32700)
+    label = f"{zone}{'N' if lat >= 0 else 'S'}"
+    return (Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True),
+            epsg, label)
 
 
 def bbox_around(lat, lon, radius_m, width_m=None, height_m=None):
@@ -175,14 +234,228 @@ def clip_runs(pts, s, w, n, e, margin=0.0005):
     return runs
 
 
+# Thai mapping convention puts Thai script in the plain `name` tag, but a
+# business that prefers its English trading name overrides that, so `name`
+# alone is not a reliable Thai source. U+0E00–U+0E7F is the Thai block.
+THAI_RE = re.compile(r"[฀-๿]")
+
+
+def is_thai(text) -> bool:
+    """True if the string contains any Thai character."""
+    return bool(text) and bool(THAI_RE.search(str(text)))
+
+
+def names_by_lang(tags):
+    """Resolve (thai, english) from OSM tags.
+
+    `name:th` / `name:en` win outright. A plain `name` fills whichever slot
+    its own script says it belongs to, so a Thai `name` never lands on the
+    English layer and vice versa.
+    """
+    th = tags.get("name:th")
+    en = tags.get("name:en")
+    plain = tags.get("name")
+    if plain:
+        if is_thai(plain):
+            th = th or plain
+        else:
+            en = en or plain
+    return (th or None, en or None)
+
+
 def best_name(tags):
-    return tags.get("name") or tags.get("name:en") or tags.get("name:th")
+    """Single best label, Thai first — the output is a Thai submission."""
+    th, en = names_by_lang(tags)
+    return th or en
+
+
+# Carriageway width in metres per highway class, used to draw each road as
+# two parallel edges (the CAD convention) rather than a single centreline.
+ROAD_WIDTH_M = {
+    "motorway": 14.0, "motorway_link": 8.0,
+    "trunk": 12.0, "trunk_link": 8.0,
+    "primary": 10.0, "primary_link": 7.0,
+    "secondary": 9.0, "secondary_link": 6.5,
+    "tertiary": 8.0, "tertiary_link": 6.0,
+    "residential": 6.0, "unclassified": 6.0, "living_street": 5.0,
+    "service": 4.0, "track": 3.5,
+    "footway": 2.0, "path": 1.5, "cycleway": 2.0, "steps": 1.5,
+    "pedestrian": 6.0,
+}
+
+
+# CAD layer names follow the NCS/AIA convention (discipline-major-minor) so
+# the DXF drops straight into an engineering drawing set. All annotation is
+# isolated on C-ANNO-TEXT so drafters can toggle labels in one click.
+LAYERS = {
+    "building": "C-BLDG-OUTL",
+    "road_edge": "C-ROAD-EDGE",     # the two carriageway edges (double lines)
+    "road_centre": "C-ROAD-CNTR",   # centreline
+    # Annotation splits by language so a drafter can LAYFRZ one script and
+    # plot a single-language sheet. Language-neutral text (B### codes,
+    # contour elevations, the GPS tag, the north arrow) stays on the base
+    # C-ANNO-TEXT layer and survives freezing either language.
+    "anno": "C-ANNO-TEXT",
+    "anno_th": "C-ANNO-TEXT-TH",
+    "anno_en": "C-ANNO-TEXT-EN",
+    # NCS splits topography into index (every 5th, heavier and labelled) and
+    # intermediate contours, which is what a reviewer expects to see
+    "contour_major": "C-TOPO-MAJR",
+    "contour_minor": "C-TOPO-MINR",
+    "water": "C-HYDR-WATR",
+    "green": "C-LAND-VEGT",
+    "rail": "C-RAIL-TRAK",
+    "barrier": "C-BNDY-BARR",
+    "poi": "C-ANNO-SYMB",
+    "north": "C-ANNO-NORT",
+    "site": "C-ANNO-GPSP",
+    "property": "C-PROP-LINE",
+    "setback": "C-PROP-SETB",
+}
+
+
+# ezdxf writes UTF-8 either way, but AutoCAD renders Thai as ??? unless the
+# text style points at a font that carries the Thai block. THSarabunNew is
+# the Thai government document standard; AutoCAD substitutes if it is not
+# installed, which is still better than the SHX default that cannot render
+# Thai at all.
+TEXT_STYLES = {
+    "TH_STYLE": "THSarabunNew.ttf",
+    "EN_STYLE": "arial.ttf",
+}
+
+# Annotation layer -> (ACI colour, text style) for the language split.
+ANNO_STYLE = {
+    "C-ANNO-TEXT": (2, "EN_STYLE"),      # neutral: codes, elevations, N, GPS
+    "C-ANNO-TEXT-TH": (2, "TH_STYLE"),
+    "C-ANNO-TEXT-EN": (7, "EN_STYLE"),
+}
+
+# Vertical gap between the English and Thai label of the same feature, as a
+# multiple of char height. English sits above Thai.
+LANG_OFFSET = 1.3
+
+
+def add_text_styles(doc):
+    """Register the Thai/Latin text styles on a fresh document. Safe to call
+    twice — ezdxf raises if the style already exists."""
+    for name, font in TEXT_STYLES.items():
+        if name not in doc.styles:
+            doc.styles.add(name, font=font)
+
+
+def offset_along_normal(x, y, rotation_deg, distance):
+    """Shift a label perpendicular to its own baseline.
+
+    Road labels are rotated to read along the centreline, so a plain -Y
+    nudge would drift off the road. This keeps the offset square to the
+    text however it is rotated; at rotation 0 it reduces to +Y.
+    """
+    rad = math.radians(rotation_deg or 0.0)
+    return (x - distance * math.sin(rad), y + distance * math.cos(rad))
+
+
+def road_label(tags):
+    """Road name with its route number, e.g. 'ถนนอรุณประเสริฐ (ทล.202)'."""
+    name = best_name(tags)
+    ref = tags.get("ref")
+    if name and ref:
+        return f"{name} ({ref})"
+    return name or (f"ทล.{ref}" if ref else None)
+
+
+def road_edges(points, width_m):
+    """Both edges of a carriageway as coordinate lists. Falls back to the
+    centreline when the geometry is too kinked to offset cleanly."""
+    from shapely.geometry import LineString
+
+    line = LineString(points)
+    if line.length < 0.5:
+        return []
+    edges = []
+    for side in (width_m / 2, -width_m / 2):
+        try:
+            off = line.offset_curve(side)
+        except Exception:
+            return [list(line.coords)]
+        for part in (off.geoms if off.geom_type == "MultiLineString"
+                     else [off]):
+            if not part.is_empty and len(part.coords) >= 2:
+                edges.append(list(part.coords))
+    return edges or [list(line.coords)]
+
+
+def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
+                contours=(), contour_layers=None):
+    """Stage what was just drawn into the SQLite layer, with CAD label
+    anchors precomputed so the drawing step is plain SELECTs."""
+    from pyproj import Transformer
+    from shapely.geometry import LineString, MultiLineString, Polygon
+
+    import stage_db
+
+    to_wgs = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326",
+                                  always_xy=True)
+    extent = (f"{a.width:.0f}x{a.height:.0f}" if a.width and a.height
+              else f"r{a.radius:.0f}")
+    project = a.project or f"{a.lat:.6f}_{a.lon:.6f}_{extent}"
+
+    conn = stage_db.connect(a.db)
+    pid = stage_db.create_project(
+        conn, project, a.lat, a.lon,
+        a.width or (a.radius * 2), a.height or (a.radius * 2), utm_epsg)
+
+    b_rows = []
+    for row in inventory:
+        pts = building_geoms.get(row["feature_id"])
+        if not pts or len(pts) < 3:
+            continue
+        poly = Polygon(pts)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty:
+            continue
+        b_rows.append({**row, "geom": poly})
+    n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs)
+
+    r_rows = []
+    for rec in road_records:
+        runs = [LineString(r) for r in rec["runs"] if len(r) >= 2]
+        if not runs:
+            continue
+        geom = runs[0] if len(runs) == 1 else MultiLineString(runs)
+        r_rows.append({**rec, "geom": geom})
+    n_r = stage_db.stage_roads(conn, pid, r_rows)
+
+    c_rows = [{"elevation_m": lev, "geom": LineString(pts),
+               "cad_layer": contour_layers.get(lev, "C-TOPO-MINR")}
+              for lev, pts in contours if len(pts) >= 2]
+    n_c = stage_db.stage_contours(conn, pid, c_rows)
+
+    labels = conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
+                          " project_id = ?", (pid,)).fetchone()[0]
+    conn.close()
+    print(f"Staged to {a.db}: project '{project}' (id {pid}) — "
+          f"{n_b} buildings, {n_r} roads, {n_c} contours, "
+          f"{labels} CAD labels ready")
 
 
 def main():
+    import numpy as np
+    import rasterio
+    from rasterio.windows import from_bounds
+    from rasterio.transform import xy as px2geo
+    from scipy.ndimage import gaussian_filter
+    from skimage import measure
+    import ezdxf
+    from ezdxf.enums import MTextEntityAlignment
+
     a = parse_args()
     s, w, n, e = bbox_around(a.lat, a.lon, a.radius, a.width, a.height)
-    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32647", always_xy=True)
+    to_utm, utm_epsg, utm_label = utm_transformer(a.lat, a.lon)
+    to_wgs = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326",
+                                  always_xy=True)
+    print(f"Projected CRS: EPSG:{utm_epsg} (UTM {utm_label})")
 
     # ---- DEM -> contours -------------------------------------------------
     with rasterio.open(a.dem) as src:
@@ -228,9 +501,11 @@ def main():
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
             name = best_name(tags)
             if "building" in tags:
-                buildings.append((name, pts))
+                buildings.append((names_by_lang(tags), pts,
+                                  f"{el['type']}/{el['id']}"))
             elif "highway" in tags:
-                roads.append((name, pts))
+                roads.append((names_by_lang(tags), tags.get("ref"), pts,
+                              tags["highway"], f"{el['type']}/{el['id']}"))
             elif "waterway" in tags or tags.get("natural") == "water":
                 water.append((name, pts))
             elif "leisure" in tags or "landuse" in tags:
@@ -243,7 +518,8 @@ def main():
             for m in el.get("members", []):
                 if m.get("role") == "outer" and "geometry" in m:
                     pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
-                    buildings.append((best_name(tags), pts))
+                    buildings.append((names_by_lang(tags), pts,
+                                      f"relation/{el['id']}"))
                     break
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, {len(pois)} POIs")
@@ -251,81 +527,196 @@ def main():
     if len(buildings) < 20:
         print("Few OSM buildings — supplementing with Microsoft ML footprints...")
         ms = fetch_ms_buildings(s, w, n, e, Path(a.dem).parent / "ms_cache")
-        buildings += [(None, pts) for pts in ms]
+        buildings += [((None, None), pts, f"ms/{i:05d}")
+                      for i, pts in enumerate(ms)]
         print(f"MS footprints added: {len(ms)}")
 
     # ---- DXF -------------------------------------------------------------
     doc = ezdxf.new("R2010", setup=True)
     msp = doc.modelspace()
     # (layer, color, lineweight 1/100 mm) — roads/buildings heavy, context thin
-    for name, color, lw in [("CONTOURS", 8, 13), ("CONTOUR_LABELS", 8, 13),
-                            ("BUILDINGS", 4, 50), ("BUILDING_NAMES", 2, 25),
-                            ("ROADS", 30, 35), ("ROAD_NAMES", 30, 25),
-                            ("WATER", 5, 18), ("WATER_NAMES", 5, 18),
-                            ("GREEN", 3, 13), ("GREEN_NAMES", 3, 13),
-                            ("RAIL", 250, 18), ("BARRIERS", 9, 13),
-                            ("POI", 6, 18), ("POI_NAMES", 6, 18),
-                            ("NORTH_ARROW", 7, 35), ("CENTER", 1, 35)]:
-        layer = doc.layers.add(name, color=color)
+    add_text_styles(doc)
+    for key, color, lw in [("contour_major", 8, 25), ("contour_minor", 8, 9),
+                           ("building", 4, 50), ("anno", 2, 25),
+                           ("anno_th", 2, 25), ("anno_en", 7, 25),
+                           ("road_edge", 30, 35), ("road_centre", 8, 9),
+                           ("water", 5, 18), ("green", 3, 13),
+                           ("rail", 250, 18), ("barrier", 9, 13),
+                           ("poi", 6, 18),
+                           ("north", 7, 35), ("site", 1, 35)]:
+        layer = doc.layers.add(LAYERS[key], color=color)
         layer.dxf.lineweight = lw
     # Site-plan layers, empty and ready to draw on (OSM has no private parcels):
-    prop = doc.layers.add("PROPERTY_LINE", color=1, linetype="PHANTOM")
+    prop = doc.layers.add(LAYERS["property"], color=1, linetype="PHANTOM")
     prop.dxf.lineweight = 70
-    setb = doc.layers.add("SETBACK", color=2, linetype="DASHED")
+    setb = doc.layers.add(LAYERS["setback"], color=2, linetype="DASHED")
     setb.dxf.lineweight = 25
 
-    for lev, pts in contours:
-        msp.add_polyline3d([(x, y, lev) for x, y in pts],
-                           dxfattribs={"layer": "CONTOURS"})
-        mx, my = pts[len(pts) // 2]
-        msp.add_text(f"{lev:g}", height=2.5,
-                     dxfattribs={"layer": "CONTOUR_LABELS"}).set_placement((mx, my))
+    def mtext(label, x, y, height, rotation=0.0, layer=None):
+        """MTEXT anchored Middle Center on the annotation layer, so the
+        label grows symmetrically about its insertion point. `layer`
+        selects the language sub-layer; it defaults to the neutral one."""
+        layer = layer or LAYERS["anno"]
+        m = msp.add_mtext(str(label), dxfattribs={
+            "layer": layer, "char_height": height,
+            "style": ANNO_STYLE[layer][1]})
+        m.set_location((x, y), rotation=rotation,
+                       attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        return m
 
-    for name, pts in buildings:
+    def mtext_bilingual(th, en, x, y, height, rotation=0.0, fallback=None):
+        """Write the Thai and English labels of one feature onto their own
+        layers, English stacked above Thai when both exist. Falls back to
+        `fallback` (a B### code) on the neutral layer when neither name is
+        known. Returns the number of MTEXT entities written."""
+        n = 0
+        if th:
+            mtext(th, x, y, height, rotation, LAYERS["anno_th"])
+            n += 1
+        if en:
+            ex, ey = ((x, y) if not th else
+                      offset_along_normal(x, y, rotation,
+                                          height * LANG_OFFSET))
+            mtext(en, ex, ey, height, rotation, LAYERS["anno_en"])
+            n += 1
+        if not n and fallback:
+            mtext(fallback, x, y, height, rotation)
+            n += 1
+        return n
+
+    # True 3D polylines (Z per vertex), so Civil 3D can build a surface from
+    # them; every 5th contour is an index contour, drawn heavier and labelled.
+    index_step = interval * 5
+    contour_layers = {}
+    for lev, pts in contours:
+        major = abs(lev / index_step - round(lev / index_step)) < 1e-6
+        layer = LAYERS["contour_major" if major else "contour_minor"]
+        contour_layers[lev] = layer
+        msp.add_polyline3d([(x, y, lev) for x, y in pts],
+                           dxfattribs={"layer": layer})
+        if major:
+            mx, my = pts[len(pts) // 2]
+            mtext(f"{lev:g}", mx, my, 2.5)
+
+    # Buildings: outline, then a label centred inside every footprint —
+    # its name when OSM has one, otherwise a B### code carried in the
+    # inventory CSV so field teams can fill the name in later.
+    from shapely.geometry import Polygon
+
+    inventory = []
+    staged_geoms = {}
+    counter = 0
+    for (th, en), pts, fid in sorted(buildings, key=lambda b: b[2]):
         ux, uy = to_utm.transform(*zip(*pts))
         upts = list(zip(ux, uy))
-        msp.add_lwpolyline(upts, close=True, dxfattribs={"layer": "BUILDINGS"})
-        if name:
+        msp.add_lwpolyline(upts, close=True,
+                           dxfattribs={"layer": LAYERS["building"]})
+        name = th or en
+        code = ""
+        if not name:
+            counter += 1
+            code = f"B{counter:03d}"
+        label = name or code
+        # ST_Centroid-style centroids fall outside concave footprints (~3% of
+        # buildings in a dense extent), so anchor on a guaranteed interior
+        # point instead — equivalent to PostGIS ST_PointOnSurface.
+        try:
+            poly = Polygon(upts)
+            pt = poly.representative_point() if poly.is_valid else None
+            cx, cy = (pt.x, pt.y) if pt else (float(np.mean(ux)),
+                                              float(np.mean(uy)))
+        except Exception:
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
-            msp.add_text(name, height=4.0,
-                         dxfattribs={"layer": "BUILDING_NAMES"}).set_placement((cx, cy))
+        if name or not a.names_only:
+            mtext_bilingual(th, en, cx, cy, 3.5,
+                            fallback=None if a.names_only else code)
+        staged_geoms[fid] = upts
+        blon, blat = to_wgs.transform(cx, cy)
+        inventory.append({"feature_id": fid, "code": code,
+                          "osm_name": name or "", "display_name": label,
+                          "name_th": th or "", "name_en": en or "",
+                          "source": "openstreetmap" if not fid.startswith("ms/")
+                          else "microsoft_ml",
+                          "latitude": round(blat, 8),
+                          "longitude": round(blon, 8)})
 
+    # Roads: both carriageway edges (CAD convention) plus a thin centreline,
+    # labelled once per unique name with its route number.
     labeled_roads = set()
-    for name, pts in roads:
+    staged_roads = []
+    for (th, en), ref, pts, highway, fid in roads:
+        name = th or en
+        width_m = ROAD_WIDTH_M.get(highway, 5.0)
+        road_runs = []
         for run in clip_runs(pts, s, w, n, e):
             ux, uy = to_utm.transform(*zip(*run))
             upts = list(zip(ux, uy))
-            msp.add_lwpolyline(upts, dxfattribs={"layer": "ROADS"})
-            if name and name not in labeled_roads:
-                labeled_roads.add(name)
-                mid = len(upts) // 2
-                msp.add_text(name, height=5.0,
-                             dxfattribs={"layer": "ROAD_NAMES"}).set_placement(upts[mid])
+            if len(upts) < 2:
+                continue
+            road_runs.append(upts)
+            for edge in road_edges(upts, width_m):
+                msp.add_lwpolyline(edge,
+                                   dxfattribs={"layer": LAYERS["road_edge"]})
+            msp.add_lwpolyline(upts,
+                               dxfattribs={"layer": LAYERS["road_centre"]})
+            key = name or ref
+            if key and key not in labeled_roads:
+                labeled_roads.add(key)
+                # 50% along the run, rotated to read along the centreline
+                i = len(upts) // 2
+                j = max(i - 1, 0)
+                ang = math.degrees(math.atan2(upts[i][1] - upts[j][1],
+                                              upts[i][0] - upts[j][0]))
+                if ang > 90:
+                    ang -= 180
+                elif ang < -90:
+                    ang += 180
+                mx, my = upts[i]
+                mtext_bilingual(th, en, mx, my, 5.0, rotation=ang)
+                if ref:
+                    # Offset perpendicular so the route number never
+                    # overprints the name at the same insertion point.
+                    # The English name already occupies the first slot
+                    # above the Thai one, so clear that too when present.
+                    off = 6.0 + (5.0 * LANG_OFFSET if th and en else 0.0)
+                    rx, ry = offset_along_normal(mx, my, ang, off)
+                    text = f"ทล.{ref}" if not name else ref
+                    mtext(text, rx, ry, 4.0, rotation=ang,
+                          layer=LAYERS["anno_th" if is_thai(text)
+                                       else "anno_en"])
+        if road_runs:
+            staged_roads.append({
+                "feature_id": fid, "highway_type": highway,
+                "road_name": name, "road_ref": ref,
+                "name_th": th or "", "name_en": en or "",
+                "carriageway_m": width_m, "runs": road_runs})
 
-    def draw_lines(features, layer, name_layer=None, text_h=4.0):
+    def draw_lines(features, layer, label=False, text_h=4.0):
         labeled = set()
         for name, pts in features:
             for run in clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
                 upts = list(zip(ux, uy))
                 closed = run[0] == run[-1]
-                msp.add_lwpolyline(upts, close=closed, dxfattribs={"layer": layer})
-                if name_layer and name and name not in labeled:
+                msp.add_lwpolyline(upts, close=closed,
+                                   dxfattribs={"layer": layer})
+                if label and name and name not in labeled:
                     labeled.add(name)
-                    msp.add_text(name, height=text_h,
-                                 dxfattribs={"layer": name_layer}
-                                 ).set_placement(upts[len(upts) // 2])
+                    mid = upts[len(upts) // 2]
+                    mtext(name, mid[0], mid[1], text_h,
+                          layer=LAYERS["anno_th" if is_thai(name)
+                                       else "anno_en"])
 
-    draw_lines(water, "WATER", "WATER_NAMES")
-    draw_lines(green, "GREEN", "GREEN_NAMES")
-    draw_lines(rails, "RAIL")
-    draw_lines(barriers, "BARRIERS")
+    draw_lines(water, LAYERS["water"], label=True)
+    draw_lines(green, LAYERS["green"], label=True)
+    draw_lines(rails, LAYERS["rail"])
+    draw_lines(barriers, LAYERS["barrier"])
 
     for name, plon, plat in pois:
         px, py = to_utm.transform(plon, plat)
-        msp.add_circle((px, py), radius=2, dxfattribs={"layer": "POI"})
-        msp.add_text(name, height=4.0,
-                     dxfattribs={"layer": "POI_NAMES"}).set_placement((px + 3, py))
+        msp.add_circle((px, py), radius=2, dxfattribs={"layer": LAYERS["poi"]})
+        mtext(name, px + 3, py, 4.0,
+              layer=LAYERS["anno_th" if is_thai(name) else "anno_en"])
 
     # North arrow at top-right corner (drawing is true-north-up in UTM)
     nx, ny = to_utm.transform(e, n)
@@ -333,21 +724,56 @@ def main():
     span_x, span_y = nx - sx0, ny - sy0
     ax_, ay = nx - span_x * 0.03, ny - span_y * 0.05
     sz = min(span_x, span_y) * 0.02
-    msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": "NORTH_ARROW"})
-    msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6), (ax_ + sz * 0.3, ay - sz * 0.6),
-                   (ax_, ay + sz * 0.8)], dxfattribs={"layer": "NORTH_ARROW"})
-    msp.add_text("N", height=sz * 0.6,
-                 dxfattribs={"layer": "NORTH_ARROW"}).set_placement(
-        (ax_ - sz * 0.2, ay + sz * 1.2))
+    msp.add_circle((ax_, ay), radius=sz, dxfattribs={"layer": LAYERS["north"]})
+    msp.add_solid([(ax_ - sz * 0.3, ay - sz * 0.6),
+                   (ax_ + sz * 0.3, ay - sz * 0.6),
+                   (ax_, ay + sz * 0.8)],
+                  dxfattribs={"layer": LAYERS["north"]})
+    mtext("N", ax_, ay + sz * 1.5, sz * 0.6)
 
     cx, cy = to_utm.transform(a.lon, a.lat)
-    msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "CENTER"})
-    msp.add_text(f"GPS {a.lat},{a.lon}", height=5.0,
-                 dxfattribs={"layer": "CENTER"}).set_placement((cx + 8, cy))
+    msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
+    mtext(f"GPS {a.lat},{a.lon}", cx + 40, cy, 5.0)
+
+    if a.sheet:
+        import sheet as sheet_mod
+        ext_w = a.width or a.radius * 2
+        ext_h = a.height or a.radius * 2
+        if str(a.scale).lower() == "fit":
+            a.scale, _, _ = sheet_mod.fitting_scale(ext_w, ext_h, a.sheet)
+        else:
+            a.scale = int(a.scale)
+        sheet_mod.add_sheet(doc, {
+            "project": a.project or Path(a.out).stem,
+            "lat": a.lat, "lon": a.lon, "centre": (cx, cy),
+            "srid": utm_epsg,
+            "extent": (a.width or a.radius * 2, a.height or a.radius * 2),
+            "date": time.strftime("%Y-%m-%d"),
+        }, size=a.sheet, scale=a.scale)
+        print(f"Sheet: {a.sheet} paper space at 1:{a.scale:,}")
 
     doc.saveas(a.out)
     print(f"Saved: {a.out}")
-    print(f"CRS: EPSG:32647 (UTM 47N), units = meters. Center at UTM ({cx:.1f}, {cy:.1f})")
+
+    # Building inventory beside the DXF: one row per drawn footprint, so a
+    # B### code on the drawing can be resolved to a verified name later.
+    inv_path = Path(a.out).with_name("building_inventory.csv")
+    with open(inv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "feature_id", "code", "osm_name", "display_name",
+            "name_th", "name_en", "source",
+            "latitude", "longitude"])
+        writer.writeheader()
+        writer.writerows(inventory)
+    named = sum(1 for r in inventory if r["osm_name"])
+    print(f"Inventory: {len(inventory)} buildings ({named} named, "
+          f"{len(inventory) - named} coded) -> {inv_path}")
+
+    if a.db:
+        stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,
+                    contours, contour_layers)
+    print(f"CRS: EPSG:{utm_epsg} (UTM {utm_label}), units = meters. "
+          f"Center at UTM ({cx:.1f}, {cy:.1f})")
 
 
 if __name__ == "__main__":

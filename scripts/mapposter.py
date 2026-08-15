@@ -28,7 +28,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager, patches
 
-from topo2cad import bbox_around, fetch_osm, fetch_ms_buildings, clip_runs, best_name
+from topo2cad import (bbox_around, fetch_osm, fetch_ms_buildings, clip_runs,
+                      best_name, utm_transformer)
 
 ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
           "tertiary": 1.8, "residential": 1.0, "unclassified": 1.0}
@@ -74,7 +75,7 @@ def main():
     st = STYLES[args.style]
 
     s, w, n, e = bbox_around(args.lat, args.lon, args.radius, args.width, args.height)
-    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32647", always_xy=True)
+    to_utm, utm_epsg, utm_label = utm_transformer(args.lat, args.lon)
     ux0, uy0 = to_utm.transform(w, s)
     ux1, uy1 = to_utm.transform(e, n)
 
@@ -160,11 +161,17 @@ def main():
             ax.plot(bx, by, color="white", lw=lw * 2.5 - 0.2, zorder=3.1,
                     solid_capstyle="round", solid_joinstyle="round")
 
-    # every named road: label rotated along its longest run
+    # Each unique road name once, on its longest run anywhere in the extent.
+    # A divided carriageway is several OSM ways sharing one name, so labeling
+    # per-way prints the name two or four times over.
+    longest_run = {}
     for name, lw, runs in roads_draw:
         if not name:
             continue
-        bx, by = max(runs, key=lambda r: len(r[0]))
+        best = max(runs, key=lambda r: len(r[0]))
+        if name not in longest_run or len(best[0]) > len(longest_run[name][0]):
+            longest_run[name] = best
+    for name, (bx, by) in longest_run.items():
         if len(bx) < 2:
             continue
         i = len(bx) // 2
@@ -230,8 +237,8 @@ def main():
     ax.set_title(args.title, fontsize=20, pad=16, weight="bold")
     extent = (f"พื้นที่ {args.width:g}×{args.height:g} m"
               if args.width and args.height else f"รัศมี {args.radius:g} m")
-    ax.set_xlabel(f"GPS {args.lat}, {args.lon}   |   UTM 47N (EPSG:32647)   |   "
-                  f"{extent}", fontsize=11, labelpad=10)
+    ax.set_xlabel(f"GPS {args.lat}, {args.lon}   |   UTM {utm_label} "
+                  f"(EPSG:{utm_epsg})   |   {extent}", fontsize=11, labelpad=10)
 
     out = Path(args.out)
     fig.savefig(out, dpi=450, bbox_inches="tight", facecolor="white")

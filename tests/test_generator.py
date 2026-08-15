@@ -1,0 +1,440 @@
+"""Offline unit tests for generate_detailed_site_map.py.
+
+Run:  .venv/bin/python -m pytest tests/ -q
+Network integration test is opt-in:  RUN_NETWORK_TESTS=1 ... -q
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+from generate_detailed_site_map import (  # noqa: E402
+    SiteMapError,
+    build_extent,
+    build_inventory,
+    classify_road,
+    feature_id_of,
+    label_angle,
+    load_manual_labels,
+    nice_scale_length,
+    parse_args,
+    utm_epsg_for,
+    validate_args,
+)
+
+
+# ---------------------------------------------------------------- UTM zones
+@pytest.mark.parametrize("lat,lon,epsg", [
+    (14.8164876968956, 100.511644184589, 32647),  # spec default: zone 47N
+    (-33.87, 151.21, 32756),                      # Sydney: zone 56S
+    (51.5, -0.13, 32630),                         # London: zone 30N
+    (0.0, 0.0, 32631),                            # equator/prime meridian
+    (10.0, -180.0, 32601),                        # antimeridian west edge
+    (10.0, 180.0, 32660),                         # antimeridian east edge
+])
+def test_utm_epsg_for(lat, lon, epsg):
+    assert utm_epsg_for(lat, lon) == epsg
+
+
+def test_extent_is_exact_rectangle_in_metres():
+    epsg, _, _, (x, y), rect, rect_wgs = build_extent(
+        14.8164876968956, 100.511644184589, 500.0, 250.0)
+    assert epsg == 32647
+    x0, y0, x1, y1 = rect.bounds
+    assert x1 - x0 == pytest.approx(500.0)
+    assert y1 - y0 == pytest.approx(250.0)
+    assert (x0 + x1) / 2 == pytest.approx(x)
+    assert (y0 + y1) / 2 == pytest.approx(y)
+    # WGS 84 footprint stays in valid ranges near the site
+    lon0, lat0, lon1, lat1 = rect_wgs.bounds
+    assert 100.5 < lon0 < lon1 < 100.52
+    assert 14.81 < lat0 < lat1 < 14.82
+
+
+def test_southern_hemisphere_extent():
+    epsg, *_ = build_extent(-33.87, 151.21, 500.0, 250.0)
+    assert epsg == 32756
+
+
+# ------------------------------------------------------- road classification
+@pytest.mark.parametrize("highway,cls", [
+    ("motorway", "major"), ("trunk", "major"), ("primary", "major"),
+    ("primary_link", "major"),
+    ("secondary", "main"), ("tertiary", "main"),
+    ("residential", "local"), ("service", "local"),
+    ("unclassified", "local"),
+    ("footway", "minor"), ("path", "minor"), ("track", "minor"),
+    ("cycleway", "minor"), ("steps", "minor"),
+])
+def test_classify_road(highway, cls):
+    assert classify_road(highway) == cls
+
+
+# ------------------------------------------------------------------- labels
+def test_label_angle_is_upright():
+    from shapely.geometry import LineString
+    for coords in [
+        [(0, 0), (100, 0)],       # east
+        [(0, 0), (-100, 0)],      # west (must flip to stay upright)
+        [(0, 0), (0, 100)],       # north
+        [(0, 0), (0, -100)],      # south (must flip)
+        [(0, 0), (-70, -70)],     # southwest diagonal
+    ]:
+        ang = label_angle(LineString(coords))
+        assert -90 <= ang <= 90, f"{coords} -> {ang} not upright"
+
+
+def test_nice_scale_length():
+    assert nice_scale_length(500) == 100     # spec default width
+    assert nice_scale_length(250) == 50
+    assert nice_scale_length(1000) == 250
+    assert nice_scale_length(40) == 10
+    assert nice_scale_length(4000) == 1000
+
+
+# --------------------------------------------------------------- validation
+def make_args(**over):
+    base = dict(lat=14.8, lon=100.5, width=500.0, height=250.0,
+                output="out.pdf")
+    base.update(over)
+    argv = []
+    for k, v in base.items():
+        argv += [f"--{k}", str(v)]
+    return parse_args(argv)
+
+
+@pytest.mark.parametrize("bad", [
+    dict(lat=90.1), dict(lat=-95), dict(lon=181), dict(lon=-200),
+    dict(width=0), dict(height=-5), dict(output="map.txt"),
+])
+def test_validate_args_rejects(bad):
+    with pytest.raises(SiteMapError):
+        validate_args(make_args(**bad))
+
+
+def test_validate_args_accepts_defaults():
+    validate_args(make_args())  # must not raise
+
+
+# ------------------------------------------------------------ labels CSV
+def test_load_manual_labels_missing_columns(tmp_path):
+    p = tmp_path / "bad.csv"
+    p.write_text("wrong,cols\n1,2\n", encoding="utf-8")
+    with pytest.raises(SiteMapError, match="invalid structure"):
+        load_manual_labels(str(p))
+
+
+def test_load_manual_labels_roundtrip(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text(
+        "feature_id,display_name\n"
+        "way/1,อาคารทดสอบ\n"
+        "way/2,\n"            # empty override must be ignored (FR-07)
+        ",Orphan\n",          # missing id must be ignored
+        encoding="utf-8")
+    assert load_manual_labels(str(p)) == {"way/1": "อาคารทดสอบ"}
+
+
+def test_load_manual_labels_utf8_bom(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_bytes("feature_id,display_name\nway/9,ศาลากลาง\n"
+                  .encode("utf-8-sig"))
+    assert load_manual_labels(str(p)) == {"way/9": "ศาลากลาง"}
+
+
+# ------------------------------------------------------------- inventory
+def synthetic_buildings():
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    # Deliberately unsorted ids to prove deterministic ordering
+    idx = pd.MultiIndex.from_tuples(
+        [("way", 30), ("way", 10), ("relation", 5), ("way", 20)],
+        names=["element", "id"])
+    return gpd.GeoDataFrame(
+        {
+            "name": [None, "วัดทดสอบ", None, None],
+            "building": ["yes", "temple", "yes", "house"],
+        },
+        geometry=[box(i * 100, 0, i * 100 + 50, 40) for i in range(4)],
+        index=idx, crs="EPSG:32647")
+
+
+def wgs_transformer():
+    from pyproj import Transformer
+    return Transformer.from_crs("EPSG:32647", "EPSG:4326", always_xy=True)
+
+
+def test_inventory_codes_deterministic_and_unique():
+    records = build_inventory(synthetic_buildings(), wgs_transformer(), {})
+    by_id = {r.feature_id: r for r in records}
+    assert len(records) == 4
+    # Sorted by feature_id string: relation/5, way/10, way/20, way/30.
+    # way/10 is named, so unnamed buildings code up in that order.
+    assert by_id["relation/5"].code == "B001"
+    assert by_id["way/10"].code == ""
+    assert by_id["way/10"].display_name == "วัดทดสอบ"
+    assert by_id["way/20"].code == "B002"
+    assert by_id["way/30"].code == "B003"
+    # Re-running produces the identical assignment (NFR-02)
+    again = build_inventory(synthetic_buildings(), wgs_transformer(), {})
+    assert [(r.feature_id, r.code) for r in again] == \
+           [(r.feature_id, r.code) for r in records]
+
+
+def test_inventory_override_and_fallback():
+    overrides = {"way/20": "Verified Hall", "way/10": ""}
+    records = build_inventory(synthetic_buildings(), wgs_transformer(),
+                              overrides)
+    by_id = {r.feature_id: r for r in records}
+    assert by_id["way/20"].display_name == "Verified Hall"
+    assert by_id["way/20"].code == "B002"          # code retained in CSV
+    assert by_id["way/10"].display_name == "วัดทดสอบ"  # empty -> source name
+    assert by_id["relation/5"].display_name == "B001"  # unnamed -> code
+
+
+def test_inventory_coordinates_are_wgs84():
+    records = build_inventory(synthetic_buildings(), wgs_transformer(), {})
+    for r in records:
+        assert -90 <= r.latitude <= 90
+        assert -180 <= r.longitude <= 180
+
+
+def test_feature_id_of():
+    assert feature_id_of(("way", 123)) == "way/123"
+    assert feature_id_of(("relation", 7)) == "relation/7"
+    assert feature_id_of("plain") == "plain"
+
+
+# ------------------------------------------- review-finding regression tests
+def test_iter_parts_descends_geometry_collection():
+    from shapely.geometry import (GeometryCollection, LineString,
+                                  MultiPolygon, Point, box)
+    from generate_detailed_site_map import iter_parts
+
+    gc = GeometryCollection([
+        Point(0, 0),
+        LineString([(0, 0), (1, 1)]),
+        MultiPolygon([box(0, 0, 1, 1), box(2, 0, 3, 1)]),
+    ])
+    assert len(list(iter_parts(gc, ("Polygon",)))) == 2
+    assert len(list(iter_parts(gc, ("LineString",)))) == 1
+
+
+def test_polygon_patch_preserves_holes():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from shapely.geometry import Polygon
+    from generate_detailed_site_map import polygon_patch
+    from matplotlib.path import Path as MplPath
+
+    donut = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)],
+                    holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]])
+    patch = polygon_patch(donut, facecolor="red", edgecolor="none")
+    # Two MOVETO codes = two rings in one path (real hole, not a cover patch)
+    assert list(patch.get_path().codes).count(MplPath.MOVETO) == 2
+    # The rendered result must show the hole (white), not paint over it
+    fig, ax = plt.subplots(figsize=(2, 2), dpi=50)
+    ax.add_patch(patch)
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    ax.axis("off")
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())
+    h, w, _ = buf.shape
+    hole_px = buf[h // 2, w // 2]
+    ring_px = buf[h // 2, w // 5]
+    plt.close(fig)
+    assert hole_px[0] > 200 and hole_px[1] > 200      # hole stays white
+    assert ring_px[0] > 200 and ring_px[1] < 100      # ring is red
+
+
+def test_split_features_building_no_and_riverbank():
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import LineString, box
+    from generate_detailed_site_map import split_features
+
+    rect = box(0, 0, 500, 250)
+    idx = pd.MultiIndex.from_tuples(
+        [("way", 1), ("way", 2), ("way", 3), ("way", 4)],
+        names=["element", "id"])
+    gdf = gpd.GeoDataFrame(
+        {
+            "building": ["yes", "no", None, None],
+            "natural": [None, None, None, None],
+            "waterway": [None, None, "riverbank", "stream"],
+            "highway": [None, None, None, None],
+        },
+        geometry=[box(10, 10, 40, 40),          # real building
+                  box(50, 10, 80, 40),          # building=no -> excluded
+                  box(100, 10, 200, 100),       # riverbank polygon -> water
+                  LineString([(0, 200), (500, 200)])],  # stream line
+        index=idx, crs="EPSG:32647")
+    layers = split_features(gdf, "EPSG:32647", rect)
+    assert [feature_id_of(i) for i in layers["buildings"].index] == ["way/1"]
+    assert [feature_id_of(i) for i in layers["water_polys"].index] == \
+        ["way/3"]
+    assert [feature_id_of(i) for i in layers["water_lines"].index] == \
+        ["way/4"]
+
+
+def test_representative_fraction_letterboxed():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from generate_detailed_site_map import representative_fraction
+
+    fig = plt.figure(figsize=(16.54, 11.69))
+    ax = fig.add_axes([0.04, 0.225, 0.92, 0.695])
+    # Width-limited (500x250): drawn width == box width
+    wide = representative_fraction(fig, ax, 500.0, 250.0)
+    # Height-limited (250x500): the drawn map is much narrower than the
+    # box, so the scale denominator must be much larger, not equal
+    tall = representative_fraction(fig, ax, 250.0, 500.0)
+    plt.close(fig)
+    assert wide == 1300
+    # pre-fix behavior computed ~650 here (nominal box width); the drawn
+    # map is only ~4 in wide, so the true scale is much smaller
+    assert tall == 2400
+
+
+def test_validate_args_rejects_nan_width():
+    with pytest.raises(SiteMapError):
+        validate_args(make_args(width="nan"))
+
+
+def test_standard_profile_auto_orients_and_gov_stays_landscape():
+    """Portrait extents must not waste most of the sheet; the government
+    profile keeps landscape per spec 13.9."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from generate_detailed_site_map import SHEET_SIZES
+
+    a3_w, a3_h = SHEET_SIZES["A3"]
+    # The rule the renderer applies:
+    for w_m, h_m, expect_landscape in [(500, 250, True), (250, 500, False)]:
+        sw, sh = (a3_h, a3_w) if h_m > w_m else (a3_w, a3_h)
+        assert (sw >= sh) is expect_landscape
+    plt.close("all")
+
+
+def test_government_type_scales_with_sheet_size():
+    """Font sizes are absolute points, so they must shrink on smaller
+    sheets or the info column overruns the border (spec 8.3/11)."""
+    from generate_detailed_site_map import SHEET_SIZES
+
+    a3 = SHEET_SIZES["A3"][0]
+    scales = {name: SHEET_SIZES[name][0] / a3 for name in SHEET_SIZES}
+    assert scales["A3"] == 1.0
+    assert scales["A4"] < 0.75          # A4 type must be meaningfully smaller
+    assert scales["A2"] > 1.4           # A2 type larger, keeping proportions
+    # All sheets share the ISO aspect ratio, so scaling by width is safe
+    for w, h in SHEET_SIZES.values():
+        assert abs((w / h) - (a3 / SHEET_SIZES["A3"][1])) < 0.01
+
+
+# ------------------------------------------------ scale-aware label density
+def test_label_fits_is_scale_aware():
+    """The same building/label pair must fit at a large printed scale and
+    not fit at a small one (spec 8.4 readability)."""
+    from shapely.geometry import box
+    from generate_detailed_site_map import label_fits
+
+    footprint = box(0, 0, 15, 10)          # ordinary 15 x 10 m shophouse
+    # 500 m across a ~15 in sheet: roughly 0.46 m per point -> fits
+    assert label_fits("B001", 5.5, footprint, 0.46)
+    # 2000 m across the same sheet: ~1.85 m per point -> no longer fits
+    assert not label_fits("B001", 5.5, footprint, 1.85)
+
+
+def test_label_fits_rejects_overlong_names():
+    from shapely.geometry import box
+    from generate_detailed_site_map import label_fits
+
+    small = box(0, 0, 12, 10)
+    assert label_fits("Hall", 5.5, small, 0.3)
+    assert not label_fits("ศูนย์ราชการจังหวัดลพบุรี", 5.5, small, 0.3)
+
+
+def test_draw_buildings_drops_colliding_codes_but_keeps_names():
+    """Named landmarks outrank B### codes and road labels; codes yield."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from shapely.geometry import box
+    from generate_detailed_site_map import BuildingRecord, draw_buildings
+
+    recs = [
+        BuildingRecord("way/1", "", "Siam Center", "Siam Center", "retail",
+                       0, 0, box(0, 0, 60, 40)),
+        # Overlaps the name and is too tight for any alternate position,
+        # so this code must yield rather than overprint
+        BuildingRecord("way/2", "B001", "", "B001", "yes", 0, 0,
+                       box(28, 19, 33, 21)),
+    ]
+    fig, ax = plt.subplots()
+    dropped = draw_buildings(ax, recs, COLOURS_FOR_TEST, True, 0.3)
+    texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+    assert "Siam Center" in texts
+    assert "B001" not in texts
+    assert dropped == 1
+
+
+def test_named_building_ignores_road_label_box():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from shapely.geometry import box
+    from generate_detailed_site_map import BuildingRecord, draw_buildings
+
+    rec = [BuildingRecord("way/1", "", "Siam Discovery", "Siam Discovery",
+                          "retail", 0, 0, box(0, 0, 60, 40))]
+    code = [BuildingRecord("way/2", "B001", "", "B001", "yes", 0, 0,
+                           box(0, 0, 60, 40))]
+    road_box = [(-100, -100, 100, 100)]   # road label covering everything
+    fig, ax = plt.subplots()
+    draw_buildings(ax, rec, COLOURS_FOR_TEST, True, 0.3, occupied=road_box)
+    named_texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+
+    fig, ax = plt.subplots()
+    dropped = draw_buildings(ax, code, COLOURS_FOR_TEST, True, 0.3,
+                             occupied=road_box)
+    code_texts = [t.get_text() for t in ax.texts]
+    plt.close(fig)
+
+    assert "Siam Discovery" in named_texts   # landmark survives (13.6)
+    assert code_texts == [] and dropped == 1  # code yields to the road name
+
+
+COLOURS_FOR_TEST = {
+    "building_fill": "#DCEFF2", "building_edge": "#008C99",
+    "text_primary": "#102A43",
+}
+
+
+# ------------------------------------------------- end-to-end (opt-in, slow)
+@pytest.mark.skipif(not os.environ.get("RUN_NETWORK_TESTS"),
+                    reason="set RUN_NETWORK_TESTS=1 to hit Overpass")
+def test_end_to_end_generates_outputs(tmp_path):
+    from generate_detailed_site_map import main
+    pdf = tmp_path / "map.pdf"
+    png = tmp_path / "map.png"
+    inv = tmp_path / "inv.csv"
+    rc = main(["--lat", "14.799417", "--lon", "100.614458",
+               "--output", str(pdf), "--png", str(png),
+               "--inventory", str(inv)])
+    assert rc == 0
+    assert pdf.stat().st_size > 10_000
+    assert png.stat().st_size > 100_000
+    assert inv.read_text(encoding="utf-8").startswith("feature_id,")
