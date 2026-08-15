@@ -35,6 +35,7 @@ LAYER_STYLE = {
     "C-ROAD-EDGE": (30, 35),
     "C-ROAD-CNTR": (8, 9),
     "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
+    "C-ROAD-ARRW": (30, 18),     # one-way direction arrows
     "C-ROAD-ROWY": (1, 35),      # right of way, empty and ready to draw
     "C-TOPO-CONT": (8, 13),
     "C-TOPO-MAJR": (8, 25),   # index contours: heavier, labelled
@@ -148,6 +149,11 @@ def main(argv=None) -> int:
     from ezdxf.enums import MTextEntityAlignment
     from shapely import wkb
 
+    # Placement rules the extraction route also calls, so a drawing and its
+    # re-issue agree on where a label anchor and a direction arrow land.
+    import blocks
+    import stage_db
+
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -157,6 +163,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-labels", action="store_true",
                     help="geometry only, leave C-ANNO-TEXT empty")
     ap.add_argument("--no-contours", action="store_true")
+    ap.add_argument("--no-attributes", action="store_true",
+                    help="Do not re-attach the staged OSM tags as XDATA, and "
+                         "do not write attributes.csv")
     ap.add_argument("--mono", action="store_true",
                     help="Monochrome: every layer on ACI 7 (same as "
                          "topo2cad.py --mono)")
@@ -192,22 +201,43 @@ def main(argv=None) -> int:
     doc.layers.get("C-ANNO-EXTN").dxf.linetype = "DASHED"
     doc.header["$LTSCALE"] = 5.0
 
+    # The source OSM tags were staged with the features, so a re-issue is not
+    # a drawing stripped of its attributes. Same appid, same 255-byte clip,
+    # same order as the extraction routes — the rules live in stage_db.
+    feature_tags = {} if a.no_attributes else stage_db.tags_by_feature(conn,
+                                                                       pid)
+    # One project can hold both: OSM tags on the extraction, a survey's own
+    # fields on what gis2cad imported beside it.
+    for appid in {ap for ap, _tags in feature_tags.values()}:
+        if appid not in doc.appids:
+            doc.appids.add(appid)
+
+    def attach(entity, feature_id):
+        appid, tags = feature_tags.get(feature_id, (None, None))
+        if tags and entity is not None:
+            entity.set_xdata(appid, stage_db.xdata_tags(feature_id, tags))
+
     # ---- geometry: three SELECTs -------------------------------------
     n_b = 0
-    for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_buildings"
-                            " WHERE project_id = ?", (pid,)):
+    for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer FROM"
+                            " staging_buildings WHERE project_id = ?", (pid,)):
+        first = True
         for poly in parts(wkb.loads(row["geom_wkb"]), "Polygon"):
-            msp.add_lwpolyline(list(poly.exterior.coords), close=True,
-                               dxfattribs={"layer": row["cad_layer"]})
+            entity = msp.add_lwpolyline(
+                list(poly.exterior.coords), close=True,
+                dxfattribs={"layer": row["cad_layer"]})
+            if first:
+                attach(entity, row["feature_id"])
+                first = False
             for ring in poly.interiors:      # courtyards stay open
                 msp.add_lwpolyline(list(ring.coords), close=True,
                                    dxfattribs={"layer": row["cad_layer"]})
             n_b += 1
 
-    n_r = n_e = 0
-    for row in conn.execute("SELECT geom_wkb, carriageway_m, cad_layer"
-                            " FROM staging_roads WHERE project_id = ?",
-                            (pid,)):
+    n_r = n_e = n_a = 0
+    for row in conn.execute("SELECT feature_id, geom_wkb, carriageway_m,"
+                            " cad_layer, oneway FROM staging_roads"
+                            " WHERE project_id = ?", (pid,)):
         # A footway stages with carriageway_m = 0 and its own cad_layer, so
         # it draws as one line with no edge of pavement — matching
         # topo2cad.py, which never offsets a 1.5 m path.
@@ -215,37 +245,51 @@ def main(argv=None) -> int:
         width = 5.0 if width is None else width
         for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
             coords = list(line.coords)
-            msp.add_lwpolyline(coords,
-                               dxfattribs={"layer": row["cad_layer"]})
+            attach(msp.add_lwpolyline(
+                coords, dxfattribs={"layer": row["cad_layer"]}),
+                row["feature_id"])
             n_r += 1
             if width > 0:
                 for edge in road_edges(coords, width):
                     msp.add_lwpolyline(edge,
                                        dxfattribs={"layer": "C-ROAD-EDGE"})
                     n_e += 1
+            # Direction arrows, placed by stage_db's rule — the same call
+            # the extraction route makes, so a re-issue puts them on the
+            # same metre. Paths stage with carriageway_m = 0 and get none.
+            if row["oneway"] and width > 0:
+                size = stage_db.oneway_arrow_size(width)
+                for ax, ay, rot in stage_db.arrow_positions(coords):
+                    blocks.add_oneway_arrow(
+                        doc, msp, ax, ay, size,
+                        rot + (180.0 if row["oneway"] < 0 else 0.0),
+                        "C-ROAD-ARRW")
+                    n_a += 1
 
     # Context linework. A run whose first and last vertex coincide was drawn
     # closed by topo2cad.py — a pond or a park boundary — so the closed flag
     # is recovered from the coordinates rather than stored beside them.
     n_x = 0
-    for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_context"
-                            " WHERE project_id = ?", (pid,)):
+    for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer FROM"
+                            " staging_context WHERE project_id = ?", (pid,)):
         for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
             coords = list(line.coords)
             if len(coords) < 2:
                 continue
-            msp.add_lwpolyline(coords, close=coords[0] == coords[-1],
-                               dxfattribs={"layer": row["cad_layer"]})
+            attach(msp.add_lwpolyline(
+                coords, close=coords[0] == coords[-1],
+                dxfattribs={"layer": row["cad_layer"]}), row["feature_id"])
             n_x += 1
 
     # Landmark point symbols. The areas came through staging_buildings above
     # already, carrying their own C-SITE-POI cad_layer.
     n_p = 0
-    for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_pois"
-                            " WHERE project_id = ?", (pid,)):
+    for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer FROM"
+                            " staging_pois WHERE project_id = ?", (pid,)):
         for pt in parts(wkb.loads(row["geom_wkb"]), "Point"):
-            import blocks
-            blocks.add_poi_symbol(doc, msp, pt.x, pt.y, 2.0, row["cad_layer"])
+            attach(blocks.add_poi_symbol(doc, msp, pt.x, pt.y, 2.0,
+                                         row["cad_layer"]),
+                   row["feature_id"])
             n_p += 1
 
     n_c = 0
@@ -349,12 +393,26 @@ def main(argv=None) -> int:
     if a.mono:
         apply_mono(doc)
     doc.saveas(out)
+
+    # The attribute table travels with the re-issue too, or a corrected
+    # drawing would arrive without the source data the first one had.
+    n_at = 0
+    if feature_tags:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT feature_id, feature_type, cad_layer, display_name,"
+            " key, value FROM staging_tags WHERE project_id = ?"
+            " ORDER BY feature_id, key", (pid,))]
+        n_at = stage_db.write_attribute_csv(
+            out.with_name("attributes.csv"), rows)
     conn.close()
     print(f"Project '{proj['name']}' (EPSG:{proj['srid']}, "
           f"{proj['width_m']:.0f} x {proj['height_m']:.0f} m)")
     print(f"  {n_b} building outlines, {n_r} road centrelines "
-          f"(+{n_e} edges), {n_c} contours, {n_x} context lines, "
-          f"{n_p} POI symbols, {n_t} MTEXT")
+          f"(+{n_e} edges, {n_a} one-way arrows), {n_c} contours, "
+          f"{n_x} context lines, {n_p} POI symbols, {n_t} MTEXT")
+    if n_at:
+        print(f"  {n_at} source tags re-attached as XDATA and written to "
+              f"{out.with_name('attributes.csv').name}")
     print(f"Saved: {out}")
     return 0
 
