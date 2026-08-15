@@ -9,6 +9,7 @@
 #   "pyproj",
 #   "requests",
 #   "shapely>=2.0",
+#   "pillow",
 # ]
 # ///
 """Topo + OSM (buildings w/ names, roads) around a GPS point -> DXF."""
@@ -71,6 +72,21 @@ def parse_args():
                         "this where OSM and the ML footprints have nothing "
                         "and the buildings have to be traced from imagery "
                         "you own. Must already be in the drawing's UTM CRS.")
+    p.add_argument("--basemap", nargs="?", const="osm", metavar="PROVIDER",
+                   help="Fetch a background map for the extent and place "
+                        "it beneath the linework: osm, opentopomap, "
+                        "esri-topo, esri-imagery, esri-street, carto-light, "
+                        "carto-dark, carto-voyager, osm-hot, cyclosm, or a "
+                        "{z}/{x}/{y} tile URL template. Written as "
+                        "basemap.tif beside the drawing — the DXF stores a "
+                        "path, so keep the pair together. Not staged: a "
+                        "db2dxf.py re-issue draws the linework alone.")
+    p.add_argument("--basemap-zoom", type=int, metavar="Z",
+                   help="Force a tile zoom instead of the sharpest one "
+                        "inside the tile cap")
+    p.add_argument("--basemap-max-tiles", type=int, default=128, metavar="N",
+                   help="Tile budget for the background map (default 128); "
+                        "the zoom steps down until the extent fits")
     p.add_argument("--mono", action="store_true",
                    help="Monochrome: every layer on ACI 7, which plots black "
                         "on white and shows white on a dark model space. The "
@@ -89,6 +105,11 @@ def parse_args():
                         "dense site this is mostly restaurants and cafes: 144 "
                         "landmark points instead of 9 over 770 x 410 m in "
                         "central Bangkok.")
+    p.add_argument("--no-attributes", action="store_true",
+                   help="Do not attach the source OSM tags to each entity as "
+                        "XDATA, and do not write attributes.csv. The default "
+                        "carries them, so a drafter can LIST a building and "
+                        "read the tags it was drawn from.")
     p.add_argument("--names-only", action="store_true",
                    help="Label only buildings that carry an OSM name. The "
                         "default also labels unnamed footprints with their "
@@ -359,6 +380,141 @@ def poi_kind(tags, curated=True):
     return None
 
 
+def source_tags(elements):
+    """feature_id -> the element's original OSM tags.
+
+    `classify_elements()` keeps only what it draws with — names, highway
+    class, POI kind. The attributes a CAD user inspects come from here, so
+    the drawing carries the source data rather than a summary of it.
+    """
+    return {f"{el['type']}/{el['id']}": el.get("tags", {}) for el in elements}
+
+
+def assign_inner_rings(outers, inners):
+    """Group a multipolygon's inner rings by the outer ring containing each.
+
+    A relation with several `outer` members is several separate buildings
+    sharing one relation — a mall with two blocks, an atrium in one of them.
+    Attaching every inner to the first outer punches a courtyard through the
+    wrong building; dropping them, which this used to do, fills in a real
+    one. OSM's multipolygon rules define the answer by containment, so ask
+    for it: an inner belongs to the outer whose ring encloses it.
+
+    Returns one list of holes per outer, in the outers' own order.
+    """
+    from shapely.geometry import Polygon
+
+    def as_poly(ring):
+        try:
+            poly = Polygon(ring)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            return None if poly.is_empty else poly
+        except Exception:
+            return None
+
+    polys = [as_poly(ring) for ring in outers]
+    holes = [[] for _ in outers]
+    for ring in inners:
+        hole = as_poly(ring)
+        if hole is None:
+            continue
+        point = hole.representative_point()
+        for i, poly in enumerate(polys):
+            if poly is not None and poly.contains(point):
+                holes[i].append(ring)
+                break
+        # An inner inside none of them is a broken relation upstream; it is
+        # left out rather than attached to an arbitrary building.
+    return holes
+
+
+def classify_elements(elements, curated=True):
+    """Sort raw OSM elements into the per-category lists the drawing steps
+    consume: buildings, roads, water, green, rail, barrier, POI points and
+    POI areas.
+
+    Elements are Overpass `out tags geom` shape — a way carries `geometry`
+    as [{lon, lat}, ...] and a relation carries `members` with a `role` and
+    the same geometry. `osm2cad.py` normalises a downloaded .osm file into
+    exactly that shape and calls this, so a file import and a live fetch
+    categorise identically; the tag rules live here once rather than in each
+    front door.
+    """
+    buildings, roads, pois, site_pois = [], [], [], []
+    water, green, rails, barriers = [], [], [], []
+
+    def kind_of(tags):
+        return poi_kind(tags, curated=curated)
+
+    for el in elements:
+        tags = el.get("tags", {})
+        if el["type"] == "node" and kind_of(tags) and best_name(tags):
+            # Unnamed landmark nodes (a waste basket, a bicycle stand) carry
+            # no information a drafter can use, so a name is still required
+            pois.append((names_by_lang(tags), el["lon"], el["lat"],
+                         kind_of(tags), f"node/{el['id']}"))
+        elif el["type"] == "way" and "geometry" in el:
+            pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
+            fid = f"{el['type']}/{el['id']}"
+            if "building" in tags:
+                # (exterior, holes) — a way has one ring by definition
+                buildings.append((names_by_lang(tags), (pts, []), fid))
+            elif "highway" in tags:
+                roads.append((names_by_lang(tags), tags.get("ref"), pts,
+                              tags["highway"], fid, oneway_dir(tags)))
+            elif "waterway" in tags or tags.get("natural") == "water":
+                water.append((names_by_lang(tags), pts, fid))
+            elif "leisure" in tags or "landuse" in tags:
+                green.append((names_by_lang(tags), pts, fid))
+            elif "railway" in tags:
+                rails.append((names_by_lang(tags), pts, fid))
+            elif "barrier" in tags:
+                barriers.append((names_by_lang(tags), pts, fid))
+            elif kind_of(tags) and len(pts) >= 3:
+                # A landmark mapped as an area but not tagged `building`:
+                # hospital and school grounds, temple precincts, car parks.
+                # A landmark that IS a building came through the branch
+                # above and already has its outline and name.
+                site_pois.append((names_by_lang(tags), pts, fid,
+                                  kind_of(tags)))
+        elif el["type"] == "relation":
+            if "building" in tags or kind_of(tags):
+                # A multipolygon carries its courtyards as `inner` members.
+                # Reading only the first `outer` — as this did — draws a
+                # temple or a mall with its atrium filled in solid.
+                outers, inners = [], []
+                for m in el.get("members", []):
+                    if "geometry" not in m:
+                        continue
+                    ring = [(g["lon"], g["lat"]) for g in m["geometry"]]
+                    if len(ring) < 3:
+                        continue
+                    if m.get("role") == "outer":
+                        outers.append(ring)
+                    elif m.get("role") == "inner":
+                        inners.append(ring)
+                if not outers:
+                    continue
+                fid = f"relation/{el['id']}"
+                # Several outers is several separate buildings sharing one
+                # relation; each hole goes to the outer that contains it.
+                hole_sets = ([inners] if len(outers) == 1
+                             else assign_inner_rings(outers, inners))
+                for i, outer in enumerate(outers):
+                    holes = hole_sets[i]
+                    part_id = fid if len(outers) == 1 else f"{fid}/{i}"
+                    if "building" in tags:
+                        buildings.append((names_by_lang(tags),
+                                          (outer, holes), part_id))
+                    else:
+                        site_pois.append((names_by_lang(tags), outer,
+                                          part_id, kind_of(tags)))
+    return {"buildings": buildings, "roads": roads, "water": water,
+            "green": green, "rails": rails, "barriers": barriers,
+            "pois": pois, "site_pois": site_pois}
+
+
 # Carriageway width in metres per highway class, used to draw each road as
 # two parallel edges (the CAD convention) rather than a single centreline.
 ROAD_WIDTH_M = {
@@ -377,6 +533,32 @@ ROAD_WIDTH_M = {
 PATH_TYPES = {"footway", "path", "cycleway", "steps", "pedestrian",
               "bridleway", "corridor"}
 
+# OSM spells one-way several ways, and two of them mean "backwards along the
+# way as drawn" — getting that wrong points every arrow on the sliproad at
+# oncoming traffic, which is worse than drawing none.
+ONEWAY_FORWARD = {"yes", "true", "1"}
+ONEWAY_REVERSE = {"-1", "reverse"}
+# A roundabout is one-way by definition and is very often not tagged so.
+IMPLICIT_ONEWAY_JUNCTIONS = {"roundabout", "circular"}
+
+
+def oneway_dir(tags) -> int:
+    """1 with the geometry, -1 against it, 0 for two-way.
+
+    `oneway=no` wins over an implicit roundabout: a mapper who typed it
+    meant it.
+    """
+    value = str(tags.get("oneway", "")).strip().lower()
+    if value in ONEWAY_FORWARD:
+        return 1
+    if value in ONEWAY_REVERSE:
+        return -1
+    if value in ("no", "false", "0"):
+        return 0
+    if tags.get("junction", "").lower() in IMPLICIT_ONEWAY_JUNCTIONS:
+        return 1
+    return 0
+
 
 # CAD layer names follow the NCS/AIA convention (discipline-major-minor) so
 # the DXF drops straight into an engineering drawing set. All annotation is
@@ -388,6 +570,10 @@ LAYERS = {
     # Footways, cycleways and steps are not carriageways: drawing a 1.5 m
     # path with two offset kerb lines makes it read as a road on the plan.
     "road_path": "C-ROAD-PATH",
+    # Direction-of-travel arrows on one-way carriageways, from the OSM
+    # `oneway` tag (and the roundabouts that imply it). Their own layer so a
+    # drafter can plot the drawing without traffic direction on it.
+    "road_arrow": "C-ROAD-ARRW",
     # No OSM source for a legal right-of-way, so this is created empty and
     # ready for a drafter to draw the ROW onto, like C-PROP-LINE.
     "road_row": "C-ROAD-ROWY",
@@ -597,11 +783,20 @@ def new_ml_rings(existing_rings, ms_rings):
 
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
                 contours=(), contour_layers=None,
-                poi_points=(), poi_areas=(), context=()):
+                poi_points=(), poi_areas=(), context=(), attributes=(),
+                merge=False):
     """Stage what was just drawn into the SQLite layer, with CAD label
-    anchors precomputed so the drawing step is plain SELECTs."""
+    anchors precomputed so the drawing step is plain SELECTs.
+
+    `merge` keeps what is already staged under this project name instead of
+    replacing it, which is what an *import* wants: bringing in one feature
+    type at a time from the same file, or adding a survey layer beside an
+    extraction. Re-extracting a coordinate wants the opposite — the site is
+    being refreshed, and last run's features must not linger — so
+    `topo2cad.py` leaves it False and `gis2cad.py`/`osm2cad.py` set it.
+    """
     from pyproj import Transformer
-    from shapely.geometry import LineString, MultiLineString, Polygon
+    from shapely.geometry import LineString, MultiLineString
 
     import stage_db
 
@@ -612,9 +807,14 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     project = a.project or f"{a.lat:.6f}_{a.lon:.6f}_{extent}"
 
     conn = stage_db.connect(a.db)
-    pid = stage_db.create_project(
-        conn, project, a.lat, a.lon,
-        a.width or (a.radius * 2), a.height or (a.radius * 2), utm_epsg)
+    width = a.width or (a.radius * 2)
+    height = a.height or (a.radius * 2)
+    if merge:
+        pid, existed = stage_db.get_or_create_project(
+            conn, project, a.lat, a.lon, width, height, utm_epsg)
+    else:
+        pid, existed = stage_db.create_project(
+            conn, project, a.lat, a.lon, width, height, utm_epsg), False
 
     b_rows = []
     for row in inventory:
@@ -625,10 +825,9 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
         if len(pts) < 3:
             continue
         # Holes are staged with the polygon, so db2dxf.py's interiors loop
-        # redraws the same courtyards rather than a solid footprint.
-        poly = Polygon(pts, holes)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
+        # redraws the same courtyards rather than a solid footprint. Repaired
+        # by the same helper the drawing step used, so the two agree.
+        poly = stage_db.repaired_polygon(pts, holes)
         if poly.is_empty:
             continue
         b_rows.append({**row, "geom": poly})
@@ -638,9 +837,7 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     # what keeps them off C-BLDG-OUTL and out of the building inventory.
     n_sp = 0
     for rec in poi_areas:
-        poly = Polygon(rec["geom_pts"])
-        if not poly.is_valid:
-            poly = poly.buffer(0)
+        poly = stage_db.repaired_polygon(rec["geom_pts"])
         if poly.is_empty:
             continue
         b_rows.append({k: v for k, v in rec.items() if k != "geom_pts"}
@@ -667,13 +864,27 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
               for lev, pts in contours if len(pts) >= 2]
     n_c = stage_db.stage_contours(conn, pid, c_rows)
 
+    # The source tags travel with the drawing, so db2dxf.py can re-attach
+    # the same XDATA instead of re-issuing a drawing stripped of it.
+    n_t = stage_db.stage_tags(conn, pid, list(attributes))
+
     labels = conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
                           " project_id = ?", (pid,)).fetchone()[0]
+    # Only a merge reports them, so only a merge pays for the counts
+    totals = {t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE project_id = ?",
+                              (pid,)).fetchone()[0]
+              for t in ("staging_buildings", "staging_roads")} if existed \
+        else {}
     conn.close()
-    print(f"Staged to {a.db}: project '{project}' (id {pid}) — "
+    verb = "Merged into" if existed else "Staged to"
+    print(f"{verb} {a.db}: project '{project}' (id {pid}) — "
           f"{n_b} buildings, {n_r} roads, {n_c} contours, "
           f"{n_p} POI points, {n_sp} POI areas, {n_x} context, "
-          f"{labels} CAD labels ready")
+          f"{n_t} tags, {labels} CAD labels ready")
+    if existed:
+        # A re-issue draws everything staged, not just this import
+        print(f"  project now holds {totals['staging_buildings']} buildings "
+              f"and {totals['staging_roads']} roads in total")
 
 
 def main():
@@ -732,78 +943,13 @@ def main():
     # ---- OSM buildings + roads ------------------------------------------
     print("Fetching OSM data (Overpass)...")
     elements = fetch_osm(s, w, n, e)
-    buildings, roads, pois = [], [], []
-    site_pois = []
-
-    def kind_of(tags):
-        return poi_kind(tags, curated=not a.all_poi)
-
-    water, green, rails, barriers = [], [], [], []
-    for el in elements:
-        tags = el.get("tags", {})
-        if el["type"] == "node" and kind_of(tags) and best_name(tags):
-            # Unnamed landmark nodes (a waste basket, a bicycle stand) carry
-            # no information a drafter can use, so a name is still required
-            pois.append((names_by_lang(tags), el["lon"], el["lat"],
-                         kind_of(tags), f"node/{el['id']}"))
-        elif el["type"] == "way" and "geometry" in el:
-            pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
-            name = best_name(tags)
-            fid = f"{el['type']}/{el['id']}"
-            if "building" in tags:
-                # (exterior, holes) — a way has one ring by definition
-                buildings.append((names_by_lang(tags), (pts, []),
-                                  f"{el['type']}/{el['id']}"))
-            elif "highway" in tags:
-                roads.append((names_by_lang(tags), tags.get("ref"), pts,
-                              tags["highway"], f"{el['type']}/{el['id']}"))
-            elif "waterway" in tags or tags.get("natural") == "water":
-                water.append((names_by_lang(tags), pts, fid))
-            elif "leisure" in tags or "landuse" in tags:
-                green.append((names_by_lang(tags), pts, fid))
-            elif "railway" in tags:
-                rails.append((names_by_lang(tags), pts, fid))
-            elif "barrier" in tags:
-                barriers.append((names_by_lang(tags), pts, fid))
-            elif kind_of(tags) and len(pts) >= 3:
-                # A landmark mapped as an area but not tagged `building`:
-                # hospital and school grounds, temple precincts, car parks.
-                # A landmark that IS a building came through the branch
-                # above and already has its outline and name.
-                site_pois.append((names_by_lang(tags), pts,
-                                  f"{el['type']}/{el['id']}", kind_of(tags)))
-        elif el["type"] == "relation":
-            if "building" in tags or kind_of(tags):
-                # A multipolygon carries its courtyards as `inner` members.
-                # Reading only the first `outer` — as this did — draws a
-                # temple or a mall with its atrium filled in solid.
-                outers, inners = [], []
-                for m in el.get("members", []):
-                    if "geometry" not in m:
-                        continue
-                    ring = [(g["lon"], g["lat"]) for g in m["geometry"]]
-                    if len(ring) < 3:
-                        continue
-                    if m.get("role") == "outer":
-                        outers.append(ring)
-                    elif m.get("role") == "inner":
-                        inners.append(ring)
-                if not outers:
-                    continue
-                fid = f"relation/{el['id']}"
-                # Several outers is several separate buildings sharing one
-                # relation; the holes belong to whichever contains them, and
-                # attaching them all to the first is only right when there
-                # is one, so multi-outer relations keep their rings solid.
-                for i, outer in enumerate(outers):
-                    holes = inners if len(outers) == 1 else []
-                    part_id = fid if len(outers) == 1 else f"{fid}/{i}"
-                    if "building" in tags:
-                        buildings.append((names_by_lang(tags),
-                                          (outer, holes), part_id))
-                    else:
-                        site_pois.append((names_by_lang(tags), outer,
-                                          part_id, kind_of(tags)))
+    # The tag rules live in classify_elements() so osm2cad.py's file route
+    # sorts a downloaded extract into exactly the same categories.
+    features = classify_elements(elements, curated=not a.all_poi)
+    buildings, roads = features["buildings"], features["roads"]
+    water, green = features["water"], features["green"]
+    rails, barriers = features["rails"], features["barriers"]
+    pois, site_pois = features["pois"], features["site_pois"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas")
@@ -830,7 +976,7 @@ def main():
                            ("building", 4, 50), ("anno", 2, 25),
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
-                           ("road_path", 8, 13),
+                           ("road_path", 8, 13), ("road_arrow", 30, 18),
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
@@ -854,6 +1000,25 @@ def main():
     # Dashes are in drawing units — metres here — so without a scale the
     # CENTER pattern is sub-millimetre on paper and reads as continuous.
     doc.header["$LTSCALE"] = 5.0
+
+    # Source attributes: the OSM tags ride on each entity as extended data,
+    # and the same rows are written beside the drawing and staged, so a
+    # db2dxf.py re-issue can put them back.
+    tag_index = source_tags(elements)
+    drawn = []
+
+    if not a.no_attributes:
+        doc.appids.add(_anchor_rules.XDATA_APPID)
+
+    def attach(entity, fid):
+        tags = tag_index.get(fid) or tag_index.get(fid.rsplit("/", 1)[0], {})
+        if not a.no_attributes and entity is not None and tags:
+            entity.set_xdata(_anchor_rules.XDATA_APPID,
+                             _anchor_rules.xdata_tags(fid, tags))
+
+    def record(fid, kind, layer, name):
+        drawn.append({"feature_id": fid, "feature_type": kind,
+                      "cad_layer": layer, "display_name": name or ""})
 
     if a.underlay:
         import underlay as ul
@@ -919,25 +1084,34 @@ def main():
     # Buildings: outline, then a label centred inside every footprint —
     # its name when OSM has one, otherwise a B### code carried in the
     # inventory CSV so field teams can fill the name in later.
-    from shapely.geometry import Polygon
-
     inventory = []
     staged_geoms = {}
     counter = 0
     for (th, en), (ext, holes), fid in sorted(buildings, key=lambda b: b[2]):
         ux, uy = to_utm.transform(*zip(*ext))
         upts = list(zip(ux, uy))
-        msp.add_lwpolyline(upts, close=True,
-                           dxfattribs={"layer": LAYERS["building"]})
-        # Courtyards stay open: each inner ring is its own closed polyline
-        # on the same layer, which is how a CAD island reads.
         uholes = []
         for hole in holes:
             hx, hy = to_utm.transform(*zip(*hole))
-            hpts = list(zip(hx, hy))
-            msp.add_lwpolyline(hpts, close=True,
-                               dxfattribs={"layer": LAYERS["building"]})
-            uholes.append(hpts)
+            uholes.append(list(zip(hx, hy)))
+        # Drawn from the repaired geometry, which is also what gets staged:
+        # a self-intersecting ring becomes two polygons under buffer(0), and
+        # drawing the raw ring while staging the repaired one gave a drawing
+        # one outline where its re-issue had two.
+        shape = _anchor_rules.repaired_polygon(upts, uholes)
+        first = True
+        for part in _anchor_rules.polygon_parts(shape):
+            entity = msp.add_lwpolyline(
+                list(part.exterior.coords), close=True,
+                dxfattribs={"layer": LAYERS["building"]})
+            if first:
+                attach(entity, fid)
+                first = False
+            # Courtyards stay open: each inner ring is its own closed
+            # polyline on the same layer, which is how a CAD island reads.
+            for ring in part.interiors:
+                msp.add_lwpolyline(list(ring.coords), close=True,
+                                   dxfattribs={"layer": LAYERS["building"]})
         name = th or en
         code = ""
         if not name:
@@ -946,21 +1120,17 @@ def main():
         label = name or code
         # ST_Centroid-style centroids fall outside concave footprints (~3% of
         # buildings in a dense extent), so anchor on a guaranteed interior
-        # point instead — equivalent to PostGIS ST_PointOnSurface.
+        # point instead — equivalent to PostGIS ST_PointOnSurface. It is the
+        # staging layer's own call, on the same shape, so a re-issue agrees.
         try:
-            # With the holes, so a label never lands in the open courtyard
-            poly = Polygon(upts, uholes)
-            if not poly.is_valid:
-                poly = poly.buffer(0)
-            pt = poly.representative_point() if not poly.is_empty else None
-            cx, cy = (pt.x, pt.y) if pt else (float(np.mean(ux)),
-                                              float(np.mean(uy)))
+            cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
         if name or not a.names_only:
             mtext_bilingual(th, en, cx, cy, 3.5,
                             fallback=None if a.names_only else code)
         staged_geoms[fid] = (upts, uholes)
+        record(fid, "building", LAYERS["building"], label)
         blon, blat = to_wgs.transform(cx, cy)
         inventory.append({"feature_id": fid, "code": code,
                           "osm_name": name or "", "display_name": label,
@@ -973,7 +1143,8 @@ def main():
     # Roads: both carriageway edges (CAD convention) plus a thin centreline,
     # labelled once per unique name with its route number.
     staged_roads = []
-    for (th, en), ref, pts, highway, fid in roads:
+    import blocks as _blocks
+    for (th, en), ref, pts, highway, fid, oneway in roads:
         name = th or en
         width_m = ROAD_WIDTH_M.get(highway, 5.0)
         is_path = highway in PATH_TYPES
@@ -989,13 +1160,25 @@ def main():
                 for edge in road_edges(upts, width_m):
                     msp.add_lwpolyline(
                         edge, dxfattribs={"layer": LAYERS["road_edge"]})
-            msp.add_lwpolyline(upts, dxfattribs={"layer": cad_layer})
+            attach(msp.add_lwpolyline(upts, dxfattribs={"layer": cad_layer}),
+                   fid)
+            # Direction of travel, spaced along the run by the same rule
+            # db2dxf.py applies to the staged geometry. Paths are excluded:
+            # a one-way footpath is not a traffic instruction.
+            if oneway and not is_path:
+                size = _anchor_rules.oneway_arrow_size(width_m)
+                for ax, ay, rot in _anchor_rules.arrow_positions(upts):
+                    _blocks.add_oneway_arrow(
+                        doc, msp, ax, ay, size,
+                        rot + (180.0 if oneway < 0 else 0.0),
+                        LAYERS["road_arrow"])
         if road_runs:
+            record(fid, "path" if is_path else "road", cad_layer, name)
             staged_roads.append({
                 "feature_id": fid, "highway_type": highway,
                 "road_name": name, "road_ref": ref,
                 "name_th": th or "", "name_en": en or "",
-                "cad_layer": cad_layer,
+                "cad_layer": cad_layer, "oneway": oneway,
                 # 0 tells the staging route not to offset edges either
                 "carriageway_m": 0.0 if is_path else width_m,
                 "runs": road_runs})
@@ -1063,10 +1246,11 @@ def main():
                 ux, uy = to_utm.transform(*zip(*run))
                 upts = list(zip(ux, uy))
                 closed = run[0] == run[-1]
-                msp.add_lwpolyline(upts, close=closed,
-                                   dxfattribs={"layer": layer})
+                attach(msp.add_lwpolyline(upts, close=closed,
+                                          dxfattribs={"layer": layer}), fid)
                 runs.append(upts)
             if runs:
+                record(fid, kind, layer, name)
                 staged_context.append({
                     "feature_id": fid, "kind": kind, "cad_layer": layer,
                     "name_th": th or "", "name_en": en or "",
@@ -1093,16 +1277,24 @@ def main():
     for (th, en), pts, fid, kind in sorted(site_pois, key=lambda p: p[2]):
         ux, uy = to_utm.transform(*zip(*pts))
         upts = list(zip(ux, uy))
-        msp.add_lwpolyline(upts, close=True,
-                           dxfattribs={"layer": LAYERS["site_poi"]})
+        shape = _anchor_rules.repaired_polygon(upts)
+        first = True
+        for part in _anchor_rules.polygon_parts(shape):
+            entity = msp.add_lwpolyline(
+                list(part.exterior.coords), close=True,
+                dxfattribs={"layer": LAYERS["site_poi"]})
+            if first:
+                attach(entity, fid)
+                first = False
+            for ring in part.interiors:
+                msp.add_lwpolyline(list(ring.coords), close=True,
+                                   dxfattribs={"layer": LAYERS["site_poi"]})
         try:
-            poly = Polygon(upts)
-            pt = poly.representative_point() if poly.is_valid else None
-            cx, cy = (pt.x, pt.y) if pt else (float(np.mean(ux)),
-                                              float(np.mean(uy)))
+            cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
         mtext_bilingual(th, en, cx, cy, 3.5)
+        record(fid, "landmark_area", LAYERS["site_poi"], th or en)
         staged_site_pois.append({"feature_id": fid, "poi_key": kind[0],
                                  "poi_type": kind[1], "name_th": th or "",
                                  "name_en": en or "",
@@ -1113,8 +1305,10 @@ def main():
     for (th, en), plon, plat, kind, fid in sorted(pois, key=lambda p: p[4]):
         px, py = to_utm.transform(plon, plat)
         import blocks
-        blocks.add_poi_symbol(doc, msp, px, py, 2.0, LAYERS["poi"])
+        attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0, LAYERS["poi"]),
+               fid)
         mtext_bilingual(th, en, px + 3, py, 4.0)
+        record(fid, "landmark", LAYERS["poi"], th or en)
         staged_pois.append({"feature_id": fid,
                             "poi_key": kind[0], "poi_type": kind[1],
                             "name_th": th or "", "name_en": en or "",
@@ -1142,6 +1336,26 @@ def main():
 
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
     mtext(f"GPS {a.lat},{a.lon}", cx + 40, cy, 5.0)
+
+    if a.basemap:
+        import basemap as bm
+        try:
+            info = bm.attach(doc, msp, (s, w, n, e), utm_epsg, a.out,
+                             provider=a.basemap, zoom=a.basemap_zoom,
+                             max_tiles=a.basemap_max_tiles)
+        except bm.BasemapError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(bm.describe(info))
+        # The credit rides on the basemap's own layer, so freezing the
+        # backdrop removes the attribution with it rather than leaving a
+        # drawing crediting a map it no longer shows.
+        credit = msp.add_mtext(info["attribution"], dxfattribs={
+            "layer": bm.LAYER, "char_height": max(2.0, ext_h * 0.006),
+            "style": "EN_STYLE"})
+        credit.set_location((cx, cy - hh + ext_h * 0.012),
+                            attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        credit.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     if a.sheet:
         import sheet as sheet_mod
@@ -1180,11 +1394,26 @@ def main():
     print(f"Inventory: {len(inventory)} buildings ({named} named, "
           f"{len(inventory) - named} coded) -> {inv_path}")
 
+    # The attribute table: every source tag of every drawn feature, in a
+    # form that opens outside AutoCAD. It is also the complete record —
+    # XDATA stops at XDATA_MAX_TAGS per entity, this does not.
+    attrs = []
+    if not a.no_attributes:
+        attrs = _anchor_rules.attribute_rows(
+            drawn, {rec["feature_id"]:
+                    (tag_index.get(rec["feature_id"])
+                     or tag_index.get(rec["feature_id"].rsplit("/", 1)[0], {}))
+                    for rec in drawn})
+        attr_path = Path(a.out).with_name("attributes.csv")
+        _anchor_rules.write_attribute_csv(attr_path, attrs)
+        print(f"Attributes: {len(attrs)} tags on {len(drawn)} drawn features "
+              f"-> {attr_path}")
+
     if a.db:
         stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,
                     contours, contour_layers,
                     poi_points=staged_pois, poi_areas=staged_site_pois,
-                    context=staged_context)
+                    context=staged_context, attributes=attrs)
     print(f"CRS: EPSG:{utm_epsg} (UTM {utm_label}), units = meters. "
           f"Center at UTM ({cx:.1f}, {cy:.1f})")
 

@@ -370,3 +370,78 @@ def test_every_road_class_has_a_width():
     # a trunk road is wider than a residential street, or the plan lies
     assert ROAD_WIDTH_M["trunk"] > ROAD_WIDTH_M["residential"]
     assert ROAD_WIDTH_M["residential"] > ROAD_WIDTH_M["footway"]
+
+
+# ------------------------------------------------------------ one-way roads
+@pytest.mark.parametrize("tags,expected", [
+    ({"oneway": "yes"}, 1),
+    ({"oneway": "true"}, 1),
+    ({"oneway": "1"}, 1),
+    ({"oneway": "-1"}, -1),          # backwards along the way as digitised
+    ({"oneway": "reverse"}, -1),
+    ({"oneway": "no"}, 0),
+    ({}, 0),
+    ({"junction": "roundabout"}, 1),   # one-way by definition, often untagged
+    ({"junction": "roundabout", "oneway": "no"}, 0),   # explicit wins
+    ({"oneway": "alternating"}, 0),    # not a direction this can draw
+])
+def test_oneway_dir(tags, expected):
+    from topo2cad import oneway_dir
+
+    assert oneway_dir(tags) == expected
+
+
+def test_classify_carries_oneway_through_to_the_writers():
+    """The drawing routes read it off the road tuple; if classification
+    dropped it, every arrow would silently disappear."""
+    from topo2cad import classify_elements
+
+    elements = [{"type": "way", "id": 1,
+                 "tags": {"highway": "primary", "oneway": "-1"},
+                 "geometry": [{"lon": 100.0, "lat": 13.0},
+                              {"lon": 100.001, "lat": 13.0}]}]
+    (_names, _ref, _pts, highway, fid, oneway), = \
+        classify_elements(elements)["roads"]
+    assert (highway, fid, oneway) == ("primary", "way/1", -1)
+
+
+# ------------------------------------------------ multipolygon inner rings
+def test_assign_inner_rings_goes_by_containment_not_order():
+    """A relation with two outers is two buildings; the courtyard belongs to
+    whichever encloses it. Attaching it to the first would punch a hole
+    through the wrong building — dropping it fills in a real one."""
+    from topo2cad import assign_inner_rings
+
+    left = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+    right = [(20, 0), (30, 0), (30, 10), (20, 10), (20, 0)]
+    court = [(24, 4), (26, 4), (26, 6), (24, 6), (24, 4)]      # inside right
+    assert assign_inner_rings([left, right], [court]) == [[], [court]]
+    assert assign_inner_rings([right, left], [court]) == [[court], []]
+
+
+def test_assign_inner_rings_drops_one_inside_neither():
+    """A broken relation upstream: better no courtyard than one cut into an
+    arbitrary building."""
+    from topo2cad import assign_inner_rings
+
+    left = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+    away = [(50, 50), (52, 50), (52, 52), (50, 52), (50, 50)]
+    assert assign_inner_rings([left], [away]) == [[]]
+
+
+def test_multi_outer_relation_keeps_its_courtyard():
+    from topo2cad import classify_elements
+
+    def ring(x0, y0, x1, y1):
+        return [{"lon": x0, "lat": y0}, {"lon": x1, "lat": y0},
+                {"lon": x1, "lat": y1}, {"lon": x0, "lat": y1},
+                {"lon": x0, "lat": y0}]
+
+    elements = [{"type": "relation", "id": 7, "tags": {"building": "yes"},
+                 "members": [
+                     {"role": "outer", "geometry": ring(0, 0, 1, 1)},
+                     {"role": "outer", "geometry": ring(2, 0, 3, 1)},
+                     {"role": "inner", "geometry": ring(2.4, 0.4, 2.6, 0.6)}]}]
+    buildings = classify_elements(elements)["buildings"]
+    holes = {fid: len(h) for _n, (_ext, h), fid in buildings}
+    assert holes == {"relation/7/0": 0, "relation/7/1": 1}
