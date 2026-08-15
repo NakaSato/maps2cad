@@ -81,6 +81,122 @@ plus computed UTM coordinates, legend, certification block with stamp space, and
 the data-accuracy statement. Marked `DRAFT / FOR REVIEW` until you pass
 `--final`. If the receiving agency issues its own mandatory form, that form wins.
 
+## An OpenStreetMap file → CAD
+
+`topo2cad.py` asks Overpass for a box around a coordinate. When you already
+have the data as a file — exported from openstreetmap.org, prepared by someone
+else, or edited in JOSM and not uploaded yet — `osm2cad.py` draws it with no
+network at all:
+
+```bash
+# openstreetmap.org → pan to the area → Export → map.osm
+uv run scripts/osm2cad.py --input map.osm --outdir output/runs
+uv run scripts/osm2cad.py --input map.osm --epsg 32647 --out output/site.dxf
+uv run scripts/osm2cad.py --input area.osm.bz2 \
+  --bbox 15.8300,104.3900,15.8380,104.3990 --types building,road \
+  --layer-by highway --db output/staging.sqlite --project "wat-site"
+```
+
+Reads `.osm`/`.xml` plain, gzipped, bzipped, or inside a `.zip`. A `.osm.pbf`
+is refused with the command that converts it (`osmium cat -o map.osm
+map.osm.pbf`) rather than costing every route here a protobuf dependency.
+
+It shares `topo2cad.py`'s tag rules, NCS layers and label placement — same
+buildings, same road split, same bilingual annotation, same crop rectangle —
+so a drawing made from a file and one made from a live fetch of the same
+ground agree. What it does not do is add Microsoft ML footprints or contours:
+the file is the source of truth, and terrain needs a DEM. Use `topo2cad.py`
+when the deliverable needs either.
+
+Options worth knowing:
+
+| Option | What it does |
+| --- | --- |
+| `--types building,road,…` | Import only these feature types (`building`, `road`, `path`, `water`, `green`, `rail`, `barrier`, `landmark`) |
+| `--epsg 32647` | Force a projected CRS instead of deriving the UTM zone from the data |
+| `--bbox S,W,N,E` | Crop an extract that covers more than the site — whole features, never trimmed geometry |
+| `--layer-by highway` | Split each layer by an OSM tag value: `C-ROAD-CNTR-RESIDENTIAL`, `C-ROAD-CNTR-SERVICE`, … |
+| `--no-attributes` | Do not attach the OSM tags to each entity |
+
+With `--db` the import is staged like any other run, so `db2dxf.py` re-issues
+it after names are corrected — the two routes produce identical drawings
+(`dxfdiff.py` reports IDENTICAL). Naming an existing project **merges**, so
+you can bring in one feature type at a time and build up a single drawing:
+
+```bash
+uv run scripts/osm2cad.py --input map.osm --types building \
+  --db output/staging.sqlite --project site --out output/step1.dxf
+uv run scripts/osm2cad.py --input map.osm --types road,path \
+  --db output/staging.sqlite --project site --out output/step2.dxf
+uv run scripts/db2dxf.py --db output/staging.sqlite --project site \
+  --out output/site.dxf          # both imports, one drawing
+```
+
+`--replace` clears the project instead. Re-running `topo2cad.py` on a
+coordinate always replaces — that is a refresh of the same site, not an
+addition to it.
+
+### Source attributes
+
+Every drawn entity carries its OSM tags as **extended data** (XDATA under the
+application id `OSM`), on both CAD routes — select a building in AutoCAD, run
+`LIST`, and the tags it was drawn from are there. The same rows are written to
+`attributes.csv` beside the drawing, one row per (feature, tag):
+
+```
+feature_id,feature_type,cad_layer,display_name,key,value
+way/1076374377,building,C-BLDG-OUTL,B004,addr:district,ปทุมวัน
+way/1076374377,building,C-BLDG-OUTL,B004,building,retail
+```
+
+The CSV is the complete record — XDATA stops at 40 tags per entity — and the
+web app renders it as a browsable grid. The tags are staged as well, so a
+`db2dxf.py` re-issue re-attaches the same XDATA and rewrites the same table
+rather than handing back a drawing stripped of its source data.
+`--no-attributes` turns all of it off.
+
+`gis2cad.py` does the same for your own files: a shapefile's DBF columns, a
+GeoJSON's properties, land on the entity under the application id **`GIS`**
+rather than `OSM`. A project holding both an extraction and a survey
+re-issues with each feature under its own id, so nothing pretends a surveyed
+plot came from OpenStreetMap.
+
+## Background map under the linework
+
+Bare linework gives a reviewer nothing to orient by. `--basemap` fetches the
+map tiles covering the extent, reprojects them into the drawing's UTM CRS and
+places them beneath everything else:
+
+```bash
+uv run scripts/osm2cad.py --input map.osm --basemap osm --out output/site.dxf
+uv run scripts/topo2cad.py --lat 15.83384548 --lon 104.39445555 \
+  --dem dem/dem_n15_e104.tif --basemap esri-imagery --outdir output/runs
+uv run scripts/basemap.py --bbox 15.830,104.390,15.838,104.399 \
+  --epsg 32648 --out output/basemap.tif      # the GeoTIFF on its own
+```
+
+Providers — `osm`, `opentopomap` (contours + hillshade, the closest thing to
+a topographic sheet when the drawing has no contours of its own),
+`esri-topo`, `esri-imagery`, `esri-street`, `carto-light`, `carto-dark`,
+`carto-voyager`, `osm-hot`, `cyclosm` — or your own
+`https://…/{z}/{x}/{y}.png` template for a WMTS service or an agency's tile
+server. Each carries its provider's required attribution, and each declares
+its own maximum zoom (OpenTopoMap renders to 17, so the fetch stops there). It lands as `basemap.tif` beside the drawing on layer `C-ANNO-BMAP`,
+faded, with the provider's attribution on the same layer — freeze the layer
+and the credit goes with the map it credits.
+
+**Keep the pair together.** A DXF stores a *path* to a raster, not its
+pixels, so the `.tif` has to travel with the `.dxf`; the web app offers it as
+its own download for that reason. It is a backdrop, not survey data: nothing
+is traced from it and nothing is staged, so a `db2dxf.py` re-issue draws the
+linework alone — the same way `--underlay` already behaves.
+
+**Tile servers are somebody else's infrastructure.** Every tile is cached in
+`cache/tiles/` and reused across runs, the fetch is sequential with a real
+User-Agent, and the tile count is capped (`--basemap-max-tiles`, default 128)
+with the zoom stepped down until the extent fits. A 1,000 × 750 m site is
+about 42 tiles at zoom 18. Do not point it at a province.
+
 ## Your own GIS data → CAD
 
 OpenStreetMap and the ML footprint layer have nothing in many places — new
@@ -192,11 +308,15 @@ staged geometry. Re-running an OSM pull replaces the features and then re-applie
 those names, reporting how many it restored — and the project keeps its id, so
 `/project/<id>` links stay valid.
 
-**`/import` takes your own GIS files in the browser** — GeoJSON, GeoPackage,
-KML, GML, or a `.zip` holding a shapefile set (the form a survey office
-usually sends). Name an existing project and the upload merges into it, so your
-plots share a drawing with the OSM roads and terrain. Useful in the field over
-the tunnel, where the site has nothing mapped.
+**`/import` takes a file in the browser** — either an OpenStreetMap export
+(`.osm`, `.xml`, `.gz`, `.bz2`) or your own GIS data (GeoJSON, GeoPackage,
+KML, GML, or a `.zip` holding a shapefile set, the form a survey office
+usually sends). The converter is picked from the extension; an OSM upload also
+offers the feature types to import, a coordinate system, a crop box and the
+tag to split layers by. Name an existing project and the upload merges into
+it, so an export and a survey share one drawing. Useful in the field over the
+tunnel, where the site has nothing mapped — or where Overpass is unreachable
+and someone can send you the extract.
 
 CAD exports are staged automatically, so `/projects` lists every site you have
 generated. Open one to see its roads and all its building footprints, type
@@ -260,6 +380,28 @@ Covers UTM zone selection, extent geometry, road classification, label fitting
 and collision rules, inventory determinism, and CSV validation. The network test
 is opt-in so the suite doesn't hit Overpass on every run.
 
+## Checking a drawing before you issue it
+
+Two different questions, two tools:
+
+```bash
+uv run scripts/dxfdiff.py a.dxf b.dxf                      # do the routes agree?
+uv run scripts/dxfaudit.py output/site.dxf \
+  --db output/staging.sqlite --project 1                   # is it complete?
+uv run scripts/dxfaudit.py output/site.dxf --osm-file map.osm   # same, from a file
+```
+
+`dxfdiff` compares the extraction route against a `db2dxf.py` re-issue —
+entity counts, layer table, and label positions to the millimetre. It proves
+the two agree, **not** that either is right: it has reported IDENTICAL while
+both routes dropped the same courtyards.
+
+`dxfaudit` asks the other question — does the drawing contain what the source
+had? It re-queries Overpass for the extent, or reads the `.osm` export the
+drawing came from, and counts buildings, courtyards, landmarks and one-way
+roads against what was actually drawn. Exit status 0 means complete, 1 means
+a shortfall, so it works as a pre-submission gate.
+
 ## B&W poster-style map (PNG + PDF)
 
 ```bash
@@ -311,21 +453,40 @@ for clean printing; `--color` keeps the CAD layer colors on a white background.
 
 ## Output layers
 
+Layer names follow the NCS/AIA convention (discipline–major–minor), so the
+DXF drops straight into an engineering drawing set.
+
 | Layer | Content |
 |---|---|
-| CONTOURS / CONTOUR_LABELS | Contour lines as 3D polylines at true elevation, auto interval (~10 levels) |
-| BUILDINGS / BUILDING_NAMES | OSM building footprints (closed polylines) + name labels |
-| ROADS / ROAD_NAMES | OSM roads clipped to the area + name labels |
-| POI / POI_NAMES | Named OSM point features (temples, shops, schools...) |
-| CENTER | Circle + label at the input GPS point |
+| `C-BLDG-OUTL` | Building footprints, closed polylines; courtyards as separate inner rings |
+| `C-ROAD-CNTR` | Road centrelines, CENTER linetype |
+| `C-ROAD-EDGE` | Both edges of pavement, offset by carriageway class |
+| `C-ROAD-PATH` | Footways, cycleways, steps — one line, no kerbs |
+| `C-ROAD-ARRW` | One-way direction arrows, from the OSM `oneway` tag |
+| `C-ROAD-ROWY` | Empty, PHANTOM — for a drafter to draw the legal right-of-way |
+| `C-TOPO-MAJR` / `C-TOPO-MINR` | Contours as 3D polylines at true elevation; every 5th is an index contour, labelled |
+| `C-HYDR-WATR` / `C-LAND-VEGT` | Canals, ponds; parks, farmland, cemeteries |
+| `C-RAIL-TRAK` / `C-BNDY-BARR` | Railways; walls and fences |
+| `C-ANNO-SYMB` / `C-SITE-POI` | Landmark point symbols; landmark grounds with no building tag |
+| `C-ANNO-TEXT` | Language-neutral text: B### codes, contour elevations, the GPS tag |
+| `C-ANNO-TEXT-TH` / `C-ANNO-TEXT-EN` | Thai and Latin labels — freeze one to plot a single-language sheet |
+| `C-ANNO-EXTN` | The requested extent, DASHED. A crop line, not a clip: linework runs ~55 m past it and footprints are never cut |
+| `C-ANNO-NORT` / `C-ANNO-GPSP` | North arrow block; circle and label at the input coordinate |
+| `C-PROP-LINE` / `C-PROP-SETB` | Empty, ready for parcel boundaries and setbacks (OSM has no source for either) |
+| `C-ANNO-BMAP` / `C-SITE-ORTH` | `--basemap` backdrop with its attribution; `--underlay` imagery you own |
 
-Coordinates are meters in EPSG:32647 (WGS84 / UTM zone 47N — correct for Thailand
-between 96°E and 102°E; use zone 48N / EPSG:32648 east of 102°E).
+Coordinates are metres in the UTM zone **derived from the coordinate** —
+EPSG:32647 west of 102°E, EPSG:32648 east of it. Nothing is hardcoded:
+Thailand spans two zones, and forcing a site at 104.4°E into 47N lands it
+outside the zone's valid range with +0.37% scale error, 3.75 m per kilometre.
 
-When OSM has fewer than 20 buildings in the area, the script automatically
-supplements with Microsoft Global ML Building Footprints (AI-detected from
-satellite imagery, unnamed outlines). Tiles are cached in dem/ms_cache/.
+Microsoft Global ML footprints supplement OSM **everywhere**, not only where
+OSM is sparse — at Pathum Wan that adds 69 buildings OSM has nothing for.
+Duplicates are dropped by overlap against the smaller of the two footprints;
+the inventory CSV records the source of each. `--no-ml` opts out. Tiles are
+cached in `dem/ms_cache/`.
 
-Notes: OSM coverage varies — rural Thai areas often lack building footprints.
-The Copernicus DEM is a ~30m surface model (includes vegetation/buildings), fine for
+Notes: OSM coverage varies — rural Thai areas often lack building footprints
+entirely, which is what `gis2cad.py` and `--underlay` are for. The Copernicus
+DEM is a ~30 m surface model (it includes vegetation and buildings), fine for
 site context but not survey-grade.

@@ -4,13 +4,15 @@
 # so every dependency of every script it shells out to must already be in
 # the environment. Regenerate by reading the `# /// script` blocks.
 
-# CAD export path — topo2cad.py, db2dxf.py, gis2cad.py, dxfdiff.py, sheet.py
+# CAD export path — topo2cad.py, db2dxf.py, gis2cad.py, osm2cad.py,
+# dxfdiff.py, sheet.py, basemap.py
 ezdxf
 rasterio
 numpy
 scipy
 scikit-image
 requests
+pillow          # basemap.py decodes map tiles with it
 
 # Site-map path — generate_detailed_site_map.py, mapposter.py, dxf2pdf.py
 osmnx==2.1.1

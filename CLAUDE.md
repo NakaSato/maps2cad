@@ -20,6 +20,9 @@ them automatically. There is no package, no build step, and no lint config.
 uv run scripts/topo2cad.py --lat 15.83384548 --lon 104.39445555 \
   --width 500 --height 400 --dem dem/dem_n15_e104.tif --outdir output/runs
 uv run scripts/dxf2pdf.py output/runs/<run>/site.dxf --size A3   # check plot
+uv run scripts/osm2cad.py --input map.osm --outdir output/runs  # .osm, no net
+uv run scripts/basemap.py --bbox 15.83,104.39,15.84,104.40 \
+  --epsg 32648 --out output/basemap.tif    # or --basemap on either CAD tool
 uv run scripts/mapposter.py --lat 14.8165 --lon 100.5116 --radius 150 \
   --dem dem/dem_n14_e100.tif --out output/poster.png   # needs a DEM tile
 uv run scripts/generate_detailed_site_map.py --lat 14.8165 --lon 100.5116 \
@@ -54,7 +57,9 @@ alternative to `uv run` (`.venv/bin/python -m pytest tests/ -q`).
 
 1. `topo2cad.py` owns the raw-Overpass layer and is imported as a module by
    `mapposter.py` (`from topo2cad import bbox_around, fetch_osm, clip_runs,
-   fetch_ms_buildings, best_name, utm_transformer`) — despite being a script.
+   fetch_ms_buildings, best_name, utm_transformer`) and by `osm2cad.py`
+   (the tag rules, layers, text styles and `stage_to_db`) — despite being a
+   script.
    Editing `fetch_osm`, `clip_runs`, or `bbox_around` changes both tools. It
    POSTs a hand-written Overpass QL query, rotating through three endpoints with
    retries, and parses raw elements into per-category lists.
@@ -77,12 +82,70 @@ Thailand spans two zones, and a site at 104.4°E forced into 47N lands at eastin
 1,078,000 (outside the zone's valid range) with +0.37% scale error — 3.75 m per
 kilometre, which is not acceptable in a CAD deliverable.
 
-**Three ways in, one drawing convention.** `topo2cad.py` (OSM + DEM),
-`db2dxf.py` (staging database) and `gis2cad.py` (user-supplied GeoJSON/SHP/
-GPKG/KML) all emit the same NCS layers and MTEXT conventions. `gis2cad.py`
+**Four ways in, one drawing convention.** `topo2cad.py` (OSM + DEM),
+`db2dxf.py` (staging database), `osm2cad.py` (an OSM *file*) and
+`gis2cad.py` (user-supplied GeoJSON/SHP/GPKG/KML) all emit the same NCS
+layers and MTEXT conventions. `gis2cad.py`
 exists because large areas have no OSM or ML data at all — at 12.526,
 102.15982 the nearest ML footprint is 3.19 km away, so an empty drawing there
 is correct, not a bug. Check with a coverage query before hunting for one.
+
+**`osm2cad.py` is the same stack with a different front door.** It reads an
+.osm export (plain, .gz, .bz2 or inside a .zip) and hands the elements to
+`topo2cad.classify_elements()` — the tag rules were lifted out of
+`topo2cad.main()` into that function precisely so the file route and the
+Overpass route cannot drift; change a tag rule there and both move. What a
+raw .osm file needs and Overpass does not is geometry stitching: a way
+carries node *references*, so coordinates are joined back on in
+`parse_osm()`, and an untagged way is kept as material for the multipolygon
+relations that use it rather than drawn (drawing them too doubles every
+courtyard wall). Ways whose nodes fall outside the extract are counted and
+skipped, never drawn short. It deliberately does **not** supplement with ML
+footprints or draw contours: the file is the source of truth, and terrain
+needs a DEM — use `topo2cad.py` when the deliverable needs either. `--db`
+staging goes through `topo2cad.stage_to_db()`, so a re-issue via
+`db2dxf.py` is byte-identical (`dxfdiff.py` reports IDENTICAL); the GPS tag
+is written unformatted, like `topo2cad.py`, because db2dxf prints the
+staged REAL back with `str()` and a `:.6f` here made the one non-geometry
+label differ. Two options exist because an import dialog is expected to
+offer them: `--types` filters feature types (roads split from paths on
+`PATH_TYPES`), and `--layer-by TAG` suffixes the NCS layer with a tag value
+(`C-ROAD-CNTR-RESIDENTIAL`) — a suffix, so `C-ROAD-CNTR*` still catches
+every split layer. `--layer-by` affects the DXF only; staging keeps the
+base layer, because `db2dxf.py` draws from a fixed layer table and would
+otherwise re-issue onto a layer that table has no entry for. Every entity
+also carries its source OSM tags as XDATA under app id `OSM` (group code
+1000, clipped at 255 **bytes** — Thai is three bytes a character, so a
+character-count clip still overruns); `--no-attributes` opts out. A
+`.osm.pbf` is refused with `osmium cat -o map.osm map.osm.pbf` rather than
+adding a protobuf dependency to a repo where nothing else needs one.
+
+**A background map is a backdrop, not survey data.** `basemap.py` fetches
+slippy-map tiles for the extent, mosaics them in Web Mercator, reprojects
+to the drawing's CRS and hands the GeoTIFF to `underlay.py` — which is why
+the reprojection is not optional: placing a 3857 image by its corners in a
+UTM drawing stretches it by metres through the middle and still looks like
+a map while doing it. It lands on `C-ANNO-BMAP`, deliberately not
+`C-SITE-ORTH`, so a drafter can drop the fetched backdrop without dropping
+imagery they own and traced from. Nothing is staged, so a `db2dxf.py`
+re-issue draws linework alone — the same asymmetry `--underlay` already
+has. The provider's attribution is written as MTEXT **on the basemap's own
+layer**: freezing the backdrop must not leave a drawing crediting a map it
+no longer shows. Two constraints are load-bearing. First, tile servers are
+someone else's infrastructure: tiles cache to `cache/tiles/` (shared by
+every run, not per-run, or a re-plot re-fetches), the fetch is sequential
+with a real User-Agent, and `choose_zoom()` steps the zoom *down* until the
+tile count fits the cap rather than clipping the extent or hammering the
+server. Second, the DXF stores a path, not pixels, so `basemap.tif` must
+keep its bare filename — `serve.py`'s download route special-cases it
+against the usual `<name>_<lat>_<lon>.ext` renaming, which would otherwise
+hand the user a drawing with a missing raster. `deg2tile()` clamps latitude
+to ±85.05112878 before the log term, which divides by zero at the poles;
+the tile arithmetic (`mosaic_origin`, `tile_range`, `choose_zoom`) is kept
+free of rasterio so it stays testable without GDAL. The web form offers only
+the named providers — the CLI takes a raw `{z}/{x}/{y}` URL, but accepting
+one from a browser form would let anyone point the server's fetcher at any
+host.
 
 **ML footprints supplement OSM everywhere, not only where OSM is empty.**
 `topo2cad.py` used to fetch them only when OSM returned fewer than 20
@@ -158,6 +221,36 @@ linetype for a drafter to draw the legal right-of-way onto, since OSM has no
 source for one. `PATH_TYPES` decides the split; a path stages with
 `carriageway_m = 0`, which is what tells `db2dxf.py` to skip its edges too.
 
+**One-way direction arrows come from the `oneway` tag, and paths never get
+them.** `oneway_dir()` reads yes/true/1 as +1, **-1/reverse as -1** — that
+second family means "against the way as digitised", and treating it as
+forward aims every arrow on a sliproad at oncoming traffic — with
+`junction=roundabout` implying +1 unless `oneway=no` says otherwise. The
+arrows are INSERTs of the `ONEWAY_ARROW` block on `C-ROAD-ARRW`, their own
+layer so a sheet can plot without traffic direction on it. Placement is
+`stage_db.arrow_positions()`, called by all three writers for the same
+reason `line_label_anchor()` is: spacing is by distance along the run (60 m,
+first at half that), because an OSM way carries a vertex every few metres
+through a curve and per-vertex arrows would pile up on bends and vanish on
+straights. A run under 12 m gets none; one under a full spacing gets one at
+its midpoint. Size is `oneway_arrow_size()`, clamped to 3–10 m so a 14 m
+motorway does not get a 14 m arrow. `staging_roads.oneway` carries it (a
+`MIGRATIONS` entry, so older databases upgrade on open), and `db2dxf.py`
+draws from that column — 39 arrows at Pathum Wan and 94 over 500 × 400 m,
+identical in both routes by `dxfdiff.py`.
+
+**A repaired polygon is what gets drawn *and* what gets staged.**
+`stage_db.repaired_polygon()` / `polygon_parts()` exist because OSM carries
+self-intersecting rings — จุฬาลงกรณ์มหาวิทยาลัย is one — and `buffer(0)`
+splits those into two polygons. The extraction routes used to draw the raw
+ring while staging the repaired one, so the drawing had one outline where
+its re-issue had two, with the label 97 m away in the other lobe;
+`dxfdiff.py` caught it only once a real extract contained such a ring. Label
+anchors now come from `stage_db.interior_point()` on that same repaired
+shape in every route. Note a bow-tie ring repairs to a *single* polygon of
+half the original area — that is GEOS, not a bug here, and it is identical
+on both sides.
+
 **All annotation carries a background mask** (`set_bg_color("canvas",
 scale=1.1)`), so a label crossing a building outline or a road edge cuts
 through it instead of overprinting. Note `set_bg_color(None)` *removes* a
@@ -180,6 +273,53 @@ overrides that, so `name` alone is not a reliable Thai source. When a feature
 carries both, English is stacked one line above Thai via
 `offset_along_normal()`, which offsets square to the label's own rotation —
 a plain -Y nudge would drift off a rotated road label.
+
+**Source attributes ride with the drawing, and they are staged too.** Every
+drawn entity carries its OSM tags as XDATA under the appid `OSM` (select it
+in AutoCAD, `LIST`, read the tags), and the same rows are written to
+`attributes.csv` beside the drawing — long format, one row per (feature,
+tag), because OSM features carry wildly different tag sets and a column per
+key would be a sparse sheet hundreds of columns wide. The rules live in
+`stage_db.py` (`xdata_tags`, `attribute_rows`, `write_attribute_csv`) because
+all three writers apply them; group code 1000 clips at 255 **bytes**, and
+Thai is three bytes a character, so the clip is applied after encoding.
+XDATA stops at `XDATA_MAX_TAGS` (40) per entity with a `@truncated=` marker —
+the CSV carries the full set. `staging_tags` is what lets `db2dxf.py`
+re-attach the same XDATA and rewrite the same table: without it, correcting
+one name and re-issuing would silently hand back a drawing stripped of its
+source data. `--no-attributes` opts out on every route. The table describes
+the *drawing*, not the source, so a feature dropped by `--types` or `--bbox`
+is absent from both.
+
+The appid says where the data came from: `OSM` for OpenStreetMap tags,
+`GIS` for the fields of a file the user supplied (`gis2cad.py` — a
+shapefile's DBF columns are the same thing to a drafter). One project can
+hold both when a survey is merged into an extraction, so `staging_tags`
+carries an `appid` column per row and `db2dxf.py` registers each id it finds
+and attaches accordingly; at a mixed site that is 33 entities under OSM and
+2 under GIS in one re-issued drawing. Labelling a survey's columns "OSM" in
+the CAD attribute browser would be a lie, which is the whole reason for the
+column.
+
+**Import merges, extraction replaces.** `stage_to_db(merge=True)` keeps what
+is already staged under a project name; `merge=False` clears it first.
+`topo2cad.py` replaces, because re-running a coordinate refreshes that site
+and last run's features must not linger. `osm2cad.py` and `gis2cad.py`
+merge, because an import is how you bring in one feature type at a time —
+`--types building`, then `--types road` from the same file — and the
+workflow every OSM importer documents ("repeat the import for other feature
+types") silently destroyed the first pass when this replaced. `--replace`
+opts back into clearing. A merge prints "Merged into" and the project's new
+totals, because a `db2dxf.py` re-issue draws everything staged, not just the
+import you just ran.
+
+**A new `staging_*` table goes in `STAGED_TABLES` in the same commit.**
+`create_project()` clears that list when a project is re-extracted.
+`staging_pois` and `staging_context` were added after the list was written
+and were never added to it, so re-running a site at a *smaller* extent kept
+the previous run's landmarks and canals in the database — and `db2dxf.py`
+drew them, outside the new extent. Test-covered now; the equivalent for a
+new column is a `MIGRATIONS` entry.
 
 **Every feature topo2cad draws, it also stages.** Buildings, roads and
 contours were staged from the start; landmark points (`staging_pois`),
@@ -250,10 +390,24 @@ difference. **`dxfdiff` proves the two routes agree, not that either is
 right** — it reported IDENTICAL while both dropped building courtyards, and
 again while both skipped 69 ML footprints per site, because two
 implementations of one mistake look like agreement. `dxfaudit.py` is the
-other half: it re-queries Overpass for the same extent and compares the
-drawing against the source, so a silent loss shows as a shortfall and exits
-non-zero. Run it before a submission, and after any change to what gets
-drawn. Counting entities is not enough on its own: every label can be
+other half: it re-queries Overpass for the same extent — or reads the .osm
+export with `--osm-file`, which is the only audit the file route has — and
+compares the drawing against the source, so a silent loss shows as a
+shortfall and exits non-zero. Run it before a submission, and after any
+change to what gets drawn. Its counting is deliberately **not**
+`classify_elements()`: an audit that asks the drawing's own classifier what
+the source contained cannot catch a bug in that classifier, which is the
+exact failure it exists to cover, so the tag rules are restated there. It
+earns its keep — the `--osm-file` pass immediately found a courtyard the
+drawing was dropping, and the fix (`assign_inner_rings()`) now gives each
+inner ring to the outer that contains it instead of dropping every hole on
+a multi-outer relation. Its expectations are geometric, not naive: an inner
+ring that straddles two outers, or touches its shell, cannot become a closed
+polyline — `buffer(0)` bites a notch instead — so those are reported as a
+note rather than counted as missing. One-way direction is checked the same
+careful way: arrow *count* is not a source count (spacing decides how many a
+run gets), so what it asserts is that a source with one-way roads did not
+produce a drawing with no direction on it at all. Counting entities is not enough on its own: every label can be
 present in both drawings and still sit up to 287 m apart, which is what that
 tool's position pass exists to catch. Linear labels (roads, canals, parks,
 contours) are therefore anchored by calling `stage_db.line_label_anchor()`
@@ -351,7 +505,15 @@ user-supplied path. It also browses and edits the staging database at
 `/projects` → `/project/<id>`, where saved names are applied with
 `UPDATE staging_buildings` and **Re-issue drawing** shells out to `db2dxf.py`.
 A re-issue is registered as a normal job, so it appears in history with the
-same download and preview routes.
+same download and preview routes. `/import` serves two converters from one
+form and picks between them in `import_kind()` **by extension, never by
+sniffing**: `.osm`/`.xml`/`.gz`/`.bz2`/`.pbf` go to `osm2cad.py`, everything
+else to `gis2cad.py`, and a mixed upload is refused rather than guessed at —
+the two draw different drawings from the same ground. A `.zip` is classified
+after expansion by what it turned out to hold (a shapefile set wins over an
+.osm beside it). `.pbf` is accepted by the upload and refused by
+`osm2cad.py`, which answers with the conversion command; rejecting it at the
+door would say "not a GIS file" about a file that is plainly OSM data.
 
 ## Conventions
 
