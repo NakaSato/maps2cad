@@ -36,6 +36,17 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# The staging layer owns the XDATA and attribute-table rules, so a survey
+# import writes them exactly the way the OSM routes do.
+import stage_db                                               # noqa: E402
+
+# Fields of a file the user supplied are not OpenStreetMap tags, so they go
+# under their own application id — one drawing can carry both when a survey
+# is merged into an extraction.
+GIS_APPID = stage_db.GIS_XDATA_APPID
+
 LAYERS = {
     "polygon": "C-BLDG-OUTL",
     "line": "C-ROAD-CNTR",
@@ -119,6 +130,32 @@ def parts(geom, wanted):
             yield from parts(g, wanted)
 
 
+# Columns this adds for its own bookkeeping; they are not the user's data
+# and have no business in the attribute table.
+INTERNAL_COLUMNS = {"geometry", "_layer", "_namefield"}
+
+
+def row_attributes(row, columns=None) -> dict:
+    """The feature's own fields, as {name: value} strings.
+
+    A shapefile's DBF columns are exactly the attributes a CAD user wants
+    hanging off the entity — the same thing OSM tags are on the other
+    routes. Empty cells and pandas' NaN are dropped rather than written as
+    the word "nan", which is what str() gives you.
+    """
+    out = {}
+    for key in (columns if columns is not None else row.index):
+        if key in INTERNAL_COLUMNS:
+            continue
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in ("nan", "none", "nat"):
+            out[str(key)] = text
+    return out
+
+
 def pick_name_field(columns, explicit):
     if explicit:
         return explicit
@@ -146,7 +183,7 @@ def road_edges(coords, width_m):
     return out
 
 
-def stage(a, frames, epsg, centre):
+def stage(a, frames, epsg, centre, attrs=()):
     """Stage the imported features alongside anything already staged for
     this project, so one drawing can carry OSM data and your own survey."""
     from pyproj import Transformer
@@ -198,6 +235,9 @@ def stage(a, frames, epsg, centre):
     n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs) \
         if b_rows else 0
     n_r = stage_db.stage_roads(conn, pid, r_rows) if r_rows else 0
+    # Under GIS, not OSM: a re-issue must not relabel a shapefile's columns
+    # as OpenStreetMap tags in the CAD attribute browser.
+    stage_db.stage_tags(conn, pid, list(attrs), appid=GIS_APPID)
     total_b = conn.execute("SELECT COUNT(*) FROM staging_buildings WHERE"
                            " project_id = ?", (pid,)).fetchone()[0]
     total_r = conn.execute("SELECT COUNT(*) FROM staging_roads WHERE"
@@ -236,6 +276,9 @@ def main(argv=None) -> int:
                          "CRS. The DXF stores a path, not the pixels, so keep "
                          "the image beside the .dxf file.")
     ap.add_argument("--no-labels", action="store_true")
+    ap.add_argument("--no-attributes", action="store_true",
+                    help="Do not attach the file's own fields to each entity "
+                         "as XDATA, and do not write attributes.csv")
     ap.add_argument("--mono", action="store_true",
                     help="Monochrome: every layer on ACI 7 (same as "
                          "topo2cad.py --mono)")
@@ -293,6 +336,8 @@ def main(argv=None) -> int:
         layer.dxf.lineweight = lw
     doc.layers.get("C-PROP-LINE").dxf.linetype = "PHANTOM"
     doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
+    if not a.no_attributes:
+        doc.appids.add(GIS_APPID)
 
     if a.underlay:
         import underlay as ul
@@ -317,11 +362,13 @@ def main(argv=None) -> int:
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     counts = {"polygon": 0, "line": 0, "point": 0, "label": 0, "edge": 0}
+    drawn, feature_tags = [], {}
     for path, gdf in frames:
         gdf = gdf.to_crs(f"EPSG:{epsg}")
         forced = gdf["_layer"].iloc[0]
         field = gdf["_namefield"].iloc[0]
-        for _, row in gdf.iterrows():
+        columns = [c for c in gdf.columns if c not in INTERNAL_COLUMNS]
+        for i, (_, row) in enumerate(gdf.iterrows()):
             geom = row.geometry
             if geom is None or geom.is_empty:
                 continue
@@ -331,16 +378,33 @@ def main(argv=None) -> int:
                 if value is not None and str(value).strip().lower() not in (
                         "", "nan", "none"):
                     label = str(value).strip()
+            # The same id stage() computes, so the drawing, the attribute
+            # table and the staging layer describe one feature.
+            fid = f"gis/{path.stem}/{i:05d}"
+            tags = {} if a.no_attributes else row_attributes(row, columns)
+
+            def record(kind, layer):
+                if tags:
+                    feature_tags[fid] = tags
+                    drawn.append({"feature_id": fid, "feature_type": kind,
+                                  "cad_layer": layer,
+                                  "display_name": label or ""})
+
+            def attach(entity):
+                if tags and entity is not None:
+                    entity.set_xdata(GIS_APPID,
+                                     stage_db.xdata_tags(fid, tags))
 
             for poly in parts(geom, "Polygon"):
-                msp.add_lwpolyline(list(poly.exterior.coords), close=True,
-                                   dxfattribs={"layer": forced
-                                               or LAYERS["polygon"]})
+                layer = forced or LAYERS["polygon"]
+                attach(msp.add_lwpolyline(list(poly.exterior.coords),
+                                          close=True,
+                                          dxfattribs={"layer": layer}))
                 for ring in poly.interiors:
                     msp.add_lwpolyline(list(ring.coords), close=True,
-                                       dxfattribs={"layer": forced
-                                                   or LAYERS["polygon"]})
+                                       dxfattribs={"layer": layer})
                 counts["polygon"] += 1
+                record("polygon", layer)
                 if label:
                     pt = poly.representative_point()
                     mtext(label, pt.x, pt.y)
@@ -348,9 +412,10 @@ def main(argv=None) -> int:
 
             for line in parts(geom, "LineString"):
                 coords = list(line.coords)
-                msp.add_lwpolyline(coords, dxfattribs={
-                    "layer": forced or LAYERS["line"]})
+                layer = forced or LAYERS["line"]
+                attach(msp.add_lwpolyline(coords, dxfattribs={"layer": layer}))
                 counts["line"] += 1
+                record("line", layer)
                 if not forced:
                     for edge in road_edges(coords, a.width):
                         msp.add_lwpolyline(edge, dxfattribs={
@@ -366,9 +431,11 @@ def main(argv=None) -> int:
                     counts["label"] += 1
 
             for pt in parts(geom, "Point"):
-                msp.add_circle((pt.x, pt.y), radius=2, dxfattribs={
-                    "layer": forced or LAYERS["point"]})
+                layer = forced or LAYERS["point"]
+                attach(msp.add_circle((pt.x, pt.y), radius=2,
+                                      dxfattribs={"layer": layer}))
                 counts["point"] += 1
+                record("point", layer)
                 if label:
                     mtext(label, pt.x + 4, pt.y, 4.0)
                     counts["label"] += 1
@@ -376,14 +443,20 @@ def main(argv=None) -> int:
               f"{gdf.crs.to_string() if gdf.crs else '?'}"
               + (f", labels from '{field}'" if field else ", no label field"))
 
+    attrs = stage_db.attribute_rows(drawn, feature_tags)
     if a.db:
-        stage(a, frames, epsg, c)
+        stage(a, frames, epsg, c, attrs)
 
     out = Path(a.out) if a.out else Path(a.input[0]).with_suffix(".dxf")
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.mono:
         apply_mono(doc)
     doc.saveas(out)
+    if attrs:
+        attr_path = out.with_name("attributes.csv")
+        stage_db.write_attribute_csv(attr_path, attrs)
+        print(f"Attributes: {len(attrs)} fields on {len(drawn)} feature(s) "
+              f"-> {attr_path}")
     print(f"Drawn: {counts['polygon']} polygons, {counts['line']} lines "
           f"(+{counts['edge']} edges), {counts['point']} points, "
           f"{counts['label']} labels")
