@@ -709,6 +709,9 @@ def main():
     # NCS convention: a centreline is drawn with the CENTER linetype so it is
     # never mistaken for the edge of pavement beside it.
     doc.layers.get(LAYERS["road_centre"]).dxf.linetype = "CENTER"
+    # Dashed, so the crop line cannot be mistaken for a fence, a wall or a
+    # property boundary — it is a limit of extent, not surveyed geometry.
+    doc.layers.get(LAYERS["extent"]).dxf.linetype = "DASHED"
     # Dashes are in drawing units — metres here — so without a scale the
     # CENTER pattern is sub-millimetre on paper and reads as continuous.
     doc.header["$LTSCALE"] = 5.0

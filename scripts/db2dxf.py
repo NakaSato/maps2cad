@@ -173,6 +173,7 @@ def main(argv=None) -> int:
     doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
     doc.layers.get("C-ROAD-ROWY").dxf.linetype = "PHANTOM"
     doc.layers.get("C-ROAD-CNTR").dxf.linetype = "CENTER"
+    doc.layers.get("C-ANNO-EXTN").dxf.linetype = "DASHED"
     doc.header["$LTSCALE"] = 5.0
 
     # ---- geometry: three SELECTs -------------------------------------

@@ -102,15 +102,16 @@ and the sheet are now chosen independently — check `fitting_scale()` for the
 combination you need rather than assuming 1:2000. `topo2cad.py` still
 accepts `--radius` for a square box.
 
-**The extent is drawn, on `C-ANNO-EXTN`.** Both CAD routes close a rectangle
+**The extent is drawn, on `C-ANNO-EXTN`, DASHED.** Both CAD routes close a rectangle
 on the requested extent, derived from the centre and the nominal width and
 height so they agree to the millimetre. It is a *crop line, not a clip*:
 `clip_runs()` deliberately runs linework ~55 m past the boundary
 (`margin=0.0005°`) so roads cross the border cleanly, and building
 footprints are never cut, so a building straddling the edge stays a whole
 footprint. At 14.8165, 100.5116 that is 84 of 609 entities crossing the
-line, almost all of it roads. A drafter clips the viewport to this
-rectangle; do not "fix" the overhang by trimming geometry, or the DXF stops
+line, almost all of it roads. It is dashed so it cannot be mistaken for a
+fence, a wall or a property boundary — it is a limit of extent, not
+surveyed geometry. A drafter clips the viewport to this rectangle; do not "fix" the overhang by trimming geometry, or the DXF stops
 carrying real footprints. `generate_detailed_site_map.py` needs none of
 this — matplotlib clips to `set_xlim`/`set_ylim` and the axes spines already
 draw the frame.
