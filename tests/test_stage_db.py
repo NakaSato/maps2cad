@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import stage_db  # noqa: E402
 from stage_db import (  # noqa: E402
     _osm_id,
     apply_verified,
@@ -677,3 +678,199 @@ def test_label_anchor_avoids_the_courtyard(db):
     anchor = Point(r["label_x"], r["label_y"])
     assert poly.contains(anchor)          # inside the ring of building...
     assert not Polygon(hole).contains(anchor)   # ...not in the courtyard
+
+
+# ------------------------------------------------- one-way direction arrows
+def test_arrow_positions_space_along_the_line_not_per_vertex():
+    """An OSM way carries a vertex every few metres through a curve, so
+    per-vertex arrows pile up on bends and vanish on straights."""
+    line = [(0, 0), (10, 0), (20, 0), (200, 0)]
+    marks = stage_db.arrow_positions(line, spacing=60.0)
+    xs = [round(x, 3) for x, _y, _rot in marks]
+    assert xs == [30.0, 90.0, 150.0]          # first at half a spacing in
+    assert all(abs(rot) < 1e-9 for _x, _y, rot in marks)   # due east
+
+
+def test_arrow_positions_bearing_follows_the_geometry():
+    north = stage_db.arrow_positions([(0, 0), (0, 100)], spacing=60.0)
+    assert north[0][2] == pytest.approx(90.0)
+    west = stage_db.arrow_positions([(100, 0), (0, 0)], spacing=60.0)
+    assert abs(west[0][2]) == pytest.approx(180.0)
+
+
+def test_arrow_positions_short_runs():
+    """Too short to read one; long enough for exactly one at the midpoint."""
+    assert stage_db.arrow_positions([(0, 0), (5, 0)]) == []
+    mid = stage_db.arrow_positions([(0, 0), (40, 0)], spacing=60.0)
+    assert len(mid) == 1 and mid[0][0] == pytest.approx(20.0)
+
+
+def test_arrow_positions_ignores_degenerate_input():
+    assert stage_db.arrow_positions([(0, 0)]) == []
+    assert stage_db.arrow_positions([(0, 0), (0, 0)]) == []
+
+
+def test_oneway_arrow_size_is_clamped_both_ways():
+    """A 14 m motorway must not get a 14 m arrow, nor a 3 m alley an
+    invisible one."""
+    assert stage_db.oneway_arrow_size(6.0) == 6.0
+    assert stage_db.oneway_arrow_size(14.0) == stage_db.ONEWAY_ARROW_MAX_M
+    assert stage_db.oneway_arrow_size(1.5) == stage_db.ONEWAY_ARROW_MIN_M
+    assert stage_db.oneway_arrow_size(None) == stage_db.ONEWAY_ARROW_MIN_M
+
+
+def test_oneway_is_staged_and_survives_a_reopen(tmp_path):
+    from shapely.geometry import LineString
+
+    db = tmp_path / "s.sqlite"
+    conn = stage_db.connect(db)
+    pid = stage_db.create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    stage_db.stage_roads(conn, pid, [
+        {"feature_id": "way/1", "highway_type": "primary", "road_name": "A",
+         "road_ref": None, "carriageway_m": 10.0, "oneway": -1,
+         "geom": LineString([(0, 0), (100, 0)])},
+        {"feature_id": "way/2", "highway_type": "residential",
+         "road_name": "B", "road_ref": None, "carriageway_m": 6.0,
+         "geom": LineString([(0, 10), (100, 10)])}])
+    conn.close()
+    conn = stage_db.connect(db)
+    rows = dict(conn.execute("SELECT feature_id, oneway FROM staging_roads"))
+    conn.close()
+    # Absent means two-way, not NULL: db2dxf tests it directly
+    assert rows == {"way/1": -1, "way/2": 0}
+
+
+def test_repaired_polygon_splits_a_self_intersecting_ring():
+    """A ring that closes back on itself — OSM has them; จุฬาลงกรณ์
+    มหาวิทยาลัย is one — becomes two polygons under buffer(0). Both CAD
+    routes draw this repaired shape, so neither can disagree about how many
+    outlines there are or where the label goes."""
+    figure_eight = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0),
+                    (6, 0), (10, 0), (10, 4), (6, 4), (6, 0)]
+    shape = stage_db.repaired_polygon(figure_eight)
+    assert shape.geom_type == "MultiPolygon"
+    assert len(stage_db.polygon_parts(shape)) == 2
+    from shapely.geometry import Point
+
+    x, y = stage_db.interior_point(shape)
+    assert shape.contains(Point(x, y))
+
+
+def test_repaired_polygon_leaves_a_valid_ring_alone():
+    square = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+    shape = stage_db.repaired_polygon(square)
+    assert shape.geom_type == "Polygon"
+    assert stage_db.polygon_parts(shape) == [shape]
+    assert shape.area == pytest.approx(100.0)
+
+
+# ---------------------------------------------------- source attributes
+def test_re_extraction_clears_every_staged_table():
+    """staging_pois and staging_context were added after the delete list was
+    written and were never cleared, so re-running a site at a smaller extent
+    left the old run's landmarks and canals in the database — and db2dxf
+    drew them, outside the new extent."""
+    from shapely.geometry import LineString
+
+    conn = connect(":memory:")
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    stage_db.stage_pois(conn, pid, [
+        {"feature_id": "node/1", "poi_key": "amenity", "poi_type": "school",
+         "name_th": "ก", "name_en": "", "display_name": "ก",
+         "x": 0, "y": 0, "latitude": 13.7, "longitude": 100.5}])
+    stage_db.stage_context(conn, pid, [
+        {"feature_id": "way/9", "kind": "water", "cad_layer": "C-HYDR-WATR",
+         "name_th": "", "name_en": "", "display_name": "", "labelled": False,
+         "runs": [[(0, 0), (10, 0)]]}])
+    stage_db.stage_roads(conn, pid, [
+        {"feature_id": "way/1", "highway_type": "residential",
+         "road_name": None, "road_ref": None, "carriageway_m": 6.0,
+         "geom": LineString([(0, 0), (50, 0)])}])
+    stage_db.stage_tags(conn, pid, [
+        {"feature_id": "way/1", "feature_type": "road",
+         "cad_layer": "C-ROAD-CNTR", "display_name": "",
+         "key": "highway", "value": "residential"}])
+
+    assert create_project(conn, "p", 13.7, 100.5, 200, 150, 32647) == pid
+    left = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in stage_db.STAGED_TABLES}
+    assert left == {t: 0 for t in stage_db.STAGED_TABLES}
+
+
+def test_staged_tags_round_trip_into_xdata():
+    conn = connect(":memory:")
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    stage_db.stage_tags(conn, pid, [
+        {"feature_id": "way/1", "feature_type": "building",
+         "cad_layer": "C-BLDG-OUTL", "display_name": "B001",
+         "key": "building", "value": "yes"},
+        {"feature_id": "way/1", "feature_type": "building",
+         "cad_layer": "C-BLDG-OUTL", "display_name": "B001",
+         "key": "name", "value": "ตลาด"}])
+    tags = stage_db.tags_by_feature(conn, pid)
+    assert tags == {"way/1": ("OSM", {"building": "yes", "name": "ตลาด"})}
+    # ...and that is what a writer turns back into XDATA, id first
+    assert stage_db.xdata_tags("way/1", tags["way/1"][1]) == [
+        (1000, "@id=way/1"), (1000, "building=yes"), (1000, "name=ตลาด")]
+
+
+def test_xdata_clips_on_bytes_not_characters():
+    """Group code 1000 caps at 255 bytes and Thai is three bytes a
+    character, so a character-count clip would still overrun."""
+    value = stage_db.xdata_tags("n/1", {"name": "ก" * 300})[1][1]
+    assert len(value.encode("utf-8")) <= 255
+
+
+def test_attribute_rows_only_cover_what_was_drawn():
+    drawn = [{"feature_id": "way/1", "feature_type": "building",
+              "cad_layer": "C-BLDG-OUTL", "display_name": "B001"}]
+    rows = stage_db.attribute_rows(
+        drawn, {"way/1": {"b": "2", "a": "1"}, "way/9": {"x": "y"}})
+    assert [(r["feature_id"], r["key"]) for r in rows] == [
+        ("way/1", "a"), ("way/1", "b")]
+
+
+def test_write_attribute_csv_keeps_the_agreed_columns(tmp_path):
+    out = tmp_path / "attributes.csv"
+    stage_db.write_attribute_csv(out, [
+        {"feature_id": "way/1", "feature_type": "road",
+         "cad_layer": "C-ROAD-CNTR", "display_name": "ถนน",
+         "key": "highway", "value": "primary", "extra": "ignored"}])
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ",".join(stage_db.ATTR_FIELDS)
+    assert lines[1].startswith("way/1,road,C-ROAD-CNTR,ถนน,highway,primary")
+
+
+def test_tags_keep_their_application_id_per_feature():
+    """One project can hold an OSM extraction and a survey import. A
+    re-issue must put a shapefile's DBF columns back under GIS, not relabel
+    them as OpenStreetMap tags in the CAD attribute browser."""
+    conn = connect(":memory:")
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    stage_db.stage_tags(conn, pid, [
+        {"feature_id": "way/1", "feature_type": "building",
+         "cad_layer": "C-BLDG-OUTL", "display_name": "",
+         "key": "building", "value": "yes"}])
+    stage_db.stage_tags(conn, pid, [
+        {"feature_id": "gis/plots/00000", "feature_type": "polygon",
+         "cad_layer": "C-BLDG-OUTL", "display_name": "แปลง A",
+         "key": "PLOT_NO", "value": "12/3"}],
+        appid=stage_db.GIS_XDATA_APPID)
+    tags = stage_db.tags_by_feature(conn, pid)
+    assert tags["way/1"] == ("OSM", {"building": "yes"})
+    assert tags["gis/plots/00000"] == ("GIS", {"PLOT_NO": "12/3"})
+
+
+def test_appid_defaults_to_osm_for_an_older_database():
+    """The column arrived after the table did, so MIGRATIONS backfills it —
+    everything staged before the split came from OpenStreetMap."""
+    conn = connect(":memory:")
+    assert ("appid", "TEXT NOT NULL DEFAULT 'OSM'") in \
+        stage_db.MIGRATIONS["staging_tags"]
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    conn.execute("INSERT INTO staging_tags (project_id, feature_id,"
+                 " feature_type, cad_layer, key, value)"
+                 " VALUES (?,?,?,?,?,?)",
+                 (pid, "way/1", "building", "C-BLDG-OUTL", "building", "yes"))
+    conn.commit()
+    assert stage_db.tags_by_feature(conn, pid)["way/1"][0] == "OSM"

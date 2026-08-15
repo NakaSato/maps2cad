@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS staging_roads (
     name_en         TEXT,               -- name:en, for C-ANNO-TEXT-EN
     cad_layer       TEXT    NOT NULL DEFAULT 'C-ROAD-CNTR',
     carriageway_m   REAL,               -- width used to offset the two edges
+    oneway          INTEGER NOT NULL DEFAULT 0,   -- 1 with the geometry,
+                                        -- -1 against it, 0 two-way. Drives
+                                        -- the direction arrows on C-ROAD-ARRW
     geom_wkb        BLOB    NOT NULL,   -- (Multi)LineString in the project SRID
     label_x         REAL,
     label_y         REAL,
@@ -179,6 +182,37 @@ CREATE TABLE IF NOT EXISTS staging_contours (
     label_rotation  REAL    NOT NULL DEFAULT 0,
     length_m        REAL
 );
+
+-- The source OSM tags of every drawn feature, one row per tag.
+--
+-- Long rather than wide: OSM features carry wildly different tag sets — a
+-- handful on a fence, forty on a mall — so a column per key would be a
+-- sparse table hundreds of columns across, and choosing "the common keys"
+-- would silently drop the rest.
+--
+-- This is what lets a re-issued drawing carry the same extended entity data
+-- (XDATA) the extraction wrote. Without it, correcting one name and
+-- redrawing would quietly strip the attributes off every entity in the
+-- drawing, which is the sort of loss nobody notices until a reviewer asks
+-- where the source data went.
+CREATE TABLE IF NOT EXISTS staging_tags (
+    id              INTEGER PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    feature_id      TEXT    NOT NULL,   -- 'way/123', 'relation/9/0', 'ms/00042'
+    feature_type    TEXT    NOT NULL,   -- building | road | path | water | ...
+    cad_layer       TEXT    NOT NULL,
+    display_name    TEXT,
+    -- XDATA application id. 'OSM' for OpenStreetMap tags, 'GIS' for the
+    -- fields of a file the user supplied: one drawing can carry both when a
+    -- survey is merged into an extraction, and labelling a shapefile's DBF
+    -- columns "OSM" in the CAD attribute browser would be a lie.
+    appid           TEXT    NOT NULL DEFAULT 'OSM',
+    key             TEXT    NOT NULL,
+    value           TEXT,
+    UNIQUE (project_id, feature_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_feature
+    ON staging_tags (project_id, feature_id);
 
 -- Bounding-box columns stand in for a spatial index: SQLite has no GiST,
 -- but a window query on these is index-assisted and plenty for one site.
@@ -328,9 +362,17 @@ CREATE VIEW cad_labels AS
 # Columns added after the first release. SQLite takes one ADD COLUMN per
 # statement and has no IF NOT EXISTS for them, so an existing staging file
 # is migrated by comparing against PRAGMA table_info.
+# Everything a re-extraction of the same project must clear. Add a
+# staging_* table here in the same commit that creates it, or the second run
+# of a site silently keeps the first run's features.
+STAGED_TABLES = ("staging_buildings", "staging_roads", "staging_contours",
+                 "staging_pois", "staging_context", "staging_tags")
+
 MIGRATIONS = {
     "staging_buildings": (("name_th", "TEXT"), ("name_en", "TEXT")),
-    "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT")),
+    "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT"),
+                      ("oneway", "INTEGER NOT NULL DEFAULT 0")),
+    "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
 }
 
 
@@ -371,6 +413,12 @@ def _backfill_languages(conn) -> None:
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
+    # `--db output/runs/site.sqlite` into a folder that does not exist yet
+    # otherwise fails with a bare "unable to open database file", which says
+    # nothing about the missing directory. ':memory:' has no parent.
+    parent = Path(path).parent
+    if str(path) != ":memory:" and str(parent) not in ("", "."):
+        parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -394,8 +442,12 @@ def create_project(conn, name, lat, lon, width_m, height_m, srid) -> int:
         # therefore any /project/<id> link or bookmark — stays stable across
         # re-extractions. Verified names live in their own table and survive.
         pid = row["id"]
-        for table in ("staging_buildings", "staging_roads",
-                      "staging_contours"):
+        # Every staged table, not only the three that existed when this was
+        # written: staging_pois, staging_context and staging_tags were added
+        # later and were never cleared, so re-running a site at a smaller
+        # extent left landmarks and canals from the old one in the database —
+        # and a db2dxf.py re-issue drew them, outside the new extent.
+        for table in STAGED_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE project_id = ?", (pid,))
         conn.execute(
             "UPDATE projects SET lat = ?, lon = ?, width_m = ?, height_m = ?,"
@@ -505,17 +557,53 @@ def apply_verified(conn, project_id: int) -> int:
 
 
 def _osm_id(feature_id: str):
-    """'way/123' -> 123; 'ms/00042' -> None (no OSM identity)."""
+    """'way/123' -> 123; 'ms/00042' -> None (no OSM identity).
+
+    A relation with several `outer` rings is staged as one row per ring,
+    with ids like 'relation/123/0' — the OSM identity is still 123, and
+    int()-ing the whole tail raised ValueError on the first real extract
+    that carried one.
+    """
     if "/" not in feature_id:
         return None
     kind, _, num = feature_id.partition("/")
-    return int(num) if kind in ("way", "relation", "node") else None
+    num = num.split("/", 1)[0]
+    return int(num) if kind in ("way", "relation", "node") \
+        and num.isdigit() else None
 
 
 def interior_point(geom):
     """A point guaranteed inside the polygon (centroids are not)."""
     pt = geom.representative_point()
     return pt.x, pt.y
+
+
+def repaired_polygon(exterior, holes=()):
+    """The polygon a writer should draw *and* stage.
+
+    OSM carries self-intersecting rings — a university boundary that crosses
+    itself, a building traced in a bow tie — and `buffer(0)` splits those
+    into two polygons. The extraction routes used to draw the raw ring while
+    staging the repaired one, so the drawing had one outline where its
+    re-issue had two, with the label 97 m away in a different lobe. Both go
+    through this, so what is drawn is what is stored.
+    """
+    from shapely.geometry import Polygon
+
+    poly = Polygon(exterior, list(holes) if holes else None)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    return poly
+
+
+def polygon_parts(geom):
+    """The Polygon pieces of a repaired shape, in db2dxf.py's draw order."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    return [g for g in getattr(geom, "geoms", ())
+            if g.geom_type == "Polygon" and not g.is_empty]
 
 
 def line_label_anchor(geom):
@@ -536,6 +624,159 @@ def line_label_anchor(geom):
     elif ang < -90:
         ang += 180
     return mid.x, mid.y, ang
+
+
+# Direction-of-travel arrows on one-way carriageways. The rule lives here,
+# beside line_label_anchor(), for the same reason: all three CAD writers
+# place them, and a drawing whose re-issue puts the arrows somewhere else is
+# a drawing nobody can check against its own revision.
+ONEWAY_SPACING_M = 60.0        # along the run, between arrows
+ONEWAY_MIN_RUN_M = 12.0        # shorter than this, a run gets none
+ONEWAY_ARROW_MIN_M = 3.0
+ONEWAY_ARROW_MAX_M = 10.0
+
+
+def oneway_arrow_size(carriageway_m) -> float:
+    """Arrow length for a carriageway width, clamped so a 14 m motorway
+    does not get a 14 m arrow and a 3 m alley does not get an invisible one."""
+    width = carriageway_m or 0.0
+    return max(ONEWAY_ARROW_MIN_M, min(float(width), ONEWAY_ARROW_MAX_M))
+
+
+def arrow_positions(coords, spacing=ONEWAY_SPACING_M,
+                    min_length=ONEWAY_MIN_RUN_M):
+    """[(x, y, bearing_degrees), ...] along a polyline, in its own direction.
+
+    Arrows are spaced by distance along the line rather than one per vertex:
+    an OSM way carries a vertex every few metres through a curve, so
+    per-vertex arrows would pile up on bends and vanish on straights. The
+    first sits half a spacing in, so a run never opens with an arrow sitting
+    on the junction it starts at. A run shorter than `min_length` gets none
+    — there is no room to read one — and anything between that and a full
+    spacing gets exactly one, at its midpoint.
+
+    The bearing is the direction of travel *as digitised*; a caller with
+    `oneway=-1` adds 180.
+    """
+    pts = [(float(x), float(y)) for x, y in coords]
+    if len(pts) < 2:
+        return []
+    segs, total = [], 0.0
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length <= 0:
+            continue
+        segs.append((total, length, x1, y1, x2, y2))
+        total += length
+    if not segs or total < min_length:
+        return []
+    if total < spacing:
+        marks = [total / 2]
+    else:
+        marks = []
+        d = spacing / 2
+        while d < total:
+            marks.append(d)
+            d += spacing
+    out = []
+    for mark in marks:
+        for start, length, x1, y1, x2, y2 in segs:
+            if mark <= start + length or (start, length) == segs[-1][:2]:
+                t = min(max((mark - start) / length, 0.0), 1.0)
+                out.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t,
+                            math.degrees(math.atan2(y2 - y1, x2 - x1))))
+                break
+    return out
+
+
+# ------------------------------------------------------- source attributes
+# Extended entity data, the AutoCAD mechanism an OSM importer uses to hang
+# the source tags off each entity: select a building, LIST it, and the tags
+# are there. Group code 1000 is a string capped at 255 *bytes* — Thai is
+# three bytes a character, so the cap is applied after encoding.
+XDATA_APPID = "OSM"          # OpenStreetMap tags
+GIS_XDATA_APPID = "GIS"      # fields of a file the user supplied
+XDATA_MAX_TAGS = 40
+ATTR_FIELDS = ["feature_id", "feature_type", "cad_layer", "display_name",
+               "key", "value"]
+
+
+def clip_bytes(text, limit: int = 255) -> str:
+    raw = str(text).encode("utf-8")
+    if len(raw) <= limit:
+        return str(text)
+    return raw[:limit].decode("utf-8", "ignore")
+
+
+def xdata_tags(feature_id: str, tags: dict, max_tags: int = XDATA_MAX_TAGS):
+    """[(1000, 'key=value'), ...] for one feature, id first.
+
+    Sorted, so two runs of the same source produce byte-identical drawings.
+    A long tag list is truncated with a marker rather than silently: AutoCAD
+    caps XDATA at 16 KB per entity, and a machine-generated `source:...`
+    history can approach it. The attribute CSV carries the full set.
+    """
+    out = [(1000, clip_bytes(f"@id={feature_id}"))]
+    items = sorted(tags.items())
+    for key, value in items[:max_tags]:
+        out.append((1000, clip_bytes(f"{key}={value}")))
+    if len(items) > max_tags:
+        out.append((1000, f"@truncated={len(items) - max_tags} more tags"))
+    return out
+
+
+def attribute_rows(drawn, tags_by_id):
+    """One row per (drawn feature, tag), sorted — the attribute table.
+
+    `drawn` describes what reached the drawing, so a feature dropped by a
+    type filter or a crop is absent from the table too: it documents the
+    DXF, not the source it came from.
+    """
+    rows = []
+    for rec in drawn:
+        for key, value in sorted(tags_by_id.get(rec["feature_id"], {}).items()):
+            rows.append({**rec, "key": key, "value": value})
+    return sorted(rows, key=lambda r: (r["feature_id"], r["key"]))
+
+
+def stage_tags(conn, project_id, rows, appid=XDATA_APPID) -> int:
+    """Store the attribute rows; `rows` is attribute_rows() output.
+
+    `appid` records which XDATA application id these belong under, so a
+    re-issue puts a survey's fields back under GIS and OSM tags under OSM
+    even when one project holds both.
+    """
+    conn.executemany(
+        "INSERT OR REPLACE INTO staging_tags (project_id, feature_id,"
+        " feature_type, cad_layer, display_name, appid, key, value)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        [(project_id, r["feature_id"], r["feature_type"], r["cad_layer"],
+          r.get("display_name") or "", r.get("appid") or appid,
+          r["key"], r["value"]) for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def tags_by_feature(conn, project_id) -> dict:
+    """feature_id -> (appid, {key: value}), for a writer re-attaching XDATA."""
+    out: dict[str, tuple[str, dict]] = {}
+    for row in conn.execute(
+            "SELECT feature_id, appid, key, value FROM staging_tags"
+            " WHERE project_id = ? ORDER BY feature_id, key", (project_id,)):
+        appid, tags = out.setdefault(row["feature_id"], (row["appid"], {}))
+        tags[row["key"]] = row["value"]
+    return out
+
+
+def write_attribute_csv(path, rows) -> int:
+    """The attribute table beside the drawing, for review outside CAD."""
+    import csv
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=ATTR_FIELDS)
+        writer.writeheader()
+        writer.writerows({k: r.get(k, "") for k in ATTR_FIELDS} for r in rows)
+    return len(rows)
 
 
 def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
@@ -663,7 +904,7 @@ def stage_contours(conn, project_id, records) -> int:
 
 def stage_roads(conn, project_id, records) -> int:
     """records: dicts with feature_id, geom (shapely, project SRID),
-    highway_type, road_name, road_ref, carriageway_m."""
+    highway_type, road_name, road_ref, carriageway_m, oneway."""
     from shapely import wkb as shp_wkb
 
     rows = []
@@ -678,15 +919,16 @@ def stage_roads(conn, project_id, records) -> int:
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("highway_type"), name, ref, display, th, en,
             r.get("cad_layer", "C-ROAD-CNTR"),
-            r.get("carriageway_m"), shp_wkb.dumps(geom),
+            r.get("carriageway_m"), int(r.get("oneway") or 0),
+            shp_wkb.dumps(geom),
             lx, ly, rot, geom.length, minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_roads (project_id, feature_id, osm_id,"
         " highway_type, road_name, road_ref, display_name, name_th, name_en,"
-        " cad_layer, carriageway_m,"
+        " cad_layer, carriageway_m, oneway,"
         " geom_wkb, label_x, label_y, label_rotation, length_m,"
         " minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
 
