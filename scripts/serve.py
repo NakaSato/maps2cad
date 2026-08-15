@@ -47,6 +47,7 @@ CAD = BASE / "topo2cad.py"
 DXF2PDF = BASE / "dxf2pdf.py"
 DB2DXF = BASE / "db2dxf.py"
 GIS2CAD = BASE / "gis2cad.py"
+OSM2CAD = BASE / "osm2cad.py"
 STAGE_DB = BASE / "stage_db.py"
 # Staging database every CAD run is written into; browsable and editable
 # from /projects. Overridable with --db.
@@ -71,6 +72,24 @@ DEM_URL = ("https://copernicus-dem-30m.s3.amazonaws.com/"
 # Each script declares its own dependencies (PEP 723), so run them through
 # uv when it is available instead of this process's interpreter.
 UV = shutil.which("uv")
+
+# Background-map providers offered in the browser. The CLI also accepts a
+# raw tile URL template; the web form deliberately does not, because a
+# free-text URL would let anyone with the page point this server's fetcher
+# at any host.
+BASEMAP_CHOICES = {
+    "": "None",
+    "osm": "OpenStreetMap (standard)",
+    "opentopomap": "OpenTopoMap (contours + hillshade)",
+    "esri-topo": "Esri topographic",
+    "esri-imagery": "Esri satellite imagery",
+    "esri-street": "Esri street map",
+    "carto-light": "Carto light (muted)",
+    "carto-dark": "Carto dark",
+    "carto-voyager": "Carto voyager",
+    "osm-hot": "OSM humanitarian",
+    "cyclosm": "CyclOSM",
+}
 
 
 def script_cmd(script: Path) -> list[str]:
@@ -189,10 +208,18 @@ def parse_form(form: dict[str, list[str]]) -> dict:
     if cad_scale != "fit" and not cad_scale.isdigit():
         cad_scale = "fit"
 
+    # Background map under the CAD linework. Only the named providers are
+    # offered here — a free-text tile URL from a browser form would let the
+    # server be pointed at any host, which the CLI may do and a web app
+    # should not.
+    basemap = one("basemap", "")
+    if basemap not in BASEMAP_CHOICES:
+        basemap = ""
+
     return {
         "lat": lat, "lon": lon, "width": width, "height": height,
         "export": export, "profile": profile, "sheet_size": sheet_size,
-        "cad_sheet": cad_sheet, "cad_scale": cad_scale,
+        "cad_sheet": cad_sheet, "cad_scale": cad_scale, "basemap": basemap,
         "title": one("title", "Detailed Site Map"),
         "codes": one("codes", "on") == "on",
         "final": one("final") == "on",
@@ -266,9 +293,15 @@ def run_generator(p: dict) -> dict:
         if sheet and sheet != "none":
             cad_cmd += ["--sheet", sheet,
                         "--scale", str(p.get("cad_scale", "fit"))]
+        if p.get("basemap"):
+            cad_cmd += ["--basemap", p["basemap"]]
         logs.append(run_step(cad_cmd, "CAD export"))
         record["project"] = project
         record["dxf"] = dxf
+        # Files the CAD step writes beside the drawing, when it wrote them
+        for kind in ("tif", "attrs"):
+            if (run / KINDS[kind]).is_file():
+                record[kind] = str(run / KINDS[kind])
         plot = str(run / "site_preview.pdf")
         try:
             # With a sheet, plot the titled layout at its own paper size
@@ -290,7 +323,14 @@ def run_generator(p: dict) -> dict:
 # ------------------------------------------------------------------ history
 KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          "csv": "building_inventory.csv", "dxf": "site.dxf",
-         "plot": "site_preview.pdf"}
+         "plot": "site_preview.pdf",
+         # The DXF stores a path to the background map, not its pixels, so
+         # the GeoTIFF has to be downloadable beside it or the drawing opens
+         # with a missing raster reference.
+         "tif": "basemap.tif",
+         # Every OSM tag of every drawn feature. The entities carry these as
+         # XDATA too, but that needs AutoCAD to read; this opens anywhere.
+         "attrs": "attributes.csv"}
 
 
 def save_job(rec: dict) -> None:
@@ -400,6 +440,8 @@ legend{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 letter-spacing:.14em;text-transform:uppercase;color:var(--survey);padding:0 8px}
 .check{display:flex;align-items:center;gap:9px;font-size:14.5px;color:var(--ink)}
 .check input{width:16px;height:16px;accent-color:var(--survey)}
+.checks{display:grid;gap:10px 18px;
+grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
 button{margin-top:22px;padding:12px 24px;border:1.5px solid var(--ink);
 background:var(--ink);color:var(--paper);font-size:15px;font-weight:600;
 cursor:pointer;font-family:inherit}
@@ -588,6 +630,12 @@ def form_page(values: dict | None = None, error: str = "") -> bytes:
             f'<option value="{n}"{" selected" if n == chosen else ""}>'
             f"1:{int(n):,}</option>" for n in values)
 
+    basemap_opts = "".join(
+        f'<option value="{k}"'
+        f'{" selected" if v.get("basemap", "") == k else ""}>'
+        f"{html.escape(label)}</option>"
+        for k, label in BASEMAP_CHOICES.items())
+
     return page("maps2cad", f"""
 <p class="eyebrow">GPS coordinate → CAD drawing + site map</p>
 <h1>maps2cad</h1>
@@ -638,7 +686,8 @@ that resolves the B### codes.</p>
         <option value="fit"{" selected" if v.get('cad_scale', 'fit') == 'fit' else ""}>Fit the extent (recommended)</option>
         {opts_scale(["500", "1000", "1250", "2000", "2500", "5000"], str(v.get('cad_scale', '')))}
       </select></div>
-    <div></div>
+    <div><label for="basemap">Background map (CAD)</label>
+      <select id="basemap" name="basemap">{basemap_opts}</select></div>
   </div>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
     <label class="check"><input type="checkbox" name="codes" checked> Show B### codes on unnamed buildings</label>
@@ -664,8 +713,13 @@ that resolves the B### codes.</p>
 </form>
 <h2>Staged projects <a href="/projects">Browse and edit names →</a></h2>
 <p class="note">Correct building names on a staged project and re-issue the
-drawing in under a second — no re-fetch from OpenStreetMap.
-Nothing mapped at your site? <a href="/import">Import your own GIS data →</a></p>
+drawing in under a second — no re-fetch from OpenStreetMap.</p>
+<h2>Already have the data <a href="/import">Import a file →</a></h2>
+<p class="note">An OpenStreetMap export (<code>.osm</code> from the Export
+button on openstreetmap.org) is drawn on the same layers with no network
+fetch at all — useful where Overpass is blocked, or when someone sent you the
+extract. Your own survey files (GeoJSON, shapefile, KML) come in the same way,
+for sites OpenStreetMap has nothing mapped at.</p>
 <h2>Recent generations <a href="/history">See all →</a></h2>
 <div class="wide">{history_html(8)}</div>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
@@ -694,6 +748,13 @@ def result_page(rec: dict) -> bytes:
                 f'<a class="dlicon" href="/file/{jid}/{kind}" download '
                 f'title="Download {label}">⤓</a></span>')
 
+    def plain_card(kind, tag, label):
+        """A file with no browser viewer and no stand-in: click to download."""
+        if not rec.get(kind):
+            return ""
+        return (f'<span class="card"><a href="/file/{jid}/{kind}" download>'
+                f'<b>{tag}</b>⤓&nbsp; {label}</a></span>')
+
     def download_card(kind, tag, label, preview_title):
         """The other way round, for a file with no browser viewer: clicking
         the card downloads it, and the plot preview moves to the small
@@ -720,6 +781,11 @@ def result_page(rec: dict) -> bytes:
         file_card("pdf", "Vector", "Site map PDF"),
         file_card("png", "300 DPI", "Site map PNG"),
         file_card("csv", "Inventory", "Buildings CSV"),
+        file_card("attrs", "Attributes", "OSM tags table"),
+        # Download only — a browser has no GeoTIFF viewer. Keep it beside
+        # the DXF: AutoCAD resolves the reference relative to the drawing,
+        # so taking one without the other loses the map.
+        plain_card("tif", "Backdrop", "Background map"),
     ]
 
     # Only offered when the server has Google credentials — an unconfigured
@@ -757,6 +823,14 @@ def utm_zone_label(lat: float, lon: float) -> str:
 
 # ----------------------------------------------------------------- projects
 GIS_SUFFIXES = {".geojson", ".json", ".gpkg", ".kml", ".gml", ".zip"}
+# OSM XML as www.openstreetmap.org's Export button hands it over, plus the
+# shapes an extract is usually passed around in. `.pbf` is accepted here and
+# refused by osm2cad.py, which answers with the one command that converts it
+# — better than "not a GIS file" from a reader that never looked at it.
+OSM_SUFFIXES = {".osm", ".xml", ".pbf", ".gz", ".bz2", ".zip"}
+# A .zip could be either, so it is classified after expansion, by what it
+# turned out to hold.
+OSM_ONLY = OSM_SUFFIXES - {".zip"}
 MAX_UPLOAD = 64 * 1024 * 1024        # 64 MB per request
 
 
@@ -801,7 +875,7 @@ def parse_multipart(content_type: str, body: bytes):
 
 
 def save_uploads(files, dest: Path) -> list[Path]:
-    """Write uploaded files, expanding a zipped shapefile set."""
+    """Write uploaded files, expanding a zipped shapefile set or OSM export."""
     import zipfile
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -809,11 +883,13 @@ def save_uploads(files, dest: Path) -> list[Path]:
     for filename, data in files:
         safe = Path(filename).name          # never trust a client path
         suffix = Path(safe).suffix.lower()
-        if suffix not in GIS_SUFFIXES:
+        if suffix not in GIS_SUFFIXES | OSM_SUFFIXES:
             raise BadRequest(
-                f"“{safe}” is not a GIS file this reads. Upload GeoJSON, "
-                "GeoPackage, KML or GML — or a .zip holding a shapefile set "
-                "(.shp with its .dbf and .shx).")
+                f"“{safe}” is not a file this reads. Upload an OpenStreetMap "
+                "export (.osm from the Export button on openstreetmap.org, "
+                "or .gz/.bz2), or GIS data (GeoJSON, GeoPackage, KML, GML) "
+                "— or a .zip holding either a shapefile set (.shp with its "
+                ".dbf and .shx) or an .osm file.")
         target = dest / safe
         target.write_bytes(data)
         if suffix == ".zip":
@@ -827,16 +903,52 @@ def save_uploads(files, dest: Path) -> list[Path]:
             except zipfile.BadZipFile:
                 raise BadRequest(f"“{safe}” is not a readable zip archive.")
             shp = sorted(dest.glob("*.shp"))
-            if not shp:
+            osm = sorted(p for p in dest.iterdir()
+                         if p.suffix.lower() in (".osm", ".xml"))
+            if not shp and not osm:
                 raise BadRequest(
-                    f"“{safe}” holds no .shp file. Zip the whole shapefile "
-                    "set: .shp, .dbf, .shx and ideally .prj.")
-            written.extend(shp)
+                    f"“{safe}” holds no .shp file and no .osm file. Zip the "
+                    "whole shapefile set — .shp, .dbf, .shx and ideally .prj "
+                    "— or an OpenStreetMap export.")
+            # A shapefile set wins: a zip carrying both is a survey with its
+            # source extract alongside, and the survey is what was uploaded.
+            written.extend(shp or osm)
         else:
             written.append(target)
     if not written:
         raise BadRequest("No file was uploaded.")
     return written
+
+
+def import_kind(paths) -> str:
+    """Which converter draws these files: 'osm' or 'gis'.
+
+    Routed by extension, not by sniffing the contents: the two converters
+    take different options and produce different drawings from the same
+    ground, so a wrong guess is worse than a question. Mixing the two in one
+    upload is refused for the same reason — there is no single command that
+    would draw both.
+    """
+    kinds = {"osm" if Path(p).suffix.lower() in OSM_ONLY else "gis"
+             for p in paths}
+    if len(kinds) > 1:
+        raise BadRequest(
+            "Upload OpenStreetMap files and your own GIS files separately — "
+            "they are drawn by different converters. Import one, then the "
+            "other into the same project name, and they share a drawing.")
+    return kinds.pop()
+
+
+def parse_epsg(value: str):
+    """Optional projected CRS code from the form."""
+    value = (value or "").strip().upper().removeprefix("EPSG:")
+    if not value:
+        return None
+    if not value.isdigit():
+        raise BadRequest(f"“{value}” is not an EPSG code. Give a number, "
+                         "e.g. 32647 for UTM zone 47N, or leave it blank to "
+                         "derive the zone from the data.")
+    return value
 
 
 def stage_db_module():
@@ -901,6 +1013,9 @@ without re-fetching from OpenStreetMap.</p>
 computed. Open a project to correct building names and re-issue the drawing —
 that redraw takes under a second and never touches OpenStreetMap.</p>
 <div class="wide">{''.join(body)}</div>
+<p class="note"><a href="/import">Import a file →</a> — an OpenStreetMap
+export or your own survey data, merged into a project by name so both share
+one drawing.</p>
 <a class="back" href="/">← Generate</a>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
 """)
@@ -1093,6 +1208,18 @@ applies to this page only.</p>
 """)
 
 
+# Feature types osm2cad.py can import, in the order the form offers them.
+# Must match TYPE_CHOICES there.
+OSM_TYPES = ("building", "road", "path", "water", "green", "rail",
+             "barrier", "landmark")
+OSM_TYPE_LABELS = {
+    "building": "อาคาร / Buildings", "road": "ถนน / Roads",
+    "path": "ทางเดิน / Paths", "water": "แหล่งน้ำ / Water",
+    "green": "พื้นที่สีเขียว / Parks", "rail": "ทางรถไฟ / Railways",
+    "barrier": "รั้ว / Barriers", "landmark": "สถานที่สำคัญ / Landmarks",
+}
+
+
 def import_page(note: str = "", error: str = "") -> bytes:
     conn = db_conn()
     projects = conn.execute("SELECT id, name FROM projects ORDER BY name"
@@ -1104,36 +1231,68 @@ def import_page(note: str = "", error: str = "") -> bytes:
         f" (project {p['id']})</option>" for p in projects)
     banner = (f'<div class="err">{html.escape(error)}</div>' if error else
               f'<div class="ok">{html.escape(note)}</div>' if note else "")
-    return page("Import GIS data", f"""
-<p class="eyebrow">Your own survey → CAD</p>
-<h1>Import GIS data</h1>
-<p class="lede">Many sites have nothing mapped in OpenStreetMap. Upload what
-your team surveyed — plots, access roads, equipment pads — and it is drawn in
-true UTM metres on the same layers, and merged into a project so it shares a
-drawing with the OSM roads and terrain.</p>
+    types = "".join(
+        f'<label class="check"><input type="checkbox" name="t_{t}" '
+        f'value="1" checked> {html.escape(OSM_TYPE_LABELS[t])}</label>'
+        for t in OSM_TYPES)
+    basemap_opts = "".join(f'<option value="{k}">{html.escape(label)}</option>'
+                           for k, label in BASEMAP_CHOICES.items())
+    return page("Import a file", f"""
+<p class="eyebrow">An OSM export or your own survey → CAD</p>
+<h1>Import a file</h1>
+<p class="lede">Two kinds of file are drawn here, and the right converter is
+picked from the extension. An <b>OpenStreetMap export</b> (.osm) becomes the
+same NCS-layered drawing the generator makes, with no network fetch at all —
+useful where Overpass is blocked or the area was exported for you. Your own
+<b>GIS data</b> — plots, access roads, equipment pads — is drawn in true UTM
+metres on the same layers. Either is merged into a project, so a survey and
+an extract can share one drawing.</p>
 {banner}
 <form method="post" action="/import" enctype="multipart/form-data"
      >
   <div class="grid g2">
-    <div><label for="files">GIS files</label>
+    <div><label for="files">File(s)</label>
       <input type="file" id="files" name="files" multiple
-             accept=".geojson,.json,.gpkg,.kml,.gml,.zip"></div>
+             accept=".osm,.xml,.gz,.bz2,.geojson,.json,.gpkg,.kml,.gml,.zip">
+      </div>
     <div><label for="project">Merge into project</label>
       <input type="text" id="project" name="project" list="projects"
              placeholder="new or existing project name">
       <datalist id="projects">{options}</datalist></div>
   </div>
   <div class="grid g3" style="margin-top:16px">
-    <div><label for="name_field">Name attribute (optional)</label>
+    <div><label for="epsg">Coordinate system (optional)</label>
+      <input type="text" id="epsg" name="epsg"
+             placeholder="auto: UTM zone from the data"></div>
+    <div><label for="name_field">Name attribute (GIS only)</label>
       <input type="text" id="name_field" name="name_field"
              placeholder="auto: name, PLOT_NAME, label…"></div>
-    <div><label for="layer">CAD layer override (optional)</label>
+    <div><label for="layer">CAD layer (GIS only)</label>
       <input type="text" id="layer" name="layer"
              placeholder="e.g. C-PROP-LINE"></div>
-    <div><label for="width">Line width (m)</label>
+    <div><label for="width">Line width, m (GIS only)</label>
       <input type="number" id="width" name="width" step="any" min="0"
              value="6"></div>
   </div>
+  <fieldset style="margin-top:16px">
+    <legend>OpenStreetMap files</legend>
+    <div class="checks">{types}</div>
+    <div class="grid g3" style="margin-top:16px">
+      <div><label for="bbox">Crop to box (optional)</label>
+        <input type="text" id="bbox" name="bbox"
+               placeholder="S,W,N,E in degrees"></div>
+      <div><label for="layer_by">Split layers by tag</label>
+        <input type="text" id="layer_by" name="layer_by"
+               placeholder="e.g. highway, building"></div>
+      <div><label for="basemap">Background map</label>
+        <select id="basemap" name="basemap">{basemap_opts}</select></div>
+    </div>
+    <label class="check" style="margin-top:16px"><input type="checkbox"
+      name="attributes" value="1" checked> Attach OSM tags as XDATA</label>
+    <p class="note" style="margin-top:10px">Feature types to import, and
+    whether each entity carries its source OSM tags — select a building in
+    AutoCAD and LIST shows them. Ignored for GIS files.</p>
+  </fieldset>
   <button type="submit" data-idle="Import and draw"
     data-busy="Importing…">Import and draw</button>
   <div id="busy"><div class="load" data-estimate="20">
@@ -1143,11 +1302,14 @@ drawing with the OSM roads and terrain.</p>
     <p class="load-note">Reading the file, reprojecting to UTM and drawing.
     No network fetch, so this is usually quick.</p>
     <p class="load-note load-over" style="display:none">Over the estimate —
-    still working. A large shapefile takes longer.</p>
+    still working. A large export takes longer.</p>
   </div></div>
 </form>
-<p class="note">GeoJSON, GeoPackage, KML, GML, or a .zip holding a shapefile
-set. Files without a declared CRS are assumed to be latitude/longitude.</p>
+<p class="note">OpenStreetMap: .osm or .xml from the Export button on
+openstreetmap.org, optionally .gz or .bz2. GIS: GeoJSON, GeoPackage, KML,
+GML, or a .zip holding a shapefile set — files without a declared CRS are
+assumed to be latitude/longitude. Upload the two kinds separately; a .osm.pbf
+has to be converted first (<code>osmium cat -o map.osm map.osm.pbf</code>).</p>
 <a class="back" href="/">← Generate from OpenStreetMap</a>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
 <script>
@@ -1318,7 +1480,7 @@ class Handler(BaseHTTPRequestHandler):
                           f"{p['width']:.0f}x{p['height']:.0f}")
             wanted = [("dxf", "image/vnd.dxf"), ("plot", "application/pdf"),
                       ("pdf", "application/pdf"), ("png", "image/png"),
-                      ("csv", "text/csv")]
+                      ("csv", "text/csv"), ("tif", "image/tiff")]
             files = [(Path(rec[k]), mime) for k, mime in wanted if rec.get(k)]
             result = gdrive.upload_project(token, project, files)
         except gdrive.DriveError as e:
@@ -1355,8 +1517,14 @@ class Handler(BaseHTTPRequestHandler):
                  or ("image/vnd.dxf" if parts[2] == "dxf"
                      else "application/octet-stream"))
         stem, ext = kinds[parts[2]].rsplit(".", 1)
-        name = (f"{stem}_{rec['params']['lat']:.6f}_"
-                f"{rec['params']['lon']:.6f}.{ext}")
+        if parts[2] == "tif":
+            # Keeps its bare name on purpose: the DXF references the raster
+            # as "basemap.tif" relative to itself, so a per-coordinate name
+            # would hand the user a drawing with a missing background map.
+            name = kinds[parts[2]]
+        else:
+            name = (f"{stem}_{rec['params']['lat']:.6f}_"
+                    f"{rec['params']['lon']:.6f}.{ext}")
         self._send(target.read_bytes(), ctype=ctype,
                    extra={"Content-Disposition":
                           f'attachment; filename="{name}"'})
@@ -1383,7 +1551,8 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             return self._send(b"File missing", 404, "text/plain")
 
-        if kind == "csv":
+        # Both CSVs render as a grid; only the words around them differ.
+        if kind in ("csv", "attrs"):
             rows = list(csv.reader(
                 target.read_text(encoding="utf-8").splitlines()))
             head = rows[0] if rows else []
@@ -1397,6 +1566,20 @@ class Handler(BaseHTTPRequestHandler):
             table.append("</tbody></table>")
             more = (f"<p class='note'>Showing the first 500 of {len(body)} "
                     "rows.</p>") if len(body) > 500 else ""
+            if kind == "attrs":
+                features = len({r[0] for r in body if r})
+                return self._send(page("Attributes", f"""
+<p class="eyebrow">{len(body)} tag(s) on {features} feature(s)</p>
+<h1>Attributes</h1>
+<p class="lede">Every OpenStreetMap tag carried by every feature in the
+drawing. The entities hold the same tags as extended data — select one in
+AutoCAD and <code>LIST</code> shows them — so this is the copy you can read
+without opening the CAD file, and the complete one: the drawing stores the
+first 40 tags per entity, this stores all of them.</p>
+<div class="wide">{''.join(table)}</div>{more}
+<div class="files"><a href="/file/{parts[1]}/attrs" download>
+<b>Spreadsheet</b>Download CSV</a></div>
+<a class="back" href="/">← Back</a>"""))
             return self._send(page("Building inventory", f"""
 <p class="eyebrow">{len(body)} building(s)</p>
 <h1>Building inventory</h1>
@@ -1503,6 +1686,10 @@ drawing.</p>
                           "sheet_size": "A3", "title": f"Project {pid}"}}
         if plot:
             rec["plot"] = plot
+        # db2dxf re-attaches the staged tags and rewrites the table, so a
+        # re-issue offers the same attribute grid the first run did
+        if (run / KINDS["attrs"]).is_file():
+            rec["attrs"] = str(run / KINDS["attrs"])
         conn = db_conn()
         if conn is not None:
             p = conn.execute("SELECT * FROM projects WHERE id = ?",
@@ -1528,28 +1715,60 @@ drawing.</p>
             fields, files = parse_multipart(
                 self.headers.get("Content-Type", ""), body)
             if not files:
-                raise BadRequest("Choose at least one GIS file to upload.")
+                raise BadRequest("Choose at least one file to upload.")
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             jid = hashlib.sha256(
                 (stamp + files[0][0]).encode()).hexdigest()[:16]
             run = OUT / f"import-{stamp}"
             paths = save_uploads(files, run / "source")
+            kind = import_kind(paths)
 
             project = fields.get("project", "").strip() \
                 or Path(paths[0]).stem
             dxf = str(run / "site.dxf")
-            cmd = script_cmd(GIS2CAD)
-            for p in paths:
-                cmd += ["--input", str(p)]
-            cmd += ["--out", dxf, "--db", str(STAGING_DB),
-                    "--project", project]
-            if fields.get("name_field"):
-                cmd += ["--name-field", fields["name_field"]]
-            if fields.get("layer"):
-                cmd += ["--layer", fields["layer"]]
-            if fields.get("width"):
-                cmd += ["--width", fields["width"]]
-            log = run_step(cmd, "GIS import")
+            epsg = parse_epsg(fields.get("epsg", ""))
+            if kind == "osm":
+                cmd = script_cmd(OSM2CAD)
+                for p in paths:
+                    cmd += ["--input", str(p)]
+                cmd += ["--out", dxf, "--db", str(STAGING_DB),
+                        "--project", project]
+                types = [t for t in OSM_TYPES if fields.get(f"t_{t}")]
+                # All boxes ticked is the same drawing as no filter at all,
+                # so the flag is only passed when it actually drops something
+                if types and len(types) < len(OSM_TYPES):
+                    cmd += ["--types", ",".join(types)]
+                if fields.get("bbox"):
+                    cmd += ["--bbox", fields["bbox"]]
+                if fields.get("layer_by"):
+                    cmd += ["--layer-by", fields["layer_by"]]
+                # Only the named providers, never a URL typed into the form
+                if fields.get("basemap") in BASEMAP_CHOICES \
+                        and fields.get("basemap"):
+                    cmd += ["--basemap", fields["basemap"]]
+                # An unticked checkbox is simply absent from the multipart
+                # body, so the box carries the positive sense and its
+                # absence is what turns the tags off.
+                if not fields.get("attributes"):
+                    cmd += ["--no-attributes"]
+                if epsg:
+                    cmd += ["--epsg", epsg]
+                log = run_step(cmd, "OpenStreetMap import")
+            else:
+                cmd = script_cmd(GIS2CAD)
+                for p in paths:
+                    cmd += ["--input", str(p)]
+                cmd += ["--out", dxf, "--db", str(STAGING_DB),
+                        "--project", project]
+                if fields.get("name_field"):
+                    cmd += ["--name-field", fields["name_field"]]
+                if fields.get("layer"):
+                    cmd += ["--layer", fields["layer"]]
+                if fields.get("width"):
+                    cmd += ["--width", fields["width"]]
+                if epsg:
+                    cmd += ["--epsg", epsg]
+                log = run_step(cmd, "GIS import")
 
             plot = str(run / "site_preview.pdf")
             try:
@@ -1567,8 +1786,10 @@ drawing.</p>
         rec = {"id": jid, "dir": str(run), "dxf": dxf, "log": log,
                "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
                "project": project,
+               **{k: str(run / KINDS[k]) for k in ("tif", "attrs")
+                  if (run / KINDS[k]).is_file()},
                "params": {"lat": 0.0, "lon": 0.0, "width": 0.0, "height": 0.0,
-                          "export": "gis", "profile": "standard",
+                          "export": kind, "profile": "standard",
                           "sheet_size": "A3", "title": project}}
         if plot:
             rec["plot"] = plot
