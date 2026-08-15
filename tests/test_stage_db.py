@@ -445,3 +445,92 @@ def test_migration_backfills_an_existing_staging_file(db):
         "โรงเรียนบ้านนา": "C-ANNO-TEXT-TH",
         "ถนนอรุณประเสริฐ": "C-ANNO-TEXT-TH",
     }
+
+
+# ------------------------------------------------------------- landmarks
+def _poi(fid="node/1", name="ศาลพระภูมิ", x=100.0, y=200.0,
+         key="historic", typ="shrine", **kw):
+    return {"feature_id": fid, "x": x, "y": y, "poi_key": key,
+            "poi_type": typ, "display_name": name, **kw}
+
+
+def test_poi_symbol_and_label_are_separate_points(db):
+    """The circle marks the landmark; the name has to sit clear of it, so
+    the anchor is nudged at staging time rather than by the CAD writer."""
+    from shapely import wkb
+    from stage_db import POI_LABEL_DX, stage_pois
+
+    conn, pid = db
+    stage_pois(conn, pid, [_poi()])
+    row = conn.execute("SELECT geom_wkb, label_x, label_y FROM"
+                       " staging_pois").fetchone()
+    pt = wkb.loads(row["geom_wkb"])
+    assert (pt.x, pt.y) == (100.0, 200.0)          # symbol on the landmark
+    assert row["label_x"] == 100.0 + POI_LABEL_DX  # name clear of it
+    assert row["label_y"] == 200.0
+
+
+def test_poi_label_routes_by_script(db):
+    from stage_db import stage_pois
+
+    conn, pid = db
+    stage_pois(conn, pid, [_poi("node/1", "ศาลพระภูมิ"),
+                           _poi("node/2", "Erawan Shrine", x=50.0)])
+    rows = conn.execute("SELECT text, cad_layer FROM cad_labels WHERE"
+                        " feature_class = 'poi' ORDER BY text").fetchall()
+    assert {r["text"]: r["cad_layer"] for r in rows} == {
+        "ศาลพระภูมิ": "C-ANNO-TEXT-TH",
+        "Erawan Shrine": "C-ANNO-TEXT-EN",
+    }
+
+
+def test_bilingual_poi_stacks_english_above_thai(db):
+    from stage_db import stage_pois
+
+    conn, pid = db
+    stage_pois(conn, pid, [_poi(name_th="ศาลพระภูมิ",
+                                name_en="Spirit House")])
+    rows = conn.execute("SELECT text, label_offset FROM cad_labels WHERE"
+                        " feature_class = 'poi' ORDER BY label_offset"
+                        ).fetchall()
+    assert [r["text"] for r in rows] == ["ศาลพระภูมิ", "Spirit House"]
+    assert rows[0]["label_offset"] == 0.0
+    assert rows[1]["label_offset"] == pytest.approx(4.0 * 1.3)
+
+
+def test_landmark_area_stays_off_the_building_layer(db):
+    """A hospital campus or car park needs a polygon, an interior anchor and
+    an area — so it rides in staging_buildings — but a 3,000 m2 car park
+    must not read as a structure on C-BLDG-OUTL."""
+    from shapely.geometry import box
+
+    conn, pid = db
+    stage_buildings(conn, pid, [
+        {"feature_id": "way/1", "source": "openstreetmap",
+         "osm_name": "สำนักงานตำรวจแห่งชาติ", "code": "",
+         "display_name": "สำนักงานตำรวจแห่งชาติ", "building_type": None,
+         "cad_layer": "C-SITE-POI", "geom": box(0, 0, 200, 250)},
+        {"feature_id": "way/2", "source": "openstreetmap", "osm_name": "",
+         "code": "B001", "display_name": "B001", "building_type": None,
+         "geom": box(10, 10, 20, 18)},
+    ])
+    layers = dict(conn.execute("SELECT cad_layer, COUNT(*) FROM"
+                               " staging_buildings GROUP BY 1").fetchall())
+    assert layers == {"C-SITE-POI": 1, "C-BLDG-OUTL": 1}
+    # ...and it still gets its name, on the Thai layer
+    row = conn.execute("SELECT cad_layer FROM cad_labels WHERE text = ?",
+                       ("สำนักงานตำรวจแห่งชาติ",)).fetchone()
+    assert row["cad_layer"] == "C-ANNO-TEXT-TH"
+
+
+def test_unnamed_landmark_area_draws_but_does_not_label(db):
+    from shapely.geometry import box
+
+    conn, pid = db
+    stage_buildings(conn, pid, [
+        {"feature_id": "way/3", "source": "openstreetmap", "osm_name": "",
+         "code": "", "display_name": "", "building_type": None,
+         "cad_layer": "C-SITE-POI", "geom": box(0, 0, 30, 30)}])
+    assert conn.execute("SELECT COUNT(*) FROM staging_buildings"
+                        ).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM cad_labels").fetchone()[0] == 0

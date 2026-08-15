@@ -40,6 +40,8 @@ LAYER_STYLE = {
     "C-ANNO-TEXT": (2, 25),      # language-neutral: B### codes, elevations
     "C-ANNO-TEXT-TH": (2, 25),
     "C-ANNO-TEXT-EN": (7, 25),
+    "C-ANNO-SYMB": (6, 18),      # landmark point symbols
+    "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
     "C-ANNO-NORT": (7, 35),
     "C-ANNO-GPSP": (1, 35),
     "C-PROP-LINE": (1, 70),
@@ -184,6 +186,16 @@ def main(argv=None) -> int:
                                    dxfattribs={"layer": "C-ROAD-EDGE"})
                 n_e += 1
 
+    # Landmark point symbols. The areas came through staging_buildings above
+    # already, carrying their own C-SITE-POI cad_layer.
+    n_p = 0
+    for row in conn.execute("SELECT geom_wkb, cad_layer FROM staging_pois"
+                            " WHERE project_id = ?", (pid,)):
+        for pt in parts(wkb.loads(row["geom_wkb"]), "Point"):
+            msp.add_circle((pt.x, pt.y), radius=2,
+                           dxfattribs={"layer": row["cad_layer"]})
+            n_p += 1
+
     n_c = 0
     if not a.no_contours:
         for row in conn.execute("SELECT elevation_m, geom_wkb, cad_layer"
@@ -289,7 +301,7 @@ def main(argv=None) -> int:
     print(f"Project '{proj['name']}' (EPSG:{proj['srid']}, "
           f"{proj['width_m']:.0f} x {proj['height_m']:.0f} m)")
     print(f"  {n_b} building outlines, {n_r} road centrelines "
-          f"(+{n_e} edges), {n_c} contours, {n_t} MTEXT")
+          f"(+{n_e} edges), {n_c} contours, {n_p} POI symbols, {n_t} MTEXT")
     print(f"Saved: {out}")
     return 0
 

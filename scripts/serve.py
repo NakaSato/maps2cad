@@ -826,7 +826,9 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
                     '<a class="back" href="/projects">← Projects</a>')
     # A dense site can hold thousands of footprints, so the table is
     # searched, filtered and paged rather than rendered whole.
-    where = ["project_id = ?"]
+    # Landmark grounds share this table but are not buildings; they would
+    # otherwise appear in the name editor as unnamed footprints to fill in.
+    where = ["project_id = ?", "cad_layer = 'C-BLDG-OUTL'"]
     params: list = [pid]
     if only == "unnamed":
         where.append("code <> '' AND display_name = code")
@@ -840,9 +842,11 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
     clause = " AND ".join(where)
 
     total_all = conn.execute("SELECT COUNT(*) FROM staging_buildings WHERE"
-                             " project_id = ?", (pid,)).fetchone()[0]
+                             " project_id = ? AND cad_layer = 'C-BLDG-OUTL'",
+                             (pid,)).fetchone()[0]
     unnamed_all = conn.execute(
         "SELECT COUNT(*) FROM staging_buildings WHERE project_id = ?"
+        " AND cad_layer = 'C-BLDG-OUTL'"
         " AND code <> '' AND display_name = code", (pid,)).fetchone()[0]
     matched = conn.execute(f"SELECT COUNT(*) FROM staging_buildings WHERE"
                            f" {clause}", params).fetchone()[0]

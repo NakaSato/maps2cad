@@ -130,7 +130,15 @@ def fetch_osm(s, w, n, e):
       way["landuse"~"^(grass|forest|meadow|orchard|farmland|cemetery)$"]({s},{w},{n},{e});
       way["railway"]({s},{w},{n},{e});
       way["barrier"]({s},{w},{n},{e});
-      node["name"]({s},{w},{n},{e});
+      way["amenity"]({s},{w},{n},{e});
+      way["tourism"]({s},{w},{n},{e});
+      way["historic"]({s},{w},{n},{e});
+      relation["amenity"]({s},{w},{n},{e});
+      relation["tourism"]({s},{w},{n},{e});
+      relation["historic"]({s},{w},{n},{e});
+      node["amenity"]({s},{w},{n},{e});
+      node["tourism"]({s},{w},{n},{e});
+      node["historic"]({s},{w},{n},{e});
     );
     out tags geom;
     """
@@ -269,6 +277,23 @@ def best_name(tags):
     return th or en
 
 
+# A landmark ("สถานที่สำคัญ") is one of these three OSM keys. The query used
+# to ask for node["name"], which at a dense site returns mostly furniture:
+# in a 770x410 m extent over Pathum Wan, 186 of 293 named nodes were mall
+# floor markers, shop brands, benches and bus stops, each drawing a symbol
+# and a label onto the sheet.
+POI_KEYS = ("amenity", "tourism", "historic")
+
+
+def poi_kind(tags):
+    """(key, value) of the landmark tag on this feature, or None. Ordered,
+    so a hospital tagged both amenity and tourism reports as amenity."""
+    for key in POI_KEYS:
+        if tags.get(key):
+            return (key, tags[key])
+    return None
+
+
 # Carriageway width in metres per highway class, used to draw each road as
 # two parallel edges (the CAD convention) rather than a single centreline.
 ROAD_WIDTH_M = {
@@ -307,6 +332,10 @@ LAYERS = {
     "rail": "C-RAIL-TRAK",
     "barrier": "C-BNDY-BARR",
     "poi": "C-ANNO-SYMB",
+    # Landmark grounds that carry no building tag — hospital and school
+    # campuses, temple precincts, car parks. Kept off C-BLDG-OUTL so a
+    # 3,000 m2 car park does not read as a structure.
+    "site_poi": "C-SITE-POI",
     "north": "C-ANNO-NORT",
     "site": "C-ANNO-GPSP",
     "property": "C-PROP-LINE",
@@ -386,7 +415,8 @@ def road_edges(points, width_m):
 
 
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
-                contours=(), contour_layers=None):
+                contours=(), contour_layers=None,
+                poi_points=(), poi_areas=()):
     """Stage what was just drawn into the SQLite layer, with CAD label
     anchors precomputed so the drawing step is plain SELECTs."""
     from pyproj import Transformer
@@ -416,7 +446,25 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
         if poly.is_empty:
             continue
         b_rows.append({**row, "geom": poly})
-    n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs)
+
+    # Landmark areas ride in the same table: they need a polygon, an interior
+    # label anchor and an area, which is what it stores. Their cad_layer is
+    # what keeps them off C-BLDG-OUTL and out of the building inventory.
+    n_sp = 0
+    for rec in poi_areas:
+        poly = Polygon(rec["geom_pts"])
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty:
+            continue
+        b_rows.append({k: v for k, v in rec.items() if k != "geom_pts"}
+                      | {"geom": poly, "cad_layer": LAYERS["site_poi"],
+                         "source": "openstreetmap", "code": "",
+                         "osm_name": rec.get("display_name", "")})
+        n_sp += 1
+    n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs) - n_sp
+
+    n_p = stage_db.stage_pois(conn, pid, list(poi_points))
 
     r_rows = []
     for rec in road_records:
@@ -437,6 +485,7 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     conn.close()
     print(f"Staged to {a.db}: project '{project}' (id {pid}) — "
           f"{n_b} buildings, {n_r} roads, {n_c} contours, "
+          f"{n_p} POI points, {n_sp} POI areas, "
           f"{labels} CAD labels ready")
 
 
@@ -492,11 +541,15 @@ def main():
     print("Fetching OSM data (Overpass)...")
     elements = fetch_osm(s, w, n, e)
     buildings, roads, pois = [], [], []
+    site_pois = []
     water, green, rails, barriers = [], [], [], []
     for el in elements:
         tags = el.get("tags", {})
-        if el["type"] == "node" and best_name(tags):
-            pois.append((best_name(tags), el["lon"], el["lat"]))
+        if el["type"] == "node" and poi_kind(tags) and best_name(tags):
+            # Unnamed landmark nodes (a waste basket, a bicycle stand) carry
+            # no information a drafter can use, so a name is still required
+            pois.append((names_by_lang(tags), el["lon"], el["lat"],
+                         poi_kind(tags), f"node/{el['id']}"))
         elif el["type"] == "way" and "geometry" in el:
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
             name = best_name(tags)
@@ -514,15 +567,29 @@ def main():
                 rails.append((name, pts))
             elif "barrier" in tags:
                 barriers.append((name, pts))
-        elif el["type"] == "relation" and "building" in tags:
-            for m in el.get("members", []):
-                if m.get("role") == "outer" and "geometry" in m:
-                    pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
-                    buildings.append((names_by_lang(tags), pts,
-                                      f"relation/{el['id']}"))
-                    break
+            elif poi_kind(tags) and len(pts) >= 3:
+                # A landmark mapped as an area but not tagged `building`:
+                # hospital and school grounds, temple precincts, car parks.
+                # A landmark that IS a building came through the branch
+                # above and already has its outline and name.
+                site_pois.append((names_by_lang(tags), pts,
+                                  f"{el['type']}/{el['id']}", poi_kind(tags)))
+        elif el["type"] == "relation":
+            if "building" in tags or poi_kind(tags):
+                for m in el.get("members", []):
+                    if m.get("role") == "outer" and "geometry" in m:
+                        pts = [(g["lon"], g["lat"]) for g in m["geometry"]]
+                        if "building" in tags:
+                            buildings.append((names_by_lang(tags), pts,
+                                              f"relation/{el['id']}"))
+                        elif len(pts) >= 3:
+                            site_pois.append(
+                                (names_by_lang(tags), pts,
+                                 f"relation/{el['id']}", poi_kind(tags)))
+                        break
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
-          f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, {len(pois)} POIs")
+          f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
+          f"{len(pois)} POI points, {len(site_pois)} POI areas")
 
     if len(buildings) < 20:
         print("Few OSM buildings — supplementing with Microsoft ML footprints...")
@@ -542,7 +609,7 @@ def main():
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
-                           ("poi", 6, 18),
+                           ("poi", 6, 18), ("site_poi", 5, 25),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(LAYERS[key], color=color)
         layer.dxf.lineweight = lw
@@ -712,11 +779,39 @@ def main():
     draw_lines(rails, LAYERS["rail"])
     draw_lines(barriers, LAYERS["barrier"])
 
-    for name, plon, plat in pois:
+    # Landmark areas: outline plus a name at a guaranteed interior point,
+    # drawn before the point symbols so a symbol inside a campus stays on top
+    staged_site_pois = []
+    for (th, en), pts, fid, kind in sorted(site_pois, key=lambda p: p[2]):
+        ux, uy = to_utm.transform(*zip(*pts))
+        upts = list(zip(ux, uy))
+        msp.add_lwpolyline(upts, close=True,
+                           dxfattribs={"layer": LAYERS["site_poi"]})
+        try:
+            poly = Polygon(upts)
+            pt = poly.representative_point() if poly.is_valid else None
+            cx, cy = (pt.x, pt.y) if pt else (float(np.mean(ux)),
+                                              float(np.mean(uy)))
+        except Exception:
+            cx, cy = float(np.mean(ux)), float(np.mean(uy))
+        mtext_bilingual(th, en, cx, cy, 3.5)
+        staged_site_pois.append({"feature_id": fid, "poi_key": kind[0],
+                                 "poi_type": kind[1], "name_th": th or "",
+                                 "name_en": en or "",
+                                 "display_name": th or en or "",
+                                 "geom_pts": upts})
+
+    staged_pois = []
+    for (th, en), plon, plat, kind, fid in sorted(pois, key=lambda p: p[4]):
         px, py = to_utm.transform(plon, plat)
         msp.add_circle((px, py), radius=2, dxfattribs={"layer": LAYERS["poi"]})
-        mtext(name, px + 3, py, 4.0,
-              layer=LAYERS["anno_th" if is_thai(name) else "anno_en"])
+        mtext_bilingual(th, en, px + 3, py, 4.0)
+        staged_pois.append({"feature_id": fid,
+                            "poi_key": kind[0], "poi_type": kind[1],
+                            "name_th": th or "", "name_en": en or "",
+                            "display_name": th or en or "",
+                            "x": px, "y": py,
+                            "latitude": plat, "longitude": plon})
 
     # North arrow at top-right corner (drawing is true-north-up in UTM)
     nx, ny = to_utm.transform(e, n)
@@ -771,7 +866,8 @@ def main():
 
     if a.db:
         stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,
-                    contours, contour_layers)
+                    contours, contour_layers,
+                    poi_points=staged_pois, poi_areas=staged_site_pois)
     print(f"CRS: EPSG:{utm_epsg} (UTM {utm_label}), units = meters. "
           f"Center at UTM ({cx:.1f}, {cy:.1f})")
 

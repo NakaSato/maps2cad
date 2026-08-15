@@ -119,6 +119,31 @@ CREATE TABLE IF NOT EXISTS verified_names (
     PRIMARY KEY (project_name, feature_id)
 );
 
+-- Landmarks mapped as a single node — a shrine, a monument, a viewpoint.
+-- Landmarks mapped as an area live in staging_buildings with a cad_layer of
+-- C-SITE-POI, because they already need a polygon, an interior label anchor
+-- and an area, which is exactly that table.
+CREATE TABLE IF NOT EXISTS staging_pois (
+    id              INTEGER PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    feature_id      TEXT    NOT NULL,   -- 'node/123'
+    osm_id          INTEGER,
+    source          TEXT    NOT NULL DEFAULT 'openstreetmap',
+    poi_key         TEXT,               -- amenity | tourism | historic
+    poi_type        TEXT,               -- hospital, museum, monument, ...
+    display_name    TEXT    NOT NULL,
+    name_th         TEXT,
+    name_en         TEXT,
+    cad_layer       TEXT    NOT NULL DEFAULT 'C-ANNO-SYMB',
+    geom_wkb        BLOB    NOT NULL,   -- Point in the project SRID: the
+                                        -- symbol centre the circle is drawn on
+    label_x         REAL    NOT NULL,   -- name anchor, already nudged clear
+    label_y         REAL    NOT NULL,   -- of the symbol (see POI_LABEL_DX)
+    latitude        REAL,
+    longitude       REAL,
+    UNIQUE (project_id, feature_id)
+);
+
 CREATE TABLE IF NOT EXISTS staging_contours (
     id              INTEGER PRIMARY KEY,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -170,6 +195,24 @@ CREATE VIEW cad_labels AS
     SELECT project_id, 'building', display_name,
            label_x, label_y, label_rotation, 3.5, 'C-ANNO-TEXT', 0.0
       FROM staging_buildings
+     WHERE display_name <> ''
+       AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''
+    UNION ALL
+    -- Landmark points. label_x/label_y is already clear of the symbol, so
+    -- these rows need only the same language stacking as everything else.
+    SELECT project_id, 'poi', name_th,
+           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT-TH', 0.0
+      FROM staging_pois WHERE name_th IS NOT NULL AND name_th <> ''
+    UNION ALL
+    SELECT project_id, 'poi', name_en,
+           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT-EN',
+           CASE WHEN name_th IS NOT NULL AND name_th <> ''
+                THEN 4.0 * 1.3 ELSE 0.0 END
+      FROM staging_pois WHERE name_en IS NOT NULL AND name_en <> ''
+    UNION ALL
+    SELECT project_id, 'poi', display_name,
+           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT', 0.0
+      FROM staging_pois
      WHERE display_name <> ''
        AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''
     UNION ALL
@@ -455,20 +498,53 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
             r.get("display_name") or r.get("code") or "",
             *split_by_script(r.get("osm_name"), r.get("name_th"),
                              r.get("name_en")),
+            r.get("cad_layer", "C-BLDG-OUTL"),
             shp_wkb.dumps(geom), lx, ly, 0.0, geom.area, lat, lon,
             minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_buildings (project_id, feature_id,"
         " osm_id, source, building_type, osm_name, code, display_name,"
-        " name_th, name_en,"
+        " name_th, name_en, cad_layer,"
         " geom_wkb, label_x, label_y, label_rotation, area_m2, latitude,"
         " longitude, minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     restored = apply_verified(conn, project_id)
     if restored:
         print(f"  restored {restored} field-verified name(s) from a previous "
               "run")
+    return len(rows)
+
+
+# How far the landmark name sits from its symbol, in metres. Must match the
+# `px + 3` in topo2cad.py, or the two CAD routes place the label differently.
+POI_LABEL_DX = 3.0
+
+
+def stage_pois(conn, project_id, records) -> int:
+    """records: dicts with feature_id, x, y (project SRID), poi_key,
+    poi_type, display_name and optionally name_th/name_en."""
+    from shapely import wkb as shp_wkb
+    from shapely.geometry import Point
+
+    rows = []
+    for r in records:
+        x, y = float(r["x"]), float(r["y"])
+        th, en = split_by_script(r.get("display_name"), r.get("name_th"),
+                                 r.get("name_en"))
+        rows.append((
+            project_id, r["feature_id"], _osm_id(r["feature_id"]),
+            r.get("source", "openstreetmap"), r.get("poi_key"),
+            r.get("poi_type"), r.get("display_name") or "", th, en,
+            r.get("cad_layer", "C-ANNO-SYMB"),
+            shp_wkb.dumps(Point(x, y)), x + POI_LABEL_DX, y,
+            r.get("latitude"), r.get("longitude")))
+    conn.executemany(
+        "INSERT OR REPLACE INTO staging_pois (project_id, feature_id, osm_id,"
+        " source, poi_key, poi_type, display_name, name_th, name_en,"
+        " cad_layer, geom_wkb, label_x, label_y, latitude, longitude)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.commit()
     return len(rows)
 
 

@@ -20,6 +20,7 @@ from topo2cad import (  # noqa: E402
     is_thai,
     names_by_lang,
     offset_along_normal,
+    poi_kind,
     quadkey,
     utm_epsg_for,
     utm_transformer,
@@ -246,3 +247,26 @@ def test_gis2cad_derives_utm_zone_from_the_data():
     assert gis2cad.pick_name_field(["id", "name"], None) == "name"
     assert gis2cad.pick_name_field(["id", "area"], None) is None
     assert gis2cad.pick_name_field(["id", "name"], "id") == "id"
+
+
+# ------------------------------------------------------------- landmarks
+def test_poi_kind_identifies_the_three_landmark_keys():
+    assert poi_kind({"amenity": "hospital"}) == ("amenity", "hospital")
+    assert poi_kind({"tourism": "museum"}) == ("tourism", "museum")
+    assert poi_kind({"historic": "monument"}) == ("historic", "monument")
+
+
+def test_poi_kind_is_ordered_so_a_feature_reports_one_class():
+    """A hospital that is also a tourist attraction must not be staged
+    twice under two different keys."""
+    assert poi_kind({"tourism": "attraction",
+                     "amenity": "hospital"}) == ("amenity", "hospital")
+
+
+def test_poi_kind_ignores_ordinary_features():
+    """The query used to ask for every named node, which at a dense site
+    returns mall floor markers, shop brands, benches and bus stops."""
+    for tags in ({"building": "yes"}, {"highway": "residential"},
+                 {"shop": "convenience"}, {"name": "Level 3", "level": "3"},
+                 {"amenity": ""}, {}):
+        assert poi_kind(tags) is None

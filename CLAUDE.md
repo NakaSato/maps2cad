@@ -120,6 +120,22 @@ carries both, English is stacked one line above Thai via
 `offset_along_normal()`, which offsets square to the label's own rotation —
 a plain -Y nudge would drift off a rotated road label.
 
+**Landmarks come in two shapes, and the tag filter is deliberate.** A POI is
+`amenity`/`tourism`/`historic` (`poi_kind()`); the query used to ask for
+`node["name"]`, which over a 770 × 410 m extent at Pathum Wan returned 293
+nodes of which 186 were mall floor markers, shop brands, benches and bus
+stops — each drawing a symbol and a label. Points land on `C-ANNO-SYMB` with
+the name offset `POI_LABEL_DX` (3 m) in x, and a name is required, so an
+unnamed bicycle stand adds nothing. Areas *without* a `building` tag —
+hospital and school grounds, temple precincts, car parks — go on
+`C-SITE-POI`, not `C-BLDG-OUTL`, so a 3,000 m² car park does not read as a
+structure; an area that *is* a building already came through the building
+branch. Area POIs are staged in `staging_buildings` with their own
+`cad_layer` (they need a polygon, an interior anchor and an area, which is
+what that table stores) and are excluded from the building inventory CSV and
+from `serve.py`'s name editor by that same column. Rural sites have none of
+this: Yasothon and Lopburi return 0 area POIs, Pathum Wan returns 10.
+
 **Thai needs a text style, not just UTF-8.** ezdxf writes UTF-8 regardless,
 but AutoCAD renders Thai as `???` unless the MTEXT's style points at a font
 carrying U+0E00–U+0E7F. All four writers register `TH_STYLE`
