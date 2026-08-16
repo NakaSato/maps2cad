@@ -153,7 +153,10 @@ SYMBOL_FOR_LAYER = {
 # was staged on, and a tree that came back the size of a pylon would be a
 # difference nobody staged.
 SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0,
-                  "C-BNDY-BARR": 2.0, "C-UTIL-LAMP": 1.5}
+                  "C-BNDY-BARR": 2.0, "C-UTIL-LAMP": 1.5,
+                  # smallest of the lot: --all-features draws hundreds of
+                  # these and they must not swamp the drawing
+                  "C-MISC-SYMB": 1.2}
 DEFAULT_SYMBOL_SIZE = 2.0
 
 

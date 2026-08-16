@@ -494,6 +494,7 @@ DXF drops straight into an engineering drawing set.
 | `C-TOPO-SPOT` | Spot heights sampled from the DEM on a 5 × 5 grid |
 | `C-ANNO-GRID` | UTM coordinate grid (`--grid`), crosses on round eastings and northings |
 | `C-ANNO-DIMS` | Extent dimensions as real DIMENSION entities |
+| `C-MISC-OTHR` / `C-MISC-SYMB` | `--all-features`: everything no other rule claimed |
 | `C-ANNO-TEXT` | Language-neutral text: B### codes, contour elevations, the GPS tag |
 | `C-ANNO-TEXT-TH` / `C-ANNO-TEXT-EN` | Thai and Latin labels — freeze one to plot a single-language sheet |
 | `C-ANNO-EXTN` | The requested extent, DASHED. A crop line, not a clip: linework runs ~55 m past it and footprints are never cut |
@@ -505,6 +506,10 @@ Carriageway width comes from the OSM `width` or `lanes` tags where a mapper
 supplied them (`width=4` draws 4 m, not the 6 m the class would guess);
 `ROAD_WIDTH_M` is the fallback. `--hatch` fills water and vegetation with the
 CAD patterns a drafter expects, and `--no-spots` turns off the levels.
+`--all-features` draws everything OpenStreetMap has in the extent rather
+than the curated tag list — at Pathum Wan that is 243 extra points and 10
+extra lines (benches, shops, entrances, crossings, bus stops) which the
+default discards, and the run reports what it added by tag.
 `--grid` adds the UTM coordinate grid a survey sheet carries, and
 `--contour-interval 0.5` forces an interval where a deliverable specifies
 one instead of letting the DEM's range choose.

@@ -32,6 +32,7 @@ from pathlib import Path
 # route drop into the same sheet set.
 LAYER_STYLE = {
     "C-BLDG-OUTL": (4, 50),
+    "C-BLDG-UNNM": (254, 35),    # footprints OSM has no name for
     "C-ROAD-EDGE": (30, 35),
     "C-ROAD-CNTR": (8, 9),
     "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
@@ -53,6 +54,8 @@ LAYER_STYLE = {
     "C-ANNO-DIMS": (2, 18),      # extent dimensions
     "C-ROAD-PLAZ": (8, 18),      # pedestrian areas and plazas
     "C-UTIL-LAMP": (51, 13),     # street lighting
+    "C-MISC-OTHR": (9, 9),       # --all-features: whatever no rule claimed
+    "C-MISC-SYMB": (9, 9),
     "C-RAIL-TRAK": (250, 18),
     "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols

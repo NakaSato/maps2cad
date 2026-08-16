@@ -509,3 +509,56 @@ def test_built_up_landuse_is_not_planting():
         assert len(f["green"]) == 1 and f["zoning"] == []
     # leisure stays planting too
     assert len(classify_elements([area({"leisure": "park"})])["green"]) == 1
+
+
+# ---------------------------------------------------------- all features
+@pytest.mark.parametrize("tags,expected", [
+    ({"amenity": "cafe", "air_conditioning": "yes", "name": "X"}, "amenity"),
+    ({"shop": "bakery", "operator:en": "Y"}, "shop"),
+    ({"highway": "crossing", "crossing:markings": "zebra"}, "highway"),
+    ({"entrance": "yes", "wheelchair": "limited"}, "entrance"),
+    # nothing primary: fall through to the first key that is not
+    # bookkeeping a mapper left behind
+    ({"air_conditioning": "yes", "name": "Z"}, "air_conditioning"),
+    ({"name": "only a name"}, "name"),
+])
+def test_first_tag_names_what_a_feature_is(tags, expected):
+    """Reporting a run as `operator:en x44` tells a reader nothing about
+    their drawing."""
+    from topo2cad import _first_tag
+
+    assert _first_tag(tags) == expected
+
+
+def test_keep_other_captures_what_the_curated_rules_drop():
+    from topo2cad import classify_elements
+
+    ring = [{"lon": 100.0, "lat": 13.0}, {"lon": 100.001, "lat": 13.0},
+            {"lon": 100.001, "lat": 13.001}, {"lon": 100.0, "lat": 13.0}]
+    elements = [
+        {"type": "node", "id": 1, "lon": 100.0, "lat": 13.0,
+         "tags": {"amenity": "bench"}},
+        {"type": "way", "id": 2, "tags": {"man_made": "pier"},
+         "geometry": ring[:2]},
+        {"type": "way", "id": 3, "tags": {"building": "yes"},
+         "geometry": ring},
+    ]
+    default = classify_elements(elements)
+    assert default["other_lines"] == [] and default["other_points"] == []
+    assert len(default["buildings"]) == 1        # the rules still claim it
+
+    everything = classify_elements(elements, keep_other=True)
+    assert len(everything["buildings"]) == 1     # unchanged
+    assert [line[2] for line in everything["other_lines"]] == ["way/2"]
+    assert [p[4] for p in everything["other_points"]] == ["amenity"]
+
+
+def test_untagged_geometry_is_never_kept_as_other():
+    """An untagged way is a multipolygon's building material, not a
+    feature — asking for everything must not draw courtyard walls twice."""
+    from topo2cad import classify_elements
+
+    elements = [{"type": "way", "id": 9, "tags": {},
+                 "geometry": [{"lon": 100.0, "lat": 13.0},
+                              {"lon": 100.001, "lat": 13.0}]}]
+    assert classify_elements(elements, keep_other=True)["other_lines"] == []

@@ -271,7 +271,8 @@ CREATE VIEW cad_labels AS
       FROM staging_buildings
      WHERE name_en IS NOT NULL AND name_en <> ''
     UNION ALL
-    -- B### code: neutral, and only when there is no name at all
+    -- Neutral label — a title like "school" or, on older data, a B###
+    -- code — and only when there is no name at all
     SELECT project_id, 'building', display_name,
            label_x, label_y, label_rotation, 3.5, 'C-ANNO-TEXT', 0.0
       FROM staging_buildings
@@ -962,7 +963,11 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("source", "openstreetmap"), r.get("building_type"),
             r.get("osm_name") or None, r.get("code") or None,
-            r.get("display_name") or r.get("code") or "",
+            # display_name is what a writer draws; the B### code is a
+            # handle for field work and stays in its own column. Falling
+            # back to the code here put "B001" on the re-issue of a
+            # drawing whose extraction had drawn nothing.
+            r.get("display_name") or "",
             *split_by_script(r.get("osm_name"), r.get("name_th"),
                              r.get("name_en")),
             r.get("addr_house") or None, r.get("levels_label") or None,

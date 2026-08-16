@@ -746,7 +746,7 @@ that resolves the B### codes.</p>
       <select id="basemap" name="basemap">{basemap_opts}</select></div>
   </div>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
-    <label class="check"><input type="checkbox" name="codes" checked> Show B### codes on unnamed buildings</label>
+    <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
     <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
   </div>
   <p class="note" style="margin-top:10px">Every run also gets the B&amp;W

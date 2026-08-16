@@ -105,6 +105,12 @@ def parse_args():
                         "dense site this is mostly restaurants and cafes: 144 "
                         "landmark points instead of 9 over 770 x 410 m in "
                         "central Bangkok.")
+    p.add_argument("--all-features", action="store_true",
+                   help="Draw everything OpenStreetMap has in the extent, "
+                        "not the curated tag list: whatever no rule claims "
+                        "lands on C-MISC-OTHR / C-MISC-SYMB rather than "
+                        "being dropped. The run reports what that added, by "
+                        "tag, so you can see what the default skips.")
     p.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
                    help="Draw a UTM coordinate grid: crosses at every "
                         "SPACING metres with the easting and northing "
@@ -185,7 +191,27 @@ def bbox_around(lat, lon, radius_m, width_m=None, height_m=None):
     return lat - dlat, lon - dlon, lat + dlat, lon + dlon  # S, W, N, E
 
 
-def fetch_osm(s, w, n, e):
+def fetch_osm(s, w, n, e, everything=False):
+    """Elements in the box. `everything` asks for every *tagged* element
+    rather than the curated tag list.
+
+    The curated query is the default because a submission drawing wants the
+    features a reviewer reads, not every bench and bin. But "the map shows
+    it and the drawing does not" is a fair complaint, and this is the
+    answer to it: nothing tagged is left behind, and whatever no rule
+    claims lands on C-MISC-OTHR rather than being dropped.
+    """
+    if everything:
+        # [~"."~"."] is Overpass for "carries at least one tag", which
+        # skips the untagged nodes and ways that are only geometry for
+        # something else — asking for those would multiply the response
+        # by ten and add nothing drawable.
+        query = f"""
+        [out:json][timeout:180];
+        nwr[~"."~"."]({s},{w},{n},{e});
+        out tags geom;
+        """
+        return _post_overpass(query)
     query = f"""
     [out:json][timeout:90];
     (
@@ -218,11 +244,15 @@ def fetch_osm(s, w, n, e):
     );
     out tags geom;
     """
+    return _post_overpass(query)
+
+
+def _post_overpass(query):
     last_err = None
     for attempt in range(3):
         for url in OVERPASS_URLS:
             try:
-                r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=180)
+                r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=300)
                 r.raise_for_status()
                 return r.json()["elements"]
             except Exception as exc:
@@ -415,6 +445,34 @@ BUILT_UP_LANDUSE = {"residential", "commercial", "industrial", "retail",
                     "religious"}
 
 
+# The keys that say what a feature *is*, in the order OSM itself treats as
+# primary. Picking "the first key that is not obviously a qualifier"
+# reported features as `air_conditioning` and `operator:en`, which tells a
+# reader nothing about their drawing.
+PRIMARY_TAGS = ("amenity", "shop", "office", "craft", "healthcare",
+                "tourism", "historic", "leisure", "highway", "railway",
+                "aeroway", "waterway", "natural", "landuse", "man_made",
+                "power", "barrier", "building", "place", "boundary",
+                "emergency", "military", "public_transport", "entrance",
+                "advertising", "attraction", "geological")
+
+
+def _first_tag(tags) -> str:
+    """The key that best says what this feature is."""
+    for key in PRIMARY_TAGS:
+        if tags.get(key):
+            return key
+    # Nothing primary: fall back to the first key that is not a name, an
+    # address part, or bookkeeping a mapper left behind.
+    for key in sorted(tags):
+        if not key.startswith(("name", "addr:", "source", "note", "fixme",
+                               "check_date", "wikipedia", "wikidata",
+                               "operator", "ref", "description", "layer",
+                               "level", "created_by")):
+            return key
+    return next(iter(sorted(tags)), "")
+
+
 def source_tags(elements):
     """feature_id -> the element's original OSM tags.
 
@@ -464,7 +522,7 @@ def assign_inner_rings(outers, inners):
     return holes
 
 
-def classify_elements(elements, curated=True):
+def classify_elements(elements, curated=True, keep_other=False):
     """Sort raw OSM elements into the per-category lists the drawing steps
     consume: buildings, roads, water, green, rail, barrier, POI points and
     POI areas.
@@ -480,6 +538,7 @@ def classify_elements(elements, curated=True):
     water, green, rails, barriers = [], [], [], []
     power, pipelines, points, zoning = [], [], [], []
     parking, plazas = [], []
+    other_lines, other_points = [], []
 
     def kind_of(tags):
         return poi_kind(tags, curated=curated)
@@ -505,6 +564,12 @@ def classify_elements(elements, curated=True):
             # no information a drafter can use, so a name is still required
             pois.append((names_by_lang(tags), el["lon"], el["lat"],
                          kind_of(tags), f"node/{el['id']}"))
+        elif el["type"] == "node" and keep_other and tags:
+            # Every tagged node no rule above claimed: a bench, a bus stop,
+            # a shop, a hydrant. Named or not — the symbol says something
+            # is there, which is the point of asking for everything.
+            other_points.append((names_by_lang(tags), el["lon"], el["lat"],
+                                 f"node/{el['id']}", _first_tag(tags)))
         elif el["type"] == "way" and "geometry" in el:
             pts = [(g["lon"], g["lat"]) for g in el["geometry"]]
             fid = f"{el['type']}/{el['id']}"
@@ -544,6 +609,11 @@ def classify_elements(elements, curated=True):
                 # above and already has its outline and name.
                 site_pois.append((names_by_lang(tags), pts, fid,
                                   kind_of(tags)))
+            elif keep_other and tags and len(pts) >= 2:
+                # `tags` matters: an untagged way is a multipolygon's
+                # building material, and drawing it here would trace every
+                # courtyard wall a second time.
+                other_lines.append((names_by_lang(tags), pts, fid))
         elif el["type"] == "relation":
             if "building" in tags or kind_of(tags):
                 # A multipolygon carries its courtyards as `inner` members.
@@ -580,7 +650,8 @@ def classify_elements(elements, curated=True):
             "green": green, "rails": rails, "barriers": barriers,
             "pois": pois, "site_pois": site_pois,
             "power": power, "pipelines": pipelines, "points": points,
-            "zoning": zoning, "parking": parking, "plazas": plazas}
+            "zoning": zoning, "parking": parking, "plazas": plazas,
+            "other_lines": other_lines, "other_points": other_points}
 
 
 # Carriageway width in metres per highway class, used to draw each road as
@@ -701,6 +772,12 @@ def oneway_dir(tags) -> int:
 # isolated on C-ANNO-TEXT so drafters can toggle labels in one click.
 LAYERS = {
     "building": "C-BLDG-OUTL",
+    # A footprint OpenStreetMap has no name for. Same geometry, different
+    # layer, no label: a drafter can see at a glance which buildings are
+    # identified and which are still anonymous, and freeze or hand off the
+    # anonymous ones as a set. The B### code that identifies each of them
+    # lives in the inventory CSV.
+    "building_unnamed": "C-BLDG-UNNM",
     "road_edge": "C-ROAD-EDGE",     # the two carriageway edges (double lines)
     "road_centre": "C-ROAD-CNTR",   # centreline, CENTER linetype
     # Footways, cycleways and steps are not carriageways: drawing a 1.5 m
@@ -763,6 +840,11 @@ LAYERS = {
     "plaza": "C-ROAD-PLAZ",
     # Street lighting rides with the other utilities.
     "lamp": "C-UTIL-LAMP",
+    # Everything --all-features brought in that no rule claimed. On its own
+    # layer so a drafter can look at exactly what the curated rules skip,
+    # and freeze it in one click if it is noise.
+    "other": "C-MISC-OTHR",
+    "other_point": "C-MISC-SYMB",
     # Parking: drawn whatever the POI filter says, because a site plan
     # needs the parking whether or not a car park counts as a landmark.
     "parking": "C-SITE-PARK",
@@ -1128,10 +1210,11 @@ def main():
 
     # ---- OSM buildings + roads ------------------------------------------
     print("Fetching OSM data (Overpass)...")
-    elements = fetch_osm(s, w, n, e)
+    elements = fetch_osm(s, w, n, e, everything=a.all_features)
     # The tag rules live in classify_elements() so osm2cad.py's file route
     # sorts a downloaded extract into exactly the same categories.
-    features = classify_elements(elements, curated=not a.all_poi)
+    features = classify_elements(elements, curated=not a.all_poi,
+                                 keep_other=a.all_features)
     buildings, roads = features["buildings"], features["roads"]
     water, green = features["water"], features["green"]
     rails, barriers = features["rails"], features["barriers"]
@@ -1140,12 +1223,25 @@ def main():
     point_marks = features["points"]
     zoning, parking = features["zoning"], features["parking"]
     plazas = features["plazas"]
+    other_lines = features["other_lines"]
+    other_points = features["other_points"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas, "
           f"{len(power)} power, {len(pipelines)} pipeline, "
           f"{len(point_marks)} pylon/tree/gate, {len(zoning)} land-use, "
           f"{len(parking)} parking, {len(plazas)} plaza")
+
+    if a.all_features:
+        import collections as _collections
+        kinds = _collections.Counter(
+            [p[4] for p in other_points]
+            + [_first_tag(source_tags(elements).get(f[2], {}))
+               for f in other_lines])
+        summary = ", ".join(f"{k}×{n}" for k, n in kinds.most_common(8))
+        print(f"All features: {len(other_lines)} extra line(s), "
+              f"{len(other_points)} extra point(s)"
+              + (f" — {summary}" if summary else ""))
 
     if not a.no_ml:
         # Always supplement, not only when OSM is nearly empty. The old
@@ -1166,7 +1262,8 @@ def main():
     add_text_styles(doc)
     for key, color, lw in [("contour_plain", 8, 13),
                            ("contour_major", 8, 25), ("contour_minor", 8, 9),
-                           ("building", 4, 50), ("anno", 2, 25),
+                           ("building", 4, 50),
+                           ("building_unnamed", 254, 35), ("anno", 2, 25),
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
@@ -1179,6 +1276,7 @@ def main():
                            ("spot", 8, 18), ("zoning", 32, 13),
                            ("grid", 253, 9), ("dims", 2, 18),
                            ("plaza", 8, 18), ("lamp", 51, 13),
+                           ("other", 9, 9), ("other_point", 9, 9),
                            ("parking", 140, 13),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
@@ -1325,6 +1423,15 @@ def main():
         for hole in holes:
             hx, hy = to_utm.transform(*zip(*hole))
             uholes.append(list(zip(hx, hy)))
+        name = th or en
+        code = ""
+        if not name:
+            counter += 1
+            code = f"B{counter:03d}"
+        # Labels come from OSM names and nothing else. A footprint with no
+        # name is not labelled and is drawn on its own layer instead, so
+        # the sheet says plainly which buildings are identified.
+        b_layer = LAYERS["building" if name else "building_unnamed"]
         # Drawn from the repaired geometry, which is also what gets staged:
         # a self-intersecting ring becomes two polygons under buffer(0), and
         # drawing the raw ring while staging the repaired one gave a drawing
@@ -1334,7 +1441,7 @@ def main():
         for part in _anchor_rules.polygon_parts(shape):
             entity = msp.add_lwpolyline(
                 list(part.exterior.coords), close=True,
-                dxfattribs={"layer": LAYERS["building"]})
+                dxfattribs={"layer": b_layer})
             if first:
                 attach(entity, fid)
                 first = False
@@ -1342,13 +1449,7 @@ def main():
             # polyline on the same layer, which is how a CAD island reads.
             for ring in part.interiors:
                 msp.add_lwpolyline(list(ring.coords), close=True,
-                                   dxfattribs={"layer": LAYERS["building"]})
-        name = th or en
-        code = ""
-        if not name:
-            counter += 1
-            code = f"B{counter:03d}"
-        label = name or code
+                                   dxfattribs={"layer": b_layer})
         # ST_Centroid-style centroids fall outside concave footprints (~3% of
         # buildings in a dense extent), so anchor on a guaranteed interior
         # point instead — equivalent to PostGIS ST_PointOnSurface. It is the
@@ -1357,9 +1458,8 @@ def main():
             cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
-        if name or not a.names_only:
-            mtext_bilingual(th, en, cx, cy, 3.5,
-                            fallback=None if a.names_only else code)
+        if name:
+            mtext_bilingual(th, en, cx, cy, 3.5)
         # House number under the label, small and language-neutral — the
         # same row cad_labels emits, at the same offset, so a re-issue puts
         # it in the same place.
@@ -1374,10 +1474,11 @@ def main():
             lx2, ly2 = offset_along_normal(cx, cy, 0.0, -5.4)
             mtext(levels, lx2, ly2, 2.2, layer=LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
-        record(fid, "building", LAYERS["building"], label)
+        record(fid, "building", b_layer, name or "")
         blon, blat = to_wgs.transform(cx, cy)
         inventory.append({"feature_id": fid, "code": code,
-                          "osm_name": name or "", "display_name": label,
+                          "osm_name": name or "", "display_name": name or "",
+                          "cad_layer": b_layer,
                           "name_th": th or "", "name_en": en or "",
                           "addr_house": house or "",
                           "levels_label": levels,
@@ -1525,6 +1626,7 @@ def main():
     draw_lines(zoning, "zoning", LAYERS["zoning"], label=True)
     draw_lines(parking, "parking", LAYERS["parking"], label=True)
     draw_lines(plazas, "plaza", LAYERS["plaza"], label=True)
+    draw_lines(other_lines, "other", LAYERS["other"], label=True)
     draw_lines(power, "power", LAYERS["power"])
     draw_lines(pipelines, "pipeline", LAYERS["pipeline"])
 
@@ -1584,6 +1686,33 @@ def main():
                                  "geom_pts": upts})
 
     staged_pois = []
+    # Everything --all-features caught that no rule claimed. Named ones get
+    # their name; the rest are a symbol saying something is there.
+    for (th, en), plon, plat, fid, key in sorted(other_points,
+                                                 key=lambda m: m[3]):
+        px, py = to_utm.transform(plon, plat)
+        layer = LAYERS["other_point"]
+        attach(_blocks.add_symbol(doc, msp, px, py,
+                                  _blocks.symbol_size(layer), layer), fid)
+        # The POI label convention — POI_LABEL_DX across, 4.0 high —
+        # because that is what stage_pois stores and cad_labels emits.
+        # Drawing it at 2 m and 2.5 put every one of these 1 m from where
+        # its re-issue drew it.
+        # Named in OSM or not labelled at all — the symbol says something
+        # is there, and a made-up title says something OSM never did.
+        title = (th or en) or ""
+        if title:
+            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX,
+                            py, 4.0)
+        record(fid, key or "other", layer, title)
+        staged_pois.append({"feature_id": fid, "poi_key": key or "other",
+                            "poi_type": key or "", "name_th": th or "",
+                            "name_en": en or "",
+                            "display_name": title,
+                            "cad_layer": LAYERS["other_point"],
+                            "x": px, "y": py,
+                            "latitude": plat, "longitude": plon})
+
     # Pylons, poles and trees: a symbol and nothing else. They stage in the
     # POI table with an empty display_name, which cad_labels already skips,
     # so db2dxf.py redraws the mark without inventing a label for it.
@@ -1608,7 +1737,7 @@ def main():
         import blocks
         attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0, LAYERS["poi"]),
                fid)
-        mtext_bilingual(th, en, px + 3, py, 4.0)
+        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0)
         record(fid, "landmark", LAYERS["poi"], th or en)
         staged_pois.append({"feature_id": fid,
                             "poi_key": kind[0], "poi_type": kind[1],
@@ -1711,7 +1840,8 @@ def main():
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "addr_house", "levels_label", "source",
+            "name_th", "name_en", "addr_house", "levels_label",
+            "cad_layer", "source",
             "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)

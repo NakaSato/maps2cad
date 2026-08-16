@@ -292,6 +292,22 @@ where a deliverable specifies one; the automatic ~10 levels is for a first
 look, and an interval that would draw hundreds of lines warns rather than
 refuses.
 
+**`--all-features` is the answer to "the map shows it and the drawing does
+not".** The curated query stays the default because a submission drawing
+wants what a reviewer reads, not every bench and bin — but nothing tagged
+should be *silently* dropped, so this fetches `nwr[~"."~"."]` (every
+element carrying at least one tag) and everything no rule claims lands on
+`C-MISC-OTHR` / `C-MISC-SYMB` with a report of what that added, by tag. At
+Pathum Wan it is 243 points and 10 lines against 2 curated landmarks. Three
+things it must not do: keep *untagged* ways (they are multipolygon building
+material, and drawing them traces every courtyard wall twice — test-covered);
+draw its labels anywhere but the POI convention (`POI_LABEL_DX` across, 4.0
+high, the offset `stage_pois` stores — getting this wrong put 195 labels up
+to 2.19 m from where the re-issue drew them); or size its symbol locally
+(`blocks.SIZE_FOR_LAYER` owns that, and a mismatch there is invisible to
+`dxfdiff`, which does not compare block scale). `osm2cad.py` needs no
+refetch for it: the file already holds everything.
+
 **A plaza is an area, and water has a direction.** `highway=pedestrian`
 with `area=yes` and a closed ring leaves the road bucket for `C-ROAD-PLAZ`
 and draws closed: as a path it traced the outline as though the square were

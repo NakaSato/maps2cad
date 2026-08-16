@@ -541,6 +541,11 @@ def parse_args(argv=None):
                         "under the 'OSM' application id. The default carries "
                         "them so a drafter can LIST a building and read its "
                         "source tags.")
+    p.add_argument("--all-features", action="store_true",
+                   help="Draw everything in the file, not the curated tag "
+                        "list: whatever no rule claims lands on "
+                        "C-MISC-OTHR / C-MISC-SYMB rather than being "
+                        "dropped. No refetch — the export already holds it.")
     p.add_argument("--all-poi", action="store_true",
                    help="Draw every amenity/tourism/historic feature instead "
                         "of only the civic landmarks a submission needs.")
@@ -641,7 +646,8 @@ def main(argv=None) -> int:
               f"(UTM {zone}{'N' if lat >= 0 else 'S'}), units = metres")
 
     features = select_types(
-        t2c.classify_elements(elements, curated=not a.all_poi), a.types)
+        t2c.classify_elements(elements, curated=not a.all_poi,
+                              keep_other=a.all_features), a.types)
     tag_index = source_tags(elements)
 
     # --bbox filters whole features; nothing is trimmed to it. Linework is
@@ -668,13 +674,17 @@ def main(argv=None) -> int:
     point_marks = features["points"]
     zoning, parking = features["zoning"], features["parking"]
     plazas = features["plazas"]
+    other_lines = features["other_lines"]
+    other_points = features["other_points"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, "
           f"{len(water)} water, {len(green)} green, {len(rails)} rail, "
           f"{len(barriers)} barriers, {len(pois)} POI points, "
           f"{len(site_pois)} POI areas, {len(power)} power, "
           f"{len(pipelines)} pipeline, {len(point_marks)} pylon/tree, "
           f"{len(zoning)} land-use, {len(parking)} parking, "
-          f"{len(plazas)} plaza")
+          f"{len(plazas)} plaza"
+          + (f", {len(other_lines)} other line(s), {len(other_points)} "
+             "other point(s)" if a.all_features else ""))
 
     # The output path is resolved before drawing, not after: a background
     # map is written beside the .dxf, and the DXF stores a path to it.
@@ -695,7 +705,8 @@ def main(argv=None) -> int:
     t2c.add_text_styles(doc)
     for key, color, lw in [("contour_plain", 8, 13),
                            ("contour_major", 8, 25), ("contour_minor", 8, 9),
-                           ("building", 4, 50), ("anno", 2, 25),
+                           ("building", 4, 50),
+                           ("building_unnamed", 254, 35), ("anno", 2, 25),
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
@@ -708,6 +719,7 @@ def main(argv=None) -> int:
                            ("zoning", 32, 13), ("parking", 140, 13),
                            ("grid", 253, 9), ("dims", 2, 18),
                            ("plaza", 8, 18), ("lamp", 51, 13),
+                           ("other", 9, 9), ("other_point", 9, 9),
                            # Created empty: this route has no DEM to sample,
                            # but db2dxf.py defines the layer either way and
                            # the two layer tables have to agree.
@@ -797,7 +809,10 @@ def main(argv=None) -> int:
         for hole in holes:
             hx, hy = to_utm.transform(*zip(*hole))
             uholes.append(list(zip(hx, hy)))
-        base = t2c.LAYERS["building"]
+        name = th or en
+        # Named footprints on C-BLDG-OUTL, anonymous ones on their own
+        # layer: the sheet says which buildings OSM identifies.
+        base = t2c.LAYERS["building" if name else "building_unnamed"]
         poly_layer = layer_for(base, fid)
         # Draw the repaired geometry, which is what gets staged: a
         # self-intersecting ring becomes two polygons, and drawing the raw
@@ -813,7 +828,6 @@ def main(argv=None) -> int:
             for ring in part.interiors:         # courtyards stay open
                 msp.add_lwpolyline(list(ring.coords), close=True,
                                    dxfattribs={"layer": poly_layer})
-        name = th or en
         code = ""
         if not name:
             counter += 1
@@ -824,9 +838,8 @@ def main(argv=None) -> int:
             cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = sum(ux) / len(ux), sum(uy) / len(uy)
-        if name or not a.names_only:
-            mtext_bilingual(th, en, cx, cy, 3.5,
-                            fallback=None if a.names_only else code)
+        if name:
+            mtext_bilingual(th, en, cx, cy, 3.5)
         btags = tags_for(tag_index, fid)
         house = btags.get("addr:housenumber")
         if house:
@@ -838,11 +851,11 @@ def main(argv=None) -> int:
             mtext(levels, lx2, ly2, 2.2, layer=t2c.LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         drawn.append({"feature_id": fid, "feature_type": "building",
-                      "cad_layer": poly_layer,
-                      "display_name": name or code})
+                      "cad_layer": poly_layer, "display_name": name or ""})
         blon, blat = to_wgs.transform(cx, cy)
         inventory.append({"feature_id": fid, "code": code,
-                          "osm_name": name or "", "display_name": name or code,
+                          "osm_name": name or "", "display_name": name or "",
+                          "cad_layer": base,
                           "name_th": th or "", "name_en": en or "",
                           "addr_house": house or "",
                           "levels_label": levels,
@@ -974,6 +987,7 @@ def main(argv=None) -> int:
     draw_lines(zoning, "zoning", t2c.LAYERS["zoning"], label=True)
     draw_lines(parking, "parking", t2c.LAYERS["parking"], label=True)
     draw_lines(plazas, "plaza", t2c.LAYERS["plaza"], label=True)
+    draw_lines(other_lines, "other", t2c.LAYERS["other"], label=True)
     draw_lines(power, "power", t2c.LAYERS["power"])
     draw_lines(pipelines, "pipeline", t2c.LAYERS["pipeline"])
 
@@ -1027,6 +1041,27 @@ def main(argv=None) -> int:
                                  "geom_pts": upts})
 
     staged_pois = []
+    for (th, en), plon, plat, fid, key in sorted(other_points,
+                                                 key=lambda m: m[3]):
+        px, py = to_utm.transform(plon, plat)
+        base = t2c.LAYERS["other_point"]
+        layer = layer_for(base, fid)
+        attach(blocks.add_symbol(doc, msp, px, py,
+                                 blocks.symbol_size(base), layer), fid)
+        title = (th or en) or ""
+        if title:
+            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX,
+                            py, 4.0)
+        drawn.append({"feature_id": fid, "feature_type": key or "other",
+                      "cad_layer": layer, "display_name": title})
+        staged_pois.append({"feature_id": fid, "poi_key": key or "other",
+                            "poi_type": key or "", "name_th": th or "",
+                            "name_en": en or "",
+                            "display_name": title,
+                            "cad_layer": t2c.LAYERS["other_point"],
+                            "x": px, "y": py,
+                            "latitude": plat, "longitude": plon})
+
     # Pylons, poles and trees: a symbol and no label. They stage in the POI
     # table with an empty display_name, which cad_labels skips.
     for kind, plon, plat, fid, ptype in sorted(point_marks,
@@ -1051,7 +1086,7 @@ def main(argv=None) -> int:
         px, py = to_utm.transform(plon, plat)
         attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0,
                                      layer_for(t2c.LAYERS["poi"], fid)), fid)
-        mtext_bilingual(th, en, px + 3, py, 4.0)
+        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0)
         drawn.append({"feature_id": fid, "feature_type": "landmark",
                       "cad_layer": t2c.LAYERS["poi"],
                       "display_name": th or en or ""})
@@ -1142,7 +1177,8 @@ def main(argv=None) -> int:
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "addr_house", "levels_label", "source",
+            "name_th", "name_en", "addr_house", "levels_label",
+            "cad_layer", "source",
             "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)
