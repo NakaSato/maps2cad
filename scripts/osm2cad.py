@@ -731,6 +731,13 @@ def main(argv=None) -> int:
                            # but db2dxf.py defines the layer either way and
                            # the two layer tables have to agree.
                            ("spot", 8, 18),
+                           # Same reason: this route never fetches Overture
+                           # places — the file is the source of truth — but
+                           # db2dxf.py defines their layers, and a layer
+                           # table that differs is a difference dxfdiff
+                           # reports even when every entity matches.
+                           ("overture", 214, 13), ("overture_th", 214, 18),
+                           ("overture_en", 214, 18),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(t2c.LAYERS[key], color=color)

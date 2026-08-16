@@ -564,6 +564,19 @@ opts back into clearing. A merge prints "Merged into" and the project's new
 totals, because a `db2dxf.py` re-issue draws everything staged, not just the
 import you just ran.
 
+**A new layer goes in all three colour tables in the same commit.**
+`dxfdiff` compares the layer *table*, not only the entities, so a layer one
+route defines and another does not is a difference even when every entity
+matches. Adding `C-ANNO-OVTR*` to `topo2cad.py` and `db2dxf.py` left
+`osm2cad.py` behind and its own re-issue came back DIFFER — three layers in
+one drawing only, on a route that never fetches Overture at all and creates
+them empty for exactly this reason (as it already does for `C-TOPO-SPOT`,
+having no DEM). Test-covered structurally now: `test_every_writer_creates
+_the_same_layers` reads the `(key, colour, weight)` tables out of the two
+extraction scripts and compares them, and a second test checks that set
+against `db2dxf.LAYER_STYLE`, so the next one fails in a tenth of a second
+instead of after a full drawing.
+
 **A new `staging_*` table goes in `STAGED_TABLES` in the same commit.**
 `create_project()` clears that list when a project is re-extracted.
 `staging_pois` and `staging_context` were added after the list was written

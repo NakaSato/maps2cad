@@ -635,3 +635,49 @@ def test_the_audit_never_reads_the_cache():
     source = (Path(__file__).resolve().parent.parent / "scripts"
               / "dxfaudit.py").read_text(encoding="utf-8")
     assert "fetch_osm(s, w, n, e, cache=False)" in source
+
+
+# --- Layer tables must agree across the three writers -----------------------
+
+def _created_layer_keys(script_name):
+    """The LAYERS keys a writer creates, read from its (key, colour, weight)
+    table. The lists live inside main(), so this reads the source rather
+    than importing the CAD stack."""
+    import re
+
+    src = (Path(__file__).resolve().parent.parent / "scripts"
+           / script_name).read_text(encoding="utf-8")
+    body = src.split("doc.layers.add", 1)[0]
+    return set(re.findall(r'\("(\w+)",\s*\d+,\s*\d+\)', body))
+
+
+def test_every_writer_creates_the_same_layers():
+    """dxfdiff compares layer tables, so a layer one route defines and
+    another does not is a difference even when every entity matches.
+
+    This caught a real one: adding C-ANNO-OVTR* to topo2cad.py and
+    db2dxf.py left osm2cad.py behind, and its own re-issue came back
+    DIFFER — three layers in one drawing only.
+    """
+    topo = _created_layer_keys("topo2cad.py")
+    osm = _created_layer_keys("osm2cad.py")
+    assert topo and osm, "the layer tables could not be read"
+    assert topo == osm, (f"topo2cad only: {sorted(topo - osm)}, "
+                         f"osm2cad only: {sorted(osm - topo)}")
+
+
+def test_the_staging_writer_defines_exactly_those_layers():
+    import importlib.util as iu
+
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    spec = iu.spec_from_file_location("db2dxf", scripts / "db2dxf.py")
+    db2dxf = iu.module_from_spec(spec)
+    spec.loader.exec_module(db2dxf)
+
+    # The three empty site-plan layers are added outside the colour table
+    extra = ("property", "setback", "road_row")
+    names = {topo2cad.LAYERS[k]
+             for k in _created_layer_keys("topo2cad.py") | set(extra)}
+    assert set(db2dxf.LAYER_STYLE) == names, (
+        f"db2dxf only: {sorted(set(db2dxf.LAYER_STYLE) - names)}, "
+        f"extraction only: {sorted(names - set(db2dxf.LAYER_STYLE))}")
