@@ -222,6 +222,8 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         "cad_sheet": cad_sheet, "cad_scale": cad_scale, "basemap": basemap,
         "title": one("title", "Detailed Site Map"),
         "codes": one("codes", "on") == "on",
+        "all_poi": one("all_poi") == "on",
+        "mono": one("mono") == "on",
         "final": one("final") == "on",
         "gov": {k: one(k) for k, _ in GOV_FIELDS},
     }
@@ -295,6 +297,15 @@ def run_generator(p: dict) -> dict:
                         "--scale", str(p.get("cad_scale", "fit"))]
         if p.get("basemap"):
             cad_cmd += ["--basemap", p["basemap"]]
+        # The B### checkbox drives both exports: it said "show codes on
+        # unnamed buildings" while only the site map listened to it, so the
+        # DXF labelled them either way.
+        if not p["codes"]:
+            cad_cmd.append("--names-only")
+        if p.get("all_poi"):
+            cad_cmd.append("--all-poi")
+        if p.get("mono"):
+            cad_cmd.append("--mono")
         logs.append(run_step(cad_cmd, "CAD export"))
         record["project"] = project
         record["dxf"] = dxf
@@ -692,6 +703,8 @@ that resolves the B### codes.</p>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
     <label class="check"><input type="checkbox" name="codes" checked> Show B### codes on unnamed buildings</label>
     <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
+    <label class="check"><input type="checkbox" name="all_poi"> Every amenity, not only civic landmarks</label>
+    <label class="check"><input type="checkbox" name="mono"> Monochrome CAD (แผนที่สังเขป)</label>
   </div>
   <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
     <legend>Title block</legend>
@@ -1287,11 +1300,24 @@ an extract can share one drawing.</p>
       <div><label for="basemap">Background map</label>
         <select id="basemap" name="basemap">{basemap_opts}</select></div>
     </div>
-    <label class="check" style="margin-top:16px"><input type="checkbox"
-      name="attributes" value="1" checked> Attach OSM tags as XDATA</label>
-    <p class="note" style="margin-top:10px">Feature types to import, and
-    whether each entity carries its source OSM tags — select a building in
-    AutoCAD and LIST shows them. Ignored for GIS files.</p>
+    <div class="checks" style="margin-top:16px">
+      <label class="check"><input type="checkbox" name="attributes"
+        value="1" checked> Attach OSM tags as XDATA</label>
+      <label class="check"><input type="checkbox" name="all_poi" value="1">
+        Every amenity, not only civic landmarks</label>
+      <label class="check"><input type="checkbox" name="names_only" value="1">
+        Named buildings only (no B### codes)</label>
+      <label class="check"><input type="checkbox" name="mono" value="1">
+        Monochrome (แผนที่สังเขป)</label>
+      <label class="check"><input type="checkbox" name="replace" value="1">
+        Replace the project instead of merging into it</label>
+    </div>
+    <p class="note" style="margin-top:10px">Which feature types to import,
+    and how they are drawn. XDATA is what puts the source tags on each
+    entity — select a building in AutoCAD and LIST shows them. Merging is
+    the default, so importing one feature type at a time from the same file
+    builds up a single project. These apply to OpenStreetMap files;
+    monochrome applies to GIS files too.</p>
   </fieldset>
   <button type="submit" data-idle="Import and draw"
     data-busy="Importing…">Import and draw</button>
@@ -1751,6 +1777,14 @@ drawing.</p>
                 # absence is what turns the tags off.
                 if not fields.get("attributes"):
                     cmd += ["--no-attributes"]
+                if fields.get("all_poi"):
+                    cmd += ["--all-poi"]
+                if fields.get("names_only"):
+                    cmd += ["--names-only"]
+                if fields.get("mono"):
+                    cmd += ["--mono"]
+                if fields.get("replace"):
+                    cmd += ["--replace"]
                 if epsg:
                     cmd += ["--epsg", epsg]
                 log = run_step(cmd, "OpenStreetMap import")
@@ -1768,6 +1802,8 @@ drawing.</p>
                     cmd += ["--width", fields["width"]]
                 if epsg:
                     cmd += ["--epsg", epsg]
+                if fields.get("mono"):
+                    cmd += ["--mono"]
                 log = run_step(cmd, "GIS import")
 
             plot = str(run / "site_preview.pdf")

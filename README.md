@@ -312,8 +312,10 @@ those names, reporting how many it restored — and the project keeps its id, so
 (`.osm`, `.xml`, `.gz`, `.bz2`) or your own GIS data (GeoJSON, GeoPackage,
 KML, GML, or a `.zip` holding a shapefile set, the form a survey office
 usually sends). The converter is picked from the extension; an OSM upload also
-offers the feature types to import, a coordinate system, a crop box and the
-tag to split layers by. Name an existing project and the upload merges into
+offers the feature types to import, a coordinate system, a crop box, the tag
+to split layers by, a background map, and the same switches the CLI has —
+every amenity instead of the curated landmarks, named buildings only,
+monochrome, and replace-instead-of-merge. Name an existing project and the upload merges into
 it, so an export and a survey share one drawing. Useful in the field over the
 tunnel, where the site has nothing mapped — or where Overpass is unreachable
 and someone can send you the extract.
