@@ -608,7 +608,13 @@ polyline — `buffer(0)` bites a notch instead — so those are reported as a
 note rather than counted as missing. One-way direction is checked the same
 careful way: arrow *count* is not a source count (spacing decides how many a
 run gets), so what it asserts is that a source with one-way roads did not
-produce a drawing with no direction on it at all. Counting entities is not enough on its own: every label can be
+produce a drawing with no direction on it at all. It counts **both** building layers: an unnamed footprint draws on
+`C-BLDG-UNNM`, and counting only `C-BLDG-OUTL` had it report a SHORTFALL
+against a drawing carrying every building the source held — 23 of 77 at
+Pathum Wan. An audit that cries wolf is read once and then ignored, so a
+false alarm here is a worse defect than the silent loss it looks for; when
+this tool disagrees with a drawing, check the tool's assumptions before the
+drawing's. Counting entities is not enough on its own: every label can be
 present in both drawings and still sit up to 287 m apart, which is what that
 tool's position pass exists to catch. Linear labels (roads, canals, parks,
 contours) are therefore anchored by calling `stage_db.line_label_anchor()`

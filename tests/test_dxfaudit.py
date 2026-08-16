@@ -30,7 +30,7 @@ def _drawing(tmp_path, buildings=0, anno=0, pois=0, pre_block=False):
     for i in range(buildings):
         msp.add_lwpolyline([(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)],
                            close=True,
-                           dxfattribs={"layer": dxfaudit.BUILDING_LAYER})
+                           dxfattribs={"layer": dxfaudit.BUILDING_LAYERS[0]})
     for i in range(anno):
         msp.add_mtext(f"B{i:03d}", dxfattribs={"layer": "C-ANNO-TEXT"})
     for i in range(pois):
@@ -51,7 +51,7 @@ def test_counts_only_the_layers_that_matter(tmp_path):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
     msp.add_lwpolyline([(0, 0), (1, 0), (1, 1)], close=True,
-                       dxfattribs={"layer": dxfaudit.BUILDING_LAYER})
+                       dxfattribs={"layer": dxfaudit.BUILDING_LAYERS[0]})
     # a road and a contour must not be counted as buildings
     msp.add_lwpolyline([(0, 0), (5, 5)], dxfattribs={"layer": "C-ROAD-CNTR"})
     msp.add_lwpolyline([(0, 0), (5, 5)], dxfattribs={"layer": "C-TOPO-MAJR"})
@@ -63,6 +63,22 @@ def test_counts_only_the_layers_that_matter(tmp_path):
     got = dxfaudit.drawing_counts(out)
     assert got["building_polylines"] == 1
     assert got["annotation"] == 1
+
+
+def test_unnamed_buildings_count_as_buildings(tmp_path):
+    """A footprint OSM has no name for draws on C-BLDG-UNNM so a drafter can
+    plot the named structures alone. Counting only C-BLDG-OUTL reported a
+    SHORTFALL against a drawing holding every building there was — 23 of 77
+    at Pathum Wan — which is how an audit teaches people to ignore it."""
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (1, 0), (1, 1)], close=True,
+                       dxfattribs={"layer": "C-BLDG-OUTL"})
+    msp.add_lwpolyline([(2, 0), (3, 0), (3, 1)], close=True,
+                       dxfattribs={"layer": "C-BLDG-UNNM"})
+    out = tmp_path / "u.dxf"
+    doc.saveas(out)
+    assert dxfaudit.drawing_counts(out)["building_polylines"] == 2
 
 
 def test_counts_courtyard_rings_as_outlines(tmp_path):

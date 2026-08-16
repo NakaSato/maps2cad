@@ -48,7 +48,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-BUILDING_LAYER = "C-BLDG-OUTL"
+# Both building layers. An unnamed footprint draws on C-BLDG-UNNM so a
+# drafter can plot the named structures alone, and counting only
+# C-BLDG-OUTL made this tool report a SHORTFALL against a drawing that had
+# every building in it — 23 of 77 at Pathum Wan. An audit that cries wolf
+# is worse than no audit: it is read once and then ignored.
+BUILDING_LAYERS = ("C-BLDG-OUTL", "C-BLDG-UNNM")
 ROAD_LAYERS = ("C-ROAD-CNTR", "C-ROAD-PATH")
 ANNO_LAYERS = ("C-ANNO-TEXT", "C-ANNO-TEXT-TH", "C-ANNO-TEXT-EN")
 ARROW_LAYER = "C-ROAD-ARRW"
@@ -210,9 +215,9 @@ def drawing_counts(path) -> dict:
     for e in msp:
         t = e.dxftype()
         # A --layer-by run splits C-BLDG-OUTL into C-BLDG-OUTL-HOUSE and
-        # friends, so match the NCS stem rather than the exact name.
+        # friends, so match the NCS stems rather than the exact names.
         layer = e.dxf.layer
-        if t == "LWPOLYLINE" and layer.startswith(BUILDING_LAYER):
+        if t == "LWPOLYLINE" and layer.startswith(BUILDING_LAYERS):
             buildings += 1
         elif t == "MTEXT" and layer in ANNO_LAYERS:
             anno += 1
