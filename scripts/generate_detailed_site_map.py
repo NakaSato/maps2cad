@@ -7,6 +7,12 @@
 #   "matplotlib>=3.9",
 #   "shapely>=2.0",
 #   "pyproj>=3.6",
+#   # --basemap only. This stack is otherwise disjoint from the CAD side's
+#   # raster libraries, and a tile backdrop is the one thing that needs
+#   # them: the tiles arrive in Web Mercator and have to be reprojected,
+#   # not corner-stretched, or the map is wrong by metres in the middle.
+#   "rasterio",
+#   "pillow",
 # ]
 # ///
 """Detailed Site Map Generator.
@@ -149,6 +155,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Do not display B### codes on unnamed buildings")
     p.add_argument("--title", default="Detailed Site Map",
                    help="Map title (standard profile)")
+    p.add_argument("--arrows", action="store_true",
+                   help="Draw direction arrows on one-way carriageways. "
+                        "Standard profile only — the government submission "
+                        "sheet renders what its spec lists, and this is not "
+                        "on it.")
+    p.add_argument("--basemap", nargs="?", const="osm", metavar="PROVIDER",
+                   help="Draw a map backdrop under the linework: any of "
+                        "basemap.py's providers, or a {z}/{x}/{y} template. "
+                        "Standard profile only, for the same reason.")
+    p.add_argument("--basemap-alpha", type=float, default=0.30, metavar="A",
+                   help="How strongly the backdrop shows through (default "
+                        "0.30 — context under the drawing, not the drawing)")
     p.add_argument("--profile", choices=["standard", "government"],
                    default="standard",
                    help="Layout profile: standard, or Thai Government "
@@ -216,6 +234,15 @@ def validate_args(a: argparse.Namespace) -> None:
         raise SiteMapError(f"Font file not found: {a.font}")
     if a.labels_csv and not Path(a.labels_csv).is_file():
         raise SiteMapError(f"Labels CSV not found: {a.labels_csv}")
+    # Refused rather than ignored. The government layout implements a
+    # written spec; a sheet that quietly carried an extra layer because a
+    # flag was left on from an earlier run is exactly the sort of thing a
+    # reviewing officer is entitled to reject.
+    if a.profile == "government" and (a.arrows or a.basemap):
+        raise SiteMapError(
+            "--arrows and --basemap are standard-profile options. The "
+            "government submission sheet renders what its spec lists, and "
+            "neither is on it. Drop the flag, or use --profile standard.")
 
 
 def ensure_parent_dir(path: str) -> None:
@@ -367,6 +394,100 @@ def split_features(gdf, utm_crs, rect):
         "water_polys": water_polys,
         "water_lines": water_lines,
     }
+
+
+# The one thing this stack borrows from the CAD side: where arrows sit
+# along a run. It is pure geometry with no dependencies of its own, and
+# sharing it is what makes a poster, a drawing and this sheet put the
+# arrows in the same places. Nothing about fetching or tagging crosses
+# over — those stay separate on purpose.
+def arrow_positions(coords):
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import stage_db
+
+    return stage_db.arrow_positions(coords)
+
+
+# Restated rather than imported, so this stack keeps its own dependency
+# set: importing topo2cad would pull the Overpass/CAD side in behind it.
+# Mirrors topo2cad.oneway_dir(); the tag values are a stable OSM
+# convention. -1/reverse means "against the way as digitised".
+def oneway_of(row) -> int:
+    def cell(name):
+        value = row.get(name) if hasattr(row, "get") else None
+        return "" if value is None else str(value).strip().lower()
+
+    value = cell("oneway")
+    if value in ("yes", "true", "1"):
+        return 1
+    if value in ("-1", "reverse"):
+        return -1
+    if value in ("no", "false", "0"):
+        return 0
+    return 1 if cell("junction") in ("roundabout", "circular") else 0
+
+
+def draw_oneway_arrows(ax, road_lines, colours, width_m) -> int:
+    """Direction arrows on one-way carriageways. Returns how many."""
+    length = max(6.0, width_m * 0.012)
+    drawn = 0
+    for _idx, row in road_lines.iterrows():
+        direction = oneway_of(row)
+        if not direction:
+            continue
+        for line in iter_parts(row.geometry, ("LineString",)):
+            for x, y, rot in arrow_positions(list(line.coords)):
+                ang = math.radians(rot + (180.0 if direction < 0 else 0.0))
+                dx = math.cos(ang) * length / 2
+                dy = math.sin(ang) * length / 2
+                ax.annotate("", xy=(x + dx, y + dy), xytext=(x - dx, y - dy),
+                            arrowprops=dict(arrowstyle="-|>", lw=0.8,
+                                            color=colours["road_major"],
+                                            shrinkA=0, shrinkB=0),
+                            zorder=4.5)
+                drawn += 1
+    return drawn
+
+
+def draw_basemap(ax, args, rect, epsg) -> str:
+    """Tile backdrop under the linework; returns the credit to print."""
+    import sys as _sys
+    import tempfile
+
+    import numpy as np
+    from pyproj import Transformer
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+    to_wgs = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+    x0, y0, x1, y1 = rect.bounds
+    west, south = to_wgs.transform(x0, y0)
+    east, north = to_wgs.transform(x1, y1)
+    try:
+        import rasterio
+
+        import basemap as bm
+        with tempfile.TemporaryDirectory() as tmp:
+            info = bm.build((south, west, north, east), epsg,
+                            Path(tmp) / "bm.tif", provider=args.basemap,
+                            max_tiles=128)
+            with rasterio.open(info["path"]) as src:
+                rgb = np.transpose(src.read([1, 2, 3]), (1, 2, 0))
+                bounds = src.bounds
+    except bm.BasemapError as exc:
+        print(f"NOTE: no background map — {exc}")
+        return ""
+    except ImportError as exc:                    # raster stack absent
+        print(f"NOTE: no background map — {exc}. The backdrop needs "
+              "rasterio and pillow; the rest of this script does not.")
+        return ""
+    ax.imshow(rgb, extent=(bounds.left, bounds.right,
+                           bounds.bottom, bounds.top),
+              zorder=0.2, alpha=args.basemap_alpha, interpolation="bilinear")
+    print(bm.describe(info))
+    return info["attribution"]
 
 
 def classify_road(highway_value: str) -> str:
@@ -842,7 +963,7 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
     fig.patch.set_facecolor("white")
     ax = fig.add_axes([0.04, 0.225, 0.92, 0.695])
     stats["road_labels"] = _draw_map_body(ax, args, layers, records,
-                                          site_xy, rect, colours)
+                                          site_xy, rect, colours, epsg)
 
     fig.suptitle(args.title, fontsize=18, fontweight="bold",
                  color=colours["text_primary"], y=0.965)
@@ -871,6 +992,9 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
         f"coded)   Water features: {stats['water']}\n"
         f"Data © OpenStreetMap contributors (ODbL). Retrieved "
         f"{stats['retrieved']}.\n"
+        # The backdrop's own licence line, printed only when one was drawn
+        + (f"{getattr(args, '_basemap_credit', '')}\n"
+           if getattr(args, "_basemap_credit", "") else "") +
         f"Generated {stats['generated']} — community data; verify names "
         "before legal/engineering use."
     )
@@ -1033,7 +1157,8 @@ def render_government(args, layers, records, site_xy, rect, epsg, stats):
     return fig
 
 
-def _draw_map_body(ax, args, layers, records, site_xy, rect, colours):
+def _draw_map_body(ax, args, layers, records, site_xy, rect, colours,
+                   epsg=None):
     x0, y0, x1, y1 = rect.bounds
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
@@ -1046,6 +1171,8 @@ def _draw_map_body(ax, args, layers, records, site_xy, rect, colours):
         spine.set_edgecolor("black")
 
     m_per_pt = metres_per_point(ax.get_figure(), ax, args.width, args.height)
+    if getattr(args, "basemap", None) and epsg:
+        args._basemap_credit = draw_basemap(ax, args, rect, epsg)
     draw_water(ax, layers["water_polys"], layers["water_lines"], colours)
     draw_roads(ax, layers["road_lines"], layers["road_areas"], colours)
     # Road names are placed first so building labels can yield to them
@@ -1054,6 +1181,9 @@ def _draw_map_body(ax, args, layers, records, site_xy, rect, colours):
     dropped = draw_buildings(ax, records, colours,
                              not args.no_building_codes, m_per_pt,
                              occupied=road_boxes)
+    if getattr(args, "arrows", False):
+        n = draw_oneway_arrows(ax, layers["road_lines"], colours, args.width)
+        print(f"One-way arrows: {n}")
     draw_site_marker(ax, site_xy, colours)
     if skipped:
         shown = ", ".join(skipped[:5])

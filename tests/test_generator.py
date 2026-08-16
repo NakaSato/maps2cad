@@ -438,3 +438,58 @@ def test_end_to_end_generates_outputs(tmp_path):
     assert pdf.stat().st_size > 10_000
     assert png.stat().st_size > 100_000
     assert inv.read_text(encoding="utf-8").startswith("feature_id,")
+
+
+# ------------------------------------------- one-way arrows and the backdrop
+def test_government_profile_refuses_arrows_and_basemap():
+    """That sheet renders what its spec lists. A flag left on from an
+    earlier run must not quietly add a layer to a submission drawing."""
+    from generate_detailed_site_map import parse_args, validate_args
+
+    for extra in (["--arrows"], ["--basemap", "osm"], ["--arrows",
+                                                       "--basemap"]):
+        argv = ["--lat", "14.8", "--lon", "100.5", "--width", "500",
+                "--height", "250", "--output", "out.pdf",
+                "--profile", "government"] + extra
+        with pytest.raises(SiteMapError, match="standard-profile"):
+            validate_args(parse_args(argv))
+
+
+def test_standard_profile_accepts_them():
+    from generate_detailed_site_map import parse_args, validate_args
+
+    argv = ["--lat", "14.8", "--lon", "100.5", "--width", "500",
+            "--height", "250", "--output", "out.pdf", "--arrows",
+            "--basemap", "opentopomap"]
+    a = parse_args(argv)
+    validate_args(a)                       # must not raise
+    assert a.arrows and a.basemap == "opentopomap"
+
+
+def test_basemap_flag_defaults_to_osm_when_bare():
+    from generate_detailed_site_map import parse_args
+
+    assert parse_args(["--lat", "14.8", "--lon", "100.5", "--width", "500",
+                       "--height", "250", "--output", "o.pdf",
+                       "--basemap"]).basemap == "osm"
+
+
+@pytest.mark.parametrize("row,expected", [
+    ({"oneway": "yes"}, 1),
+    ({"oneway": "-1"}, -1),
+    ({"oneway": "reverse"}, -1),
+    ({"oneway": "no", "junction": "roundabout"}, 0),
+    ({"junction": "roundabout"}, 1),
+    ({}, 0),
+    ({"oneway": None}, 0),                 # absent column reads as None
+    ({"oneway": "alternating"}, 0),
+])
+def test_oneway_of_matches_the_cad_rule(row, expected):
+    """Restated from topo2cad.oneway_dir() rather than imported, so this
+    stack keeps its own dependency set. It has to agree all the same."""
+    from generate_detailed_site_map import oneway_of
+    from topo2cad import oneway_dir
+
+    assert oneway_of(row) == expected
+    assert oneway_dir({k: v for k, v in row.items() if v is not None}) \
+        == expected

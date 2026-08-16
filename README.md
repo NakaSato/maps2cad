@@ -63,6 +63,12 @@ custom Thai-capable font, `--title` sets the map title, `--sheet-size A4|A3|A2|A
 picks the sheet (portrait is chosen automatically when the extent is taller than
 it is wide).
 
+`--arrows` draws direction arrows on one-way carriageways and `--basemap`
+puts a tile backdrop under the linework, both opt-in and both **refused on
+`--profile government`** — that sheet renders what its spec lists, and a
+flag left on from an earlier run must not add a layer to a submission
+drawing.
+
 ### Thai government submission sheet
 
 ```bash
