@@ -271,6 +271,19 @@ Sources in site.dxf:
   user_gis:boundary.geojson         2   1 building, 1 road
 ```
 
+The submission sheet can carry the parcel too — the survey you imported,
+over the OSM base, on either profile:
+
+```bash
+uv run scripts/generate_detailed_site_map.py --lat 13.7455 --lon 100.5325 \
+  --width 500 --height 400 --profile government \
+  --overlay-db output/runs/<run>/staging.sqlite --overlay-project <name>
+```
+
+Only the features you supplied are drawn (this stack fetches OSM itself),
+and they are named three times over: heavier linework than anything OSM
+contributes, a legend key, and the filename under DATA & ACCURACY.
+
 The web app follows the same rules: uploading a file into an existing
 project stages it in **that project's CRS** (an EPSG typed into the form
 still wins), `/project/<id>` shows the same source table, and the DXF you

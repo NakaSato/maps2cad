@@ -49,6 +49,9 @@ COLOURS = {
     "water_fill": "#D7EBFF",
     "water_edge": "#1D5DB8",
     "site_marker": "#D90429",
+    # Supplied survey data: the only geometry on the sheet somebody
+    # measured, so it reads heavier and darker than anything OSM gives.
+    "survey": "#5B2A86",
     "text_primary": "#102A43",
     "text_secondary": "#486174",
 }
@@ -64,6 +67,7 @@ GOV_COLOURS = {
     "water_fill": "#DDE7F0",
     "water_edge": "#5B7A99",
     "site_marker": "#B00020",
+    "survey": "#000000",
     "text_primary": "#000000",
     "text_secondary": "#333333",
 }
@@ -160,6 +164,17 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "Standard profile only — the government submission "
                         "sheet renders what its spec lists, and this is not "
                         "on it.")
+    p.add_argument("--overlay-db", metavar="PATH",
+                   help="Draw the survey data staged in this database on the "
+                        "sheet — a parcel boundary, a fence line, whatever "
+                        "was imported through gis2cad.py. Allowed on the "
+                        "government profile, unlike --arrows and --basemap: "
+                        "those add decoration the spec does not list, while "
+                        "a surveyed parcel is the subject a ผังบริเวณ is "
+                        "read for. It is drawn from what was supplied, "
+                        "never invented, and named on the sheet.")
+    p.add_argument("--overlay-project", metavar="NAME",
+                   help="Project in --overlay-db (default: the only one)")
     p.add_argument("--basemap", nargs="?", const="osm", metavar="PROVIDER",
                    help="Draw a map backdrop under the linework: any of "
                         "basemap.py's providers, or a {z}/{x}/{y} template. "
@@ -243,6 +258,10 @@ def validate_args(a: argparse.Namespace) -> None:
             "--arrows and --basemap are standard-profile options. The "
             "government submission sheet renders what its spec lists, and "
             "neither is on it. Drop the flag, or use --profile standard.")
+    if a.overlay_db and not Path(a.overlay_db).is_file():
+        raise SiteMapError(f"Staging database not found: {a.overlay_db}")
+    if a.overlay_project and not a.overlay_db:
+        raise SiteMapError("--overlay-project needs --overlay-db.")
 
 
 def ensure_parent_dir(path: str) -> None:
@@ -448,6 +467,102 @@ def draw_oneway_arrows(ax, road_lines, colours, width_m) -> int:
                                             shrinkA=0, shrinkB=0),
                             zorder=4.5)
                 drawn += 1
+    return drawn
+
+
+# The one thing this stack reads from the CAD side's staging layer, and it
+# reads it with sqlite3 and shapely — both already here — rather than
+# importing stage_db, which would pull the CAD writers' rules into a
+# renderer that deliberately shares no code with them.
+SURVEY_SOURCE_PREFIX = "user_gis:"
+
+
+def read_overlay(db_path, project=None, epsg=None):
+    """Supplied survey geometry staged for a project.
+
+    Returns (features, sources, srid) where features is
+    [(shapely geometry, label)]. Only rows whose source names a supplied
+    file are read: OpenStreetMap features are already on this sheet, drawn
+    from this stack's own fetch, and staging them twice would double every
+    outline.
+    """
+    import sqlite3
+
+    from shapely import wkb as shp_wkb
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if project:
+            row = conn.execute("SELECT id, srid FROM projects WHERE name = ?",
+                               (project,)).fetchone()
+        else:
+            row = conn.execute("SELECT id, srid FROM projects"
+                               " ORDER BY id LIMIT 1").fetchone()
+        if row is None:
+            raise SiteMapError(
+                f"No such project in {db_path}"
+                + (f": {project!r}" if project else " — it holds none."))
+        pid, srid = row["id"], row["srid"]
+        features, sources = [], set()
+        for table in ("staging_buildings", "staging_roads"):
+            for r in conn.execute(
+                    f"SELECT geom_wkb, display_name, source FROM {table}"
+                    f" WHERE project_id = ? AND source LIKE ?",
+                    (pid, SURVEY_SOURCE_PREFIX + "%")):
+                features.append((shp_wkb.loads(r["geom_wkb"]),
+                                 r["display_name"] or ""))
+                sources.add(r["source"].split(":", 1)[-1])
+    finally:
+        conn.close()
+
+    if epsg and int(epsg) != int(srid):
+        # Staging is in the project's own UTM zone; the sheet may be in
+        # another. Reproject rather than plot the numbers as they are —
+        # that is how a boundary lands a zone away and still looks drawn.
+        from pyproj import Transformer
+        from shapely.ops import transform as shp_transform
+
+        tf = Transformer.from_crs(f"EPSG:{srid}", f"EPSG:{epsg}",
+                                  always_xy=True)
+        features = [(shp_transform(lambda x, y, t=tf: t.transform(x, y), g),
+                     name) for g, name in features]
+    return features, sorted(sources), srid
+
+
+def draw_overlay(ax, features, colours, m_per_pt) -> int:
+    """Draw supplied survey geometry over the map body.
+
+    Heavier and darker than anything OSM contributes, because it is the
+    only geometry on the sheet somebody actually measured.
+    """
+    from shapely.geometry import MultiLineString, MultiPolygon
+
+    drawn = 0
+    for geom, label in features:
+        parts = (list(geom.geoms)
+                 if isinstance(geom, (MultiPolygon, MultiLineString))
+                 else [geom])
+        for part in parts:
+            if part.is_empty:
+                continue
+            if part.geom_type == "Polygon":
+                ax.add_patch(polygon_patch(
+                    part, facecolor="none", edgecolor=colours["survey"],
+                    linewidth=1.9, zorder=11))
+            elif part.geom_type == "LineString":
+                xs, ys = part.xy
+                ax.plot(xs, ys, color=colours["survey"], linewidth=1.9,
+                        zorder=11, solid_capstyle="round")
+            else:
+                continue
+            drawn += 1
+        if label:
+            point = (geom.representative_point() if geom.geom_type
+                     in ("Polygon", "MultiPolygon") else geom.centroid)
+            ax.text(point.x, point.y, label, fontsize=7.4,
+                    color=colours["survey"], ha="center", va="center",
+                    fontweight="bold", path_effects=halo(2.6), zorder=13)
     return drawn
 
 
@@ -893,7 +1008,7 @@ def draw_scale_bar(ax, rect, colours):
     return length
 
 
-def legend_handles(colours, show_codes: bool):
+def legend_handles(colours, show_codes: bool, survey: bool = False):
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
     handles = [
@@ -913,6 +1028,12 @@ def legend_handles(colours, show_codes: bool):
                color=colours["site_marker"], markeredgecolor="white",
                label="Site coordinate"),
     ]
+    if survey:
+        # Keyed by where it came from, like the CAD sheet's legend: a
+        # reviewer must be able to tell the measured lines from the
+        # community-mapped ones without asking.
+        handles.append(Line2D([], [], color=colours["survey"], linewidth=1.9,
+                              label="ข้อมูลสำรวจที่จัดหา / Supplied survey"))
     if show_codes:
         handles.append(Line2D([], [], linestyle="none", marker="$B001$",
                               markersize=16, color=colours["text_primary"],
@@ -992,6 +1113,10 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
         f"coded)   Water features: {stats['water']}\n"
         f"Data © OpenStreetMap contributors (ODbL). Retrieved "
         f"{stats['retrieved']}.\n"
+        # Named, never silent: a reader must be able to tell which lines
+        # were measured and which came from a community map.
+        + (f"Supplied survey data: {', '.join(args._overlay_sources)}.\n"
+           if getattr(args, "_overlay_sources", None) else "")
         # The backdrop's own licence line, printed only when one was drawn
         + (f"{getattr(args, '_basemap_credit', '')}\n"
            if getattr(args, "_basemap_credit", "") else "") +
@@ -1003,8 +1128,9 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
     fig.text(0.52, 0.095, meta_right, fontsize=8,
              color=colours["text_secondary"], va="top")
 
-    ax.legend(handles=legend_handles(colours,
-                                     not args.no_building_codes),
+    ax.legend(handles=legend_handles(
+        colours, not args.no_building_codes,
+        survey=bool(getattr(args, "_overlay", None))),
               loc="upper center", bbox_to_anchor=(0.5, -0.015),
               ncol=4, fontsize=7.5, frameon=True, edgecolor="#CCCCCC")
     return fig
@@ -1115,8 +1241,9 @@ def render_government(args, layers, records, site_xy, rect, epsg, stats):
     # Legend (13.5)
     leg_ax = fig.add_axes([right_x, y - 0.15, col_w, 0.145])
     leg_ax.axis("off")
-    leg_ax.legend(handles=legend_handles(colours,
-                                         not args.no_building_codes),
+    leg_ax.legend(handles=legend_handles(
+        colours, not args.no_building_codes,
+        survey=bool(getattr(args, "_overlay", None))),
                   loc="upper left", fontsize=6.8 * s, frameon=False, ncol=1,
                   title="สัญลักษณ์ / LEGEND", title_fontsize=8 * s,
                   alignment="left")
@@ -1142,6 +1269,8 @@ def render_government(args, layers, records, site_xy, rect, epsg, stats):
     block([
         f"Source: © OpenStreetMap contributors (ODbL), retrieved "
         f"{stats['retrieved']}.",
+    ] + ([f"Supplied survey data: {', '.join(args._overlay_sources)}."]
+         if getattr(args, "_overlay_sources", None) else []) + [
         "This map is prepared for project-location reference. Coordinates",
         "are based on WGS 84 and the stated UTM projection. Road, building,",
         "and place-name data shall be verified against field conditions and",
@@ -1184,6 +1313,13 @@ def _draw_map_body(ax, args, layers, records, site_xy, rect, colours,
     if getattr(args, "arrows", False):
         n = draw_oneway_arrows(ax, layers["road_lines"], colours, args.width)
         print(f"One-way arrows: {n}")
+    # Over everything OSM contributed, under the site marker: this is the
+    # measured geometry, and nothing community-mapped should sit on top of
+    # it — but the marker is what the sheet is centred on.
+    if getattr(args, "_overlay", None):
+        n = draw_overlay(ax, args._overlay, colours, m_per_pt)
+        print(f"Supplied survey data: {n} feature(s) from "
+              f"{', '.join(args._overlay_sources)}")
     draw_site_marker(ax, site_xy, colours)
     if skipped:
         shown = ", ".join(skipped[:5])
@@ -1224,6 +1360,21 @@ def main(argv=None) -> int:
             args.lat, args.lon, args.width, args.height)
         print(f"Projected CRS: EPSG:{epsg} "
               f"(site E {site_xy[0]:,.2f}, N {site_xy[1]:,.2f})")
+
+        # Read the supplied survey data before the (slow) network fetch:
+        # a wrong project name should fail in a second, not a minute.
+        args._overlay, args._overlay_sources = None, []
+        if args.overlay_db:
+            args._overlay, args._overlay_sources, srid = read_overlay(
+                args.overlay_db, args.overlay_project, epsg)
+            print(f"Supplied survey data: {len(args._overlay)} feature(s) "
+                  f"staged in EPSG:{srid}"
+                  + (f" from {', '.join(args._overlay_sources)}"
+                     if args._overlay_sources else ""))
+            if not args._overlay:
+                print("NOTE: that project holds no supplied survey data — "
+                      "only what gis2cad.py imported is drawn here, because "
+                      "this sheet fetches OpenStreetMap itself.")
 
         # Validate the labels CSV before the (slow) network fetch.
         overrides = load_manual_labels(args.labels_csv) \

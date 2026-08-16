@@ -462,6 +462,25 @@ misleading in the hand. Both are offered, `site.dxf` first, and the plot
 preview follows the combined one. A re-issue failure keeps the import
 rather than losing the run.
 
+*The submission sheet can carry the parcel.*
+`generate_detailed_site_map.py --overlay-db PATH [--overlay-project NAME]`
+draws the **supplied** survey geometry staged for a project — rows whose
+`source` starts with `user_gis:` — over the OSM base, on both profiles.
+That it is allowed on `--profile government` while `--arrows` and
+`--basemap` are refused is deliberate and is the distinction to hold:
+those add decoration the spec does not list and can be left on from an
+earlier run, whereas a surveyed parcel is the subject a ผังบริเวณ is read
+for, is passed explicitly, and is named on the sheet three times over —
+drawn heavier than anything OSM contributes, keyed in the legend as
+ข้อมูลสำรวจที่จัดหา / Supplied survey, and listed by filename under DATA &
+ACCURACY. Only `user_gis:` rows are read, because this stack fetches
+OpenStreetMap itself and drawing the staged copy too would double every
+outline. It reads the database with `sqlite3` and `shapely` rather than
+importing `stage_db`, keeping the two stacks' dependency sets disjoint, and
+reprojects when the project's srid differs from the sheet's CRS — plotting
+zone 48 numbers on a zone 47 sheet is how a boundary lands a zone away and
+still looks drawn.
+
 *The web has the same two rules.* `/import` passes the target project's
 srid as `--epsg` unless the form states one — an EPSG typed in is someone
 saying what their file is in, and it wins — and `/project/<id>` shows the

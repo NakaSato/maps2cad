@@ -25,6 +25,7 @@ from generate_detailed_site_map import (  # noqa: E402
     utm_epsg_for,
     validate_args,
 )
+import generate_detailed_site_map as generator  # noqa: E402
 
 
 # ---------------------------------------------------------------- UTM zones
@@ -493,3 +494,98 @@ def test_oneway_of_matches_the_cad_rule(row, expected):
     assert oneway_of(row) == expected
     assert oneway_dir({k: v for k, v in row.items() if v is not None}) \
         == expected
+
+
+# --- Supplied survey data on the sheet (--overlay-db) -----------------------
+
+def _overlay_db(tmp_path, srid=32647):
+    """A staging database holding one OSM building and one supplied parcel."""
+    import importlib.util as iu
+    from shapely.geometry import LineString, Polygon
+
+    spec = iu.spec_from_file_location(
+        "stage_db", Path(__file__).resolve().parent.parent
+        / "scripts" / "stage_db.py")
+    stage_db = iu.module_from_spec(spec)
+    spec.loader.exec_module(stage_db)
+
+    db = tmp_path / "staging.sqlite"
+    conn = stage_db.connect(db)
+    pid = stage_db.create_project(conn, "site", 13.7455, 100.5325, 500, 400,
+                                  srid)
+    stage_db.stage_buildings(conn, pid, [
+        {"feature_id": "way/1", "source": "openstreetmap", "osm_name": "OSM",
+         "code": "", "display_name": "OSM", "building_type": None,
+         "geom": Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])},
+        {"feature_id": "gis/plot/0", "source": "user_gis:boundary.geojson",
+         "osm_name": "", "code": "", "display_name": "แปลงที่ดิน A",
+         "building_type": None,
+         "geom": Polygon([(20, 0), (30, 0), (30, 10), (20, 10)])}])
+    stage_db.stage_roads(conn, pid, [
+        {"feature_id": "gis/plot/1", "source": "user_gis:boundary.geojson",
+         "highway_type": "user_gis", "road_name": "แนวรั้ว", "road_ref": None,
+         "carriageway_m": 0.0, "geom": LineString([(0, 0), (50, 50)])}])
+    conn.close()
+    return db
+
+
+def test_overlay_reads_only_the_supplied_features(tmp_path):
+    """OpenStreetMap is already on this sheet from this stack's own fetch;
+    drawing the staged copy as well would double every outline."""
+    pytest.importorskip("shapely")
+    db = _overlay_db(tmp_path)
+    features, sources, srid = generator.read_overlay(db, "site")
+    assert srid == 32647
+    assert sources == ["boundary.geojson"]
+    labels = sorted(label for _geom, label in features)
+    assert labels == ["แนวรั้ว", "แปลงที่ดิน A"]
+
+
+def test_overlay_reprojects_when_the_sheet_is_in_another_zone(tmp_path):
+    """Staging is in the project's own zone. Plotting those numbers on a
+    sheet in another zone is how a boundary lands a zone away and still
+    looks drawn."""
+    pytest.importorskip("pyproj")
+    db = _overlay_db(tmp_path)
+    same, _s, _srid = generator.read_overlay(db, "site", epsg=32647)
+    moved, _s, _srid = generator.read_overlay(db, "site", epsg=32648)
+    assert same[0][0].bounds != moved[0][0].bounds
+
+
+def test_overlay_names_a_project_that_is_not_there(tmp_path):
+    db = _overlay_db(tmp_path)
+    with pytest.raises(generator.SiteMapError, match="No such project"):
+        generator.read_overlay(db, "not-this-one")
+
+
+def test_supplied_survey_data_is_allowed_on_the_government_sheet(tmp_path):
+    """--arrows and --basemap are refused there because they add decoration
+    the spec does not list. A surveyed parcel is the subject a ผังบริเวณ is
+    read for, and it is named on the sheet rather than added silently."""
+    db = _overlay_db(tmp_path)
+    args = generator.parse_args([
+        "--lat", "13.7455", "--lon", "100.5325", "--profile", "government",
+        "--output", str(tmp_path / "m.pdf"), "--overlay-db", str(db)])
+    generator.validate_args(args)          # must not raise
+
+    args = generator.parse_args([
+        "--lat", "13.7455", "--lon", "100.5325", "--profile", "government",
+        "--output", str(tmp_path / "m.pdf"), "--arrows"])
+    with pytest.raises(generator.SiteMapError, match="standard-profile"):
+        generator.validate_args(args)
+
+
+def test_overlay_project_without_a_database_is_refused(tmp_path):
+    args = generator.parse_args([
+        "--lat", "13.7455", "--lon", "100.5325",
+        "--output", str(tmp_path / "m.pdf"), "--overlay-project", "site"])
+    with pytest.raises(generator.SiteMapError, match="needs --overlay-db"):
+        generator.validate_args(args)
+
+
+def test_the_legend_keys_supplied_data_only_when_it_is_drawn():
+    handles = generator.legend_handles(generator.GOV_COLOURS, True,
+                                       survey=True)
+    assert any("Supplied survey" in h.get_label() for h in handles)
+    plain = generator.legend_handles(generator.GOV_COLOURS, True)
+    assert not any("Supplied survey" in h.get_label() for h in plain)
