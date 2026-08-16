@@ -358,6 +358,10 @@ writes files, so don't expose it to an untrusted network.
 
 ### Choosing width × height
 
+The default is **200 × 150 m**, which plots at 1:1000 on A3 — a site plan.
+Widen it for context and the scale drops accordingly (1000 × 750 lands on
+1:5000, a locality map).
+
 The printed scale follows from the extent and the sheet. On A3 the standard
 profile's map frame is 387 × 206 mm (so a 1.87:1 extent fills it) while the
 government profile's frame is nearly square at 265 × 255 mm (1.04:1). Extents

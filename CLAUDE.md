@@ -175,14 +175,21 @@ at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows
 1. Expect the question "why does the PDF have fewer buildings than the CAD file"
 and answer with this, not with a bug hunt.
 
-**Default extent is 1000 × 750 m** across the CLI tools and the web form,
-with A3 the default sheet. These do not combine at 1:2000: after the title
-block and margins `sheet.py` leaves a 290 × 273 mm A3 viewport, which caps
-1:2000 at 580 × 546 m, so 1000 × 750 plots at **1:5000 on A3**, 1:2500 on A2
-and 1:2000 on A1. All are round scales a reviewer accepts, but the extent
-and the sheet are now chosen independently — check `fitting_scale()` for the
-combination you need rather than assuming 1:2000. `topo2cad.py` still
-accepts `--radius` for a square box.
+**Default extent is 200 × 150 m** across the CLI tools and the web form,
+with A3 the default sheet — the combination plots at **1:1000**, which is a
+site-plan scale a reviewer expects. It was 1000 × 750, which fell to
+**1:5000 on A3** and read as a locality map: after the title block and
+margins `sheet.py` leaves a 290 × 273 mm A3 viewport, capping 1:2000 at
+580 × 546 m. The extent and the sheet are chosen independently, so check
+`fitting_scale()` for the combination you need rather than assuming any of
+these; a wider extent still works and simply lands on a smaller scale.
+`topo2cad.py` still accepts `--radius` for a square box.
+
+The older numbers are worth keeping in mind when reading history: a run
+before this default carries 1000 × 750 in its folder name and its staged
+project, and the ML supplement covers a proportionally larger area at that
+size — at a rural site 200 × 150 may hold no buildings at all where
+1000 × 750 held a village edge.
 
 **The extent is drawn, on `C-ANNO-EXTN`, DASHED.** Both CAD routes close a rectangle
 on the requested extent, derived from the centre and the nominal width and

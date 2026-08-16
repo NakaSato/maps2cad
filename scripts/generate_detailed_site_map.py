@@ -129,9 +129,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Longitude in decimal degrees (WGS 84, -180..180)")
     # 1000 x 750 m: wider than A3 holds at 1:2000, so the standard profile
     # reports the scale it actually achieved rather than a nominal one
-    p.add_argument("--width", type=float, default=1000.0,
+    p.add_argument("--width", type=float, default=200.0,
                    help="East-west coverage in metres, centred on the site")
-    p.add_argument("--height", type=float, default=750.0,
+    p.add_argument("--height", type=float, default=150.0,
                    help="North-south coverage in metres, centred on the site")
     p.add_argument("--output",
                    help="Output PDF path (must end in .pdf). Not needed when "
