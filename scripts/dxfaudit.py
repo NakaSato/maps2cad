@@ -183,7 +183,12 @@ def source_counts(lat, lon, width, height, dem_dir, use_ml=True) -> dict:
                           new_ml_rings)
 
     s, w, n, e = bbox_around(lat, lon, None, width, height)
-    counts = count_elements(fetch_osm(s, w, n, e))
+    # cache=False on purpose. This tool exists to check the drawing against
+    # the source, and auditing against the very snapshot the drawing was
+    # made from would prove only that the file matches itself — the same
+    # trap as dxfdiff reporting IDENTICAL while both routes drop the same
+    # feature. An audit re-queries.
+    counts = count_elements(fetch_osm(s, w, n, e, cache=False))
 
     if use_ml and dem_dir:
         ms = fetch_ms_buildings(s, w, n, e, Path(dem_dir) / "ms_cache")

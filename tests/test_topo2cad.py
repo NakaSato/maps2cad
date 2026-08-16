@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import topo2cad  # noqa: E402
 from topo2cad import (  # noqa: E402
     _clip_seg,
     bbox_around,
@@ -562,3 +563,75 @@ def test_untagged_geometry_is_never_kept_as_other():
                  "geometry": [{"lon": 100.0, "lat": 13.0},
                               {"lon": 100.001, "lat": 13.0}]}]
     assert classify_elements(elements, keep_other=True)["other_lines"] == []
+
+
+# --- Overpass response cache -----------------------------------------------
+
+def test_a_repeat_query_is_served_from_cache(tmp_path, monkeypatch):
+    """A retry, a re-plot at another sheet size, or a second run at the same
+    coordinate should not re-query someone else's infrastructure."""
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+
+        class R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"elements": [{"type": "node", "id": 1}]}
+        return R()
+
+    monkeypatch.setattr(topo2cad.requests, "post", fake_post)
+    first = topo2cad._post_overpass("q", cache_dir=tmp_path)
+    second = topo2cad._post_overpass("q", cache_dir=tmp_path)
+    assert first == second == [{"type": "node", "id": 1}]
+    assert len(calls) == 1
+
+
+def test_a_different_query_is_a_different_cache_entry(tmp_path):
+    assert (topo2cad._cache_path("a", tmp_path)
+            != topo2cad._cache_path("b", tmp_path))
+    # ...and the same query always lands on the same file
+    assert (topo2cad._cache_path("a", tmp_path)
+            == topo2cad._cache_path("a", tmp_path))
+
+
+def test_an_outage_falls_back_to_a_stale_cache(tmp_path, monkeypatch):
+    """Three Overpass endpoints returned 504 within a minute of each other
+    while this was written. A day-old answer beats no drawing."""
+    import json as _json
+
+    path = topo2cad._cache_path("q", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps([{"type": "way", "id": 7}]),
+                    encoding="utf-8")
+
+    def dead(url, **kwargs):
+        raise OSError("504 Server Error: Gateway Timeout")
+
+    monkeypatch.setattr(topo2cad.requests, "post", dead)
+    monkeypatch.setattr(topo2cad.time, "sleep", lambda _s: None)
+    # ttl=0 makes the entry stale, so this is the outage path, not a hit
+    got = topo2cad._post_overpass("q", cache_dir=tmp_path, ttl=0)
+    assert got == [{"type": "way", "id": 7}]
+
+
+def test_without_a_cache_an_outage_still_raises(tmp_path, monkeypatch):
+    """Silently drawing nothing would be worse than failing."""
+    def dead(url, **kwargs):
+        raise OSError("504 Server Error: Gateway Timeout")
+
+    monkeypatch.setattr(topo2cad.requests, "post", dead)
+    monkeypatch.setattr(topo2cad.time, "sleep", lambda _s: None)
+    with pytest.raises(OSError):
+        topo2cad._post_overpass("q", cache_dir=tmp_path)
+
+
+def test_the_audit_never_reads_the_cache():
+    """dxfaudit re-queries on purpose: auditing a drawing against the very
+    snapshot it was made from proves only that the file matches itself."""
+    source = (Path(__file__).resolve().parent.parent / "scripts"
+              / "dxfaudit.py").read_text(encoding="utf-8")
+    assert "fetch_osm(s, w, n, e, cache=False)" in source

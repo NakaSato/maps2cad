@@ -15,9 +15,11 @@
 """Topo + OSM (buildings w/ names, roads) around a GPS point -> DXF."""
 import argparse
 import csv
+import hashlib
 import gzip
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -111,6 +113,12 @@ def parse_args():
                         "lands on C-MISC-OTHR / C-MISC-SYMB rather than "
                         "being dropped. The run reports what that added, by "
                         "tag, so you can see what the default skips.")
+    p.add_argument("--refresh-osm", action="store_true",
+                   help="Ignore the cached Overpass response for this "
+                        "extent and query again. The cache is a day old at "
+                        "most and exists so a retry, a re-plot or a repeat "
+                        "run costs nothing — this is for when you know the "
+                        "map changed today.")
     p.add_argument("--overture", action="store_true",
                    help="Supplement the landmarks with named places from "
                         "Overture Maps (Meta, Microsoft, Esri and others "
@@ -207,7 +215,7 @@ def bbox_around(lat, lon, radius_m, width_m=None, height_m=None):
     return lat - dlat, lon - dlon, lat + dlat, lon + dlon  # S, W, N, E
 
 
-def fetch_osm(s, w, n, e, everything=False):
+def fetch_osm(s, w, n, e, everything=False, cache=True):
     """Elements in the box. `everything` asks for every *tagged* element
     rather than the curated tag list.
 
@@ -227,7 +235,7 @@ def fetch_osm(s, w, n, e, everything=False):
         nwr[~"."~"."]({s},{w},{n},{e});
         out tags geom;
         """
-        return _post_overpass(query)
+        return _post_overpass(query, cache=cache)
     query = f"""
     [out:json][timeout:90];
     (
@@ -260,23 +268,75 @@ def fetch_osm(s, w, n, e, everything=False):
     );
     out tags geom;
     """
-    return _post_overpass(query)
+    return _post_overpass(query, cache=cache)
 
 
-def _post_overpass(query):
+# Overpass is someone else's infrastructure and it is not always up: three
+# endpoints failed with 504 within a minute of each other while this was
+# being written. A response cache turns that from "the run died" into "the
+# run used this morning's answer", makes a repeat run instant, and lets a
+# re-plot work with no network at all — the same bargain basemap.py makes
+# with tiles and overture.py with places.
+OSM_CACHE_DIR = Path(os.environ.get("MAPS2CAD_DATA")
+                     or Path(__file__).resolve().parent.parent) \
+    / "cache" / "overpass"
+# A day. OSM changes, and a submission drawing must not be built from a
+# stale snapshot without anyone choosing that — but a same-day re-run, a
+# re-plot at another sheet size, or a retry after a failure should not
+# re-query. `--refresh-osm` ignores the cache outright.
+OSM_CACHE_TTL = 24 * 3600
+
+
+def _cache_path(query, cache_dir=None):
+    digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:20]
+    return Path(cache_dir or OSM_CACHE_DIR) / f"overpass_{digest}.json"
+
+
+def _post_overpass(query, cache=True, cache_dir=None, ttl=OSM_CACHE_TTL):
+    path = _cache_path(query, cache_dir)
+    if cache and path.is_file():
+        age = time.time() - path.stat().st_mtime
+        if age < ttl:
+            try:
+                elements = json.loads(path.read_text(encoding="utf-8"))
+                print(f"Overpass: {len(elements)} element(s) from cache "
+                      f"({age / 3600:.1f} h old)")
+                return elements
+            except (ValueError, OSError):
+                pass            # a truncated cache file is not an error
     last_err = None
     for attempt in range(3):
         for url in OVERPASS_URLS:
             try:
                 r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=300)
                 r.raise_for_status()
-                return r.json()["elements"]
+                elements = r.json()["elements"]
+                if cache:
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(json.dumps(elements),
+                                        encoding="utf-8")
+                    except OSError as exc:      # read-only disk, full disk
+                        print(f"  (not cached: {exc})")
+                return elements
             except Exception as exc:
                 last_err = exc
                 print(f"Overpass endpoint failed ({url}): {exc}")
         wait = 20 * (attempt + 1)
         print(f"All endpoints failed, retrying in {wait}s...")
         time.sleep(wait)
+    # Every endpoint is down. An expired cache entry is a far better answer
+    # than no drawing at all — say how old it is and let the run continue.
+    if cache and path.is_file():
+        try:
+            elements = json.loads(path.read_text(encoding="utf-8"))
+            age = (time.time() - path.stat().st_mtime) / 3600
+            print(f"WARNING: Overpass is unreachable — drawing from a "
+                  f"cached response {age:.1f} h old ({len(elements)} "
+                  f"elements). Re-run when it is back for current data.")
+            return elements
+        except (ValueError, OSError):
+            pass
     raise last_err
 
 
@@ -1241,7 +1301,8 @@ def main():
 
     # ---- OSM buildings + roads ------------------------------------------
     print("Fetching OSM data (Overpass)...")
-    elements = fetch_osm(s, w, n, e, everything=a.all_features)
+    elements = fetch_osm(s, w, n, e, everything=a.all_features,
+                          cache=not a.refresh_osm)
     # The tag rules live in classify_elements() so osm2cad.py's file route
     # sorts a downloaded extract into exactly the same categories.
     features = classify_elements(elements, curated=not a.all_poi,

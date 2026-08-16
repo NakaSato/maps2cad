@@ -149,6 +149,24 @@ the named providers — the CLI takes a raw `{z}/{x}/{y}` URL, but accepting
 one from a browser form would let anyone point the server's fetcher at any
 host.
 
+**Overpass is someone else's infrastructure, so its answers are cached.**
+`_post_overpass()` keys the raw response on a hash of the query — which
+carries the bbox and the variant — under `cache/overpass/`, honouring
+`MAPS2CAD_DATA` like the tile and Overture caches. Three things it buys: a
+repeat run is instant (10.3 s → 2.7 s on a small rural extent, far more on
+a dense one), a re-plot at another sheet size costs nothing, and when every
+endpoint is down — three returned 504 within a minute of each other while
+this was written — an **expired** entry is served with a loud warning
+naming its age rather than losing the drawing. With no cache at all an
+outage still raises: silently drawing nothing is worse than failing. The
+TTL is a day, because a submission must not be built from a stale snapshot
+without someone choosing that; `--refresh-osm` ignores it outright.
+
+`dxfaudit.py` passes `cache=False` and must keep doing so. Auditing a
+drawing against the very snapshot it was made from proves only that the
+file matches itself — the same trap as `dxfdiff` reporting IDENTICAL while
+both routes drop the same feature. An audit re-queries.
+
 **ML footprints supplement OSM everywhere, not only where OSM is empty.**
 `topo2cad.py` used to fetch them only when OSM returned fewer than 20
 buildings; at Pathum Wan that drew 274 OSM buildings while 69 further ML

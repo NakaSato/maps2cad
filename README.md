@@ -454,6 +454,22 @@ Covers UTM zone selection, extent geometry, road classification, label fitting
 and collision rules, inventory determinism, and CSV validation. The network test
 is opt-in so the suite doesn't hit Overpass on every run.
 
+## When Overpass is down
+
+Every Overpass response is cached under `cache/overpass/` for a day, keyed
+on the query. A repeat run at the same coordinate skips the network
+entirely, and if every endpoint is failing — they do — the run falls back
+to an expired copy and says how old it is rather than dying:
+
+```
+WARNING: Overpass is unreachable — drawing from a cached response
+2.3 h old (1462 elements). Re-run when it is back for current data.
+```
+
+`--refresh-osm` ignores the cache. `dxfaudit.py` never reads it: an audit
+that checks a drawing against the snapshot it was made from proves only
+that the file matches itself.
+
 ## Checking the data quality before you draw
 
 OpenStreetMap is traced by people; Microsoft's footprints are predicted from
