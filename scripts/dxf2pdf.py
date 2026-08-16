@@ -21,6 +21,27 @@ PAPER_INCHES = {  # landscape (w, h)
 }
 
 
+def plot_config(color: bool) -> Configuration:
+    """How linework is coloured on paper.
+
+    ColorPolicy.COLOR keeps the layer colours and lets ezdxf resolve ACI 7
+    against the background, which on white paper is black.
+
+    NOT COLOR_SWAP_BW, which was here and is a swap: it turned every ACI 7
+    entity *white*, and on a white background that is invisible ink. The
+    whole title block, sheet frame, north arrow and crop rectangle vanished
+    from every coloured plot — 0 dark pixels in the title-block strip
+    against 1019 with this policy — while the coloured linework rendered
+    fine, so the plot looked plausible and was missing the half a reviewer
+    reads. serve.py plots previews in colour by default, so every sheet the
+    web app showed had no title block.
+    """
+    return Configuration(
+        background_policy=BackgroundPolicy.WHITE,
+        color_policy=ColorPolicy.COLOR if color else ColorPolicy.BLACK,
+    )
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("dxf", help="input DXF file")
@@ -37,11 +58,7 @@ def main():
     out = Path(args.out) if args.out else Path(args.dxf).with_suffix(".pdf")
     doc = ezdxf.readfile(args.dxf)
 
-    config = Configuration(
-        background_policy=BackgroundPolicy.WHITE,
-        # COLOR_SWAP_BW keeps layer colors but turns white linework black for print
-        color_policy=ColorPolicy.COLOR_SWAP_BW if args.color else ColorPolicy.BLACK,
-    )
+    config = plot_config(args.color)
 
     if args.layout:
         names = [l for l in doc.layout_names() if l != "Model"]

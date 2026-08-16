@@ -472,6 +472,7 @@ def main(argv=None) -> int:
     # off a site plan and a setting-out crew works from. Only user_gis rows
     # — an OSM building outline is not a surveyed boundary and tabling its
     # corners to the millimetre would say it was.
+    corner_rows = []
     if a.corners:
         parcels = []
         for row in conn.execute(
@@ -481,7 +482,8 @@ def main(argv=None) -> int:
             geom = wkb.loads(row["geom_wkb"])
             for part in stage_db.polygon_parts(geom):
                 parcels.append((part, row["display_name"] or ""))
-        rows = blocks.add_corner_marks(doc, msp, parcels)
+        corner_rows = blocks.add_corner_marks(doc, msp, parcels)
+        rows = corner_rows
         if rows:
             corner_path = Path(out).with_name("corner_coordinates.csv")
             stage_db.write_corner_csv(corner_path, rows)
@@ -509,6 +511,7 @@ def main(argv=None) -> int:
             "centre": (cx, cy), "srid": proj["srid"],
             "extent": (proj["width_m"], proj["height_m"]),
             "source": credits,
+            "corners": corner_rows,
             "date": datetime.date.today().isoformat(),
         }, size=a.sheet, scale=a.scale)
         print(f"  sheet: {a.sheet} paper space at 1:{a.scale:,}")

@@ -194,6 +194,46 @@ def _legend(psp, doc, x, y, layer_frame, layer_text, max_rows=14):
         row_y -= row_h
 
 
+def _corner_table(psp, rows, x, y, layer_frame, layer_text, max_rows=12):
+    """The setting-out table on the sheet, under the legend.
+
+    A CSV beside the drawing is what a machine reads; a reviewer reads the
+    sheet, and a boundary with no coordinates on the paper is a boundary
+    nobody can check. Long tables are capped and point at the CSV rather
+    than running off the sheet — a table that overruns the frame is not on
+    the sheet at all, the same rule the title-block credits follow.
+    """
+    if not rows:
+        return 0.0
+    shown = rows[:max_rows]
+    row_h, width = 3.6, 92.0
+    height = row_h * (len(shown) + 2) + 3
+    psp.add_lwpolyline([(x, y - height), (x + width, y - height),
+                        (x + width, y), (x, y)], close=True,
+                       dxfattribs={"layer": layer_frame, "lineweight": 35})
+    _text(psp, "ตารางค่าพิกัดมุมเขต / BOUNDARY CORNERS", x + 3, y - 3.0, 2.2,
+          layer_text, mask=True)
+    # Column x-offsets: corner, easting, northing, bearing, distance
+    cols = (3, 14, 36, 58, 78)
+    head_y = y - 3.0 - row_h
+    for offset, head in zip(cols, ("มุม", "E (m)", "N (m)", "ทิศทาง", "ระยะ")):
+        _text(psp, head, x + offset, head_y, 1.8, layer_text, mask=True)
+    row_y = head_y - row_h
+    for row in shown:
+        for offset, value in zip(cols, (
+                row["corner"], f"{row['easting']:,.3f}",
+                f"{row['northing']:,.3f}", row["bearing"],
+                f"{row['distance_m']:,.2f}")):
+            _text(psp, value, x + offset, row_y, 1.7, layer_text, mask=True)
+        row_y -= row_h
+    if len(rows) > max_rows:
+        _text(psp, f"+{len(rows) - max_rows} more — see "
+                   "corner_coordinates.csv",
+              x + 3, row_y, 1.6, layer_text, mask=True)
+        height += row_h
+    return height
+
+
 def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
               name: str = "SHEET"):
     """Create a paper-space layout with a viewport at 1:`scale`.
@@ -269,8 +309,16 @@ def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
     bar_x = margin + 6
     bar_y = margin + 8
     _scale_bar(psp, bar_x, bar_y, scale, LAYERS["frame"], LAYERS["text"])
-    _legend(psp, doc, margin + 6, ph - margin - 6,
+    legend_top = ph - margin - 6
+    _legend(psp, doc, margin + 6, legend_top,
             LAYERS["frame"], LAYERS["text"])
+    # Under the legend, on the same left edge: both are read before the
+    # drawing is, and both sit over the viewport rather than shrinking it.
+    corners = info.get("corners") or []
+    if corners:
+        used = 4.2 * (len(used_layers(doc)[:14]) + 1) + 2
+        _corner_table(psp, corners, margin + 6, legend_top - used - 6,
+                      LAYERS["frame"], LAYERS["text"])
 
     # ---- title block contents ------------------------------------------
     tx = bx + 4

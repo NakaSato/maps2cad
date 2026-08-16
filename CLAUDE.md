@@ -875,6 +875,20 @@ came out 200 mm wide on an A3 sheet. Both are drawn over the viewport
 corner rather than by shrinking the viewport, which would quietly change
 the plot scale `fitting_scale()` promised for every existing sheet.
 
+**A colour plot must not use `COLOR_SWAP_BW`.** `dxf2pdf.plot_config()`
+uses `ColorPolicy.COLOR` and lets ezdxf resolve ACI 7 against the
+background, which on white paper is black. `COLOR_SWAP_BW` is a *swap*, not
+a "make white ink printable" switch: with a white background it renders
+every ACI 7 entity white — the sheet frame, the whole title block, the
+north arrow, the crop rectangle — while the coloured linework renders
+normally, so the plot looks plausible and is missing the half a reviewer
+reads. Measured: 0 dark pixels in the title-block strip against 1019, and
+at unit level the resolved colour is literally `(1.0, 1.0, 1.0)`.
+`serve.py` plots previews in colour by default, so every sheet preview the
+web app produced was missing its title block. Test-covered by rendering one
+ACI 7 line and checking the colour that reaches the canvas — a policy this
+subtle cannot be verified by reading it.
+
 **Sheets are paper space, drawings are model space.** `sheet.py` (imported by
 `topo2cad.py` and `db2dxf.py`, like `topo2cad.py` is by `mapposter.py`) builds a
 paper-space layout named `SHEET` with a viewport locked to a plot scale.
