@@ -217,7 +217,7 @@ def stage(a, frames, epsg, centre, attrs=()):
             if polys:
                 from shapely.geometry import MultiPolygon
                 b_rows.append({
-                    "feature_id": fid, "source": "user_gis",
+                    "feature_id": fid, "source": f"user_gis:{path.name}",
                     "osm_name": label, "code": "",
                     "display_name": label or fid.split("/")[-1],
                     "building_type": None,
@@ -227,6 +227,11 @@ def stage(a, frames, epsg, centre, attrs=()):
                 from shapely.geometry import MultiLineString
                 r_rows.append({
                     "feature_id": fid, "highway_type": "user_gis",
+                    # Named per file, not "user_gis": one project can hold a
+                    # survey, a parcel set and an OSM extract at once, and a
+                    # provenance report that cannot tell two imports apart
+                    # is not one.
+                    "source": f"user_gis:{path.name}",
                     "road_name": label or None, "road_ref": None,
                     "carriageway_m": a.width,
                     "geom": lines[0] if len(lines) == 1

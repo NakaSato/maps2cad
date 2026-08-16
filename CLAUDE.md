@@ -421,6 +421,52 @@ and attaches accordingly; at a mixed site that is 33 entities under OSM and
 the CAD attribute browser would be a lie, which is the whole reason for the
 column.
 
+**`compose.py` conducts, it does not convert.** One command puts several
+sources in one drawing: `topo2cad.py` (OSM + Microsoft ML + DEM + optionally
+Overture and a basemap) first, then every `--add` file through `osm2cad.py`
+or `gis2cad.py`, then one `db2dxf.py` issue from the staging layer. Five
+things are load-bearing:
+
+*Order.* The OSM step **replaces** and every import **merges**, so the
+imports come second and never the other way round — reversed, the OSM step
+would delete every import that preceded it. This is the same
+merge/replace asymmetry documented below, now with a command that depends
+on it.
+
+*Subprocesses, not imports.* Each step runs as its own `uv run`. The two
+OSM stacks here keep deliberately disjoint dependency sets, and a conductor
+that imported both would be the thing that fused them; `compose.py` itself
+declares no dependencies and imports only `stage_db` (stdlib at module
+level) and `serve.import_kind`.
+
+*One routing rule.* `import_kind()` is imported from `serve.py` rather than
+restated, so the browser upload and the CLI cannot disagree about which
+converter draws a file — they produce different drawings from the same
+ground, which is why that function refuses a mixed batch instead of
+guessing.
+
+*One CRS.* Every import is passed the srid the project already carries
+(`project_srid()`), because each converter otherwise derives a UTM zone from
+its own data: a survey file whose centroid falls the other side of 102°E
+would stage in zone 48 inside a zone 47 project, a kilometre-scale error
+that looks like nothing until the drawing opens. The extent is written back
+from the request (`set_extent()`) because an import carries features, not an
+extent, and the crop line, dimensions and grid come from the project row.
+
+*Provenance names the file.* `stage_db.provenance()` reports one row per
+(source, feature class) and the run writes `sources.csv` beside the
+drawing. Getting there closed a real hole: `stage_roads()` never wrote the
+`source` column at all, so a survey centreline merged from a shapefile read
+as OpenStreetMap in the staging layer, and `staging_contours` /
+`staging_spots` had no such column (added via `MIGRATIONS`, defaulting to
+`copernicus_dem`). `gis2cad.py` now stages `user_gis:<file>` and
+`osm2cad.py` `openstreetmap:<file>`, because a project can hold two surveys
+and three extracts and one label for all of them is not a provenance
+record. Nothing branches on these strings — they are descriptive — so a new
+source only has to name itself honestly. A real six-source run at Pathum
+Wan: 327 openstreetmap, 147 openstreetmap:soi.osm, 38 copernicus_dem, 29
+overture, 21 microsoft_ml, 2 user_gis:boundary.geojson.
+
 **Import merges, extraction replaces.** `stage_to_db(merge=True)` keeps what
 is already staged under a project name; `merge=False` clears it first.
 `topo2cad.py` replaces, because re-running a coordinate refreshes that site

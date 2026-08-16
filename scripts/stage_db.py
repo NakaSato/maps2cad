@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS staging_contours (
     id              INTEGER PRIMARY KEY,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     elevation_m     REAL    NOT NULL,
+    source          TEXT    NOT NULL DEFAULT 'copernicus_dem',
     cad_layer       TEXT    NOT NULL DEFAULT 'C-TOPO-CONT',
     geom_wkb        BLOB    NOT NULL,   -- LineString in the project SRID
     label_x         REAL,
@@ -201,6 +202,7 @@ CREATE TABLE IF NOT EXISTS staging_spots (
     elevation_m     REAL    NOT NULL,
     x               REAL    NOT NULL,   -- project SRID
     y               REAL    NOT NULL,
+    source          TEXT    NOT NULL DEFAULT 'copernicus_dem',
     cad_layer       TEXT    NOT NULL DEFAULT 'C-TOPO-SPOT',
     UNIQUE (project_id, x, y)
 );
@@ -423,6 +425,11 @@ MIGRATIONS = {
     "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT"),
                       ("oneway", "INTEGER NOT NULL DEFAULT 0")),
     "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
+    # Provenance on the DEM-derived tables: a project can now hold features
+    # from several sources at once, and a report that cannot name where a
+    # row came from is not a report.
+    "staging_contours": (("source", "TEXT NOT NULL DEFAULT 'copernicus_dem'"),),
+    "staging_spots": (("source", "TEXT NOT NULL DEFAULT 'copernicus_dem'"),),
 }
 
 
@@ -893,9 +900,10 @@ def stage_spots(conn, project_id, rows) -> int:
     """records: dicts with x, y (project SRID) and elevation_m."""
     conn.executemany(
         "INSERT OR REPLACE INTO staging_spots (project_id, x, y,"
-        " elevation_m, cad_layer) VALUES (?,?,?,?,?)",
+        " elevation_m, source, cad_layer) VALUES (?,?,?,?,?,?)",
         [(project_id, float(r["x"]), float(r["y"]),
-          float(r["elevation_m"]), r.get("cad_layer", "C-TOPO-SPOT"))
+          float(r["elevation_m"]), r.get("source", "copernicus_dem"),
+          r.get("cad_layer", "C-TOPO-SPOT"))
          for r in rows])
     conn.commit()
     return len(rows)
@@ -1074,19 +1082,26 @@ def stage_contours(conn, project_id, records) -> int:
         geom = r["geom"]
         lx, ly, rot = line_label_anchor(geom)
         rows.append((project_id, r["elevation_m"],
+                     r.get("source", "copernicus_dem"),
                      r.get("cad_layer", "C-TOPO-MINR"), shp_wkb.dumps(geom),
                      lx, ly, rot, geom.length))
     conn.executemany(
-        "INSERT INTO staging_contours (project_id, elevation_m, cad_layer,"
-        " geom_wkb, label_x, label_y, label_rotation, length_m)"
-        " VALUES (?,?,?,?,?,?,?,?)", rows)
+        "INSERT INTO staging_contours (project_id, elevation_m, source,"
+        " cad_layer, geom_wkb, label_x, label_y, label_rotation, length_m)"
+        " VALUES (?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
 
 
 def stage_roads(conn, project_id, records) -> int:
     """records: dicts with feature_id, geom (shapely, project SRID),
-    highway_type, road_name, road_ref, carriageway_m, oneway."""
+    highway_type, road_name, road_ref, carriageway_m, oneway.
+
+    `source` defaults to openstreetmap and is written, not assumed: a
+    centreline merged in from a survey file used to land in this table
+    reading as OpenStreetMap, because the column existed and nothing filled
+    it. One project can hold several sources at once.
+    """
     from shapely import wkb as shp_wkb
 
     rows = []
@@ -1099,6 +1114,7 @@ def stage_roads(conn, project_id, records) -> int:
         th, en = split_by_script(name, r.get("name_th"), r.get("name_en"))
         rows.append((
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
+            r.get("source", "openstreetmap"),
             r.get("highway_type"), name, ref, display, th, en,
             r.get("cad_layer", "C-ROAD-CNTR"),
             r.get("carriageway_m"), int(r.get("oneway") or 0),
@@ -1106,13 +1122,70 @@ def stage_roads(conn, project_id, records) -> int:
             lx, ly, rot, geom.length, minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_roads (project_id, feature_id, osm_id,"
-        " highway_type, road_name, road_ref, display_name, name_th, name_en,"
+        " source, highway_type, road_name, road_ref, display_name,"
+        " name_th, name_en,"
         " cad_layer, carriageway_m, oneway,"
         " geom_wkb, label_x, label_y, label_rotation, length_m,"
         " minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
+
+
+# ---------------------------------------------------------------- sources
+# Which staged table holds what, for the provenance report. A drawing built
+# from several sources at once is only trustworthy if it can say which rows
+# came from where — "combined" without provenance is just "mixed".
+PROVENANCE_TABLES = (("staging_buildings", "building"),
+                     ("staging_roads", "road"),
+                     ("staging_context", "context"),
+                     ("staging_pois", "point"),
+                     ("staging_contours", "contour"),
+                     ("staging_spots", "spot height"))
+
+
+def provenance(conn, project_id) -> list[dict]:
+    """[{source, feature_class, count}], one row per (source, class)."""
+    rows = []
+    for table, label in PROVENANCE_TABLES:
+        for r in conn.execute(
+                f"SELECT source, COUNT(*) n FROM {table}"
+                f" WHERE project_id = ? GROUP BY source ORDER BY source",
+                (project_id,)):
+            rows.append({"source": r["source"], "feature_class": label,
+                         "count": r["n"]})
+    return sorted(rows, key=lambda r: (-r["count"], r["source"],
+                                       r["feature_class"]))
+
+
+def write_provenance_csv(path, rows) -> int:
+    """The source table beside the drawing: what came from where."""
+    import csv
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["source", "feature_class",
+                                               "count"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
+
+
+def format_provenance(rows) -> str:
+    """The same table as text, for a run's console output."""
+    if not rows:
+        return "  (nothing staged)"
+    by_source: dict[str, list] = {}
+    for r in rows:
+        by_source.setdefault(r["source"], []).append(r)
+    out = []
+    for source in sorted(by_source, key=lambda s: -sum(
+            r["count"] for r in by_source[s])):
+        total = sum(r["count"] for r in by_source[source])
+        detail = ", ".join(f"{r['count']} {r['feature_class']}"
+                           for r in sorted(by_source[source],
+                                           key=lambda r: -r["count"]))
+        out.append(f"  {source:<28} {total:>6}   {detail}")
+    return "\n".join(out)
 
 
 # ------------------------------------------------------------------ CLI

@@ -698,6 +698,13 @@ def main(argv=None) -> int:
         print(f"Run folder: {run}")
     out.parent.mkdir(parents=True, exist_ok=True)
     project = a.project or Path(a.input[0]).stem
+    # Provenance names the file, not just "openstreetmap": a project can
+    # hold a live Overpass extract and two .osm exports at once, and a
+    # source column that says the same thing for all three cannot report
+    # what the drawing is made of.
+    names = [Path(f).name for f in a.input]
+    source_label = ("openstreetmap:" + (names[0] if len(names) == 1
+                                        else f"{len(names)} files"))
 
     # ---- DXF ------------------------------------------------------------
     doc = ezdxf.new("R2010", setup=True)
@@ -859,7 +866,7 @@ def main(argv=None) -> int:
                           "name_th": th or "", "name_en": en or "",
                           "addr_house": house or "",
                           "levels_label": levels,
-                          "source": "openstreetmap",
+                          "source": source_label,
                           "latitude": round(blat, 8),
                           "longitude": round(blon, 8)})
 
@@ -901,6 +908,7 @@ def main(argv=None) -> int:
                           "display_name": (th or en) or ""})
             staged_roads.append({
                 "feature_id": fid, "highway_type": highway,
+                "source": source_label,
                 "road_name": th or en, "road_ref": ref,
                 "name_th": th or "", "name_en": en or "",
                 # Staging keeps the base NCS layer: db2dxf.py draws from a
@@ -976,6 +984,7 @@ def main(argv=None) -> int:
                               "display_name": (th or en) or ""})
                 staged_context.append({
                     "feature_id": fid, "kind": kind, "cad_layer": base,
+                    "source": source_label,
                     "name_th": th or "", "name_en": en or "",
                     "display_name": (th or en) or "", "labelled": bool(label),
                     "runs": runs})
@@ -1054,7 +1063,8 @@ def main(argv=None) -> int:
                             py, 4.0)
         drawn.append({"feature_id": fid, "feature_type": key or "other",
                       "cad_layer": layer, "display_name": title})
-        staged_pois.append({"feature_id": fid, "poi_key": key or "other",
+        staged_pois.append({"feature_id": fid, "source": source_label,
+                            "poi_key": key or "other",
                             "poi_type": key or "", "name_th": th or "",
                             "name_en": en or "",
                             "display_name": title,
@@ -1074,7 +1084,7 @@ def main(argv=None) -> int:
                                  blocks.symbol_size(base), layer), fid)
         drawn.append({"feature_id": fid, "feature_type": kind,
                       "cad_layer": layer, "display_name": ""})
-        staged_pois.append({"feature_id": fid,
+        staged_pois.append({"feature_id": fid, "source": source_label,
                             "poi_key": {"tree": "natural",
                                         "gate": "barrier",
                                         "lamp": "highway"}.get(kind, "power"),
@@ -1090,7 +1100,7 @@ def main(argv=None) -> int:
         drawn.append({"feature_id": fid, "feature_type": "landmark",
                       "cad_layer": t2c.LAYERS["poi"],
                       "display_name": th or en or ""})
-        staged_pois.append({"feature_id": fid,
+        staged_pois.append({"feature_id": fid, "source": source_label,
                             "poi_key": kind[0], "poi_type": kind[1],
                             "name_th": th or "", "name_en": en or "",
                             "display_name": th or en or "",

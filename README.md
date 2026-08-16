@@ -238,6 +238,45 @@ type picks the default layer (polygons → `C-BLDG-OUTL`, lines →
 overrides per input. Labels come from a `name`-like attribute, or name one
 with `--name-field`.
 
+## Many sources, one drawing
+
+Each converter here reads one kind of source. `compose.py` runs them in
+order against a single staging project and issues one DXF from all of it:
+
+```bash
+uv run scripts/compose.py --lat 13.7455 --lon 100.5325 \
+  --width 500 --height 400 --dem dem/dem_n13_e100.tif \
+  --overture --basemap carto \
+  --add survey/boundary.geojson --add extract/soi.osm \
+  --outdir output/runs --sheet A3
+```
+
+The order is load-bearing: the OpenStreetMap step **replaces** what is
+staged for the project (re-running a coordinate must not leave last run's
+features behind) and every `--add` after it **merges**. `--no-osm` builds
+from your own files alone. Every import is handed the CRS the project is
+already staged in, so a survey file whose centroid falls the other side of
+102°E cannot quietly land in UTM zone 48 inside a zone 47 drawing.
+
+Each run prints — and writes to `sources.csv` — exactly what the drawing is
+made of:
+
+```
+Sources in site.dxf:
+  openstreetmap                   327   202 road, 56 point, 46 building, 23 context
+  openstreetmap:soi.osm           147   67 road, 41 point, 23 building, 16 context
+  copernicus_dem                   38   25 spot height, 13 contour
+  overture                         29   29 point
+  microsoft_ml                     21   21 building
+  user_gis:boundary.geojson         2   1 building, 1 road
+```
+
+The source names the *file*, not just the converter: a project can hold two
+surveys and three extracts, and "user_gis" for all of them would not be a
+provenance record. A combined drawing without one is not combined, it is
+mixed — and a reviewer asking where a boundary line came from deserves a
+better answer than "GIS".
+
 ## SQLite staging layer
 
 Stage extracted features with their CAD label anchors already computed, so the
