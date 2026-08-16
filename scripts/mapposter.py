@@ -10,6 +10,7 @@
 #   "requests",
 #   "matplotlib",
 #   "shapely>=2.0",   # new_ml_rings(), shared with topo2cad.py
+#   "pillow",         # basemap.py decodes map tiles with it
 # ]
 # ///
 """Black-and-white poster-style site map (PNG + PDF) around a GPS point."""
@@ -30,8 +31,9 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager, patches
 
 from topo2cad import (bbox_around, fetch_osm, fetch_ms_buildings,
-                      new_ml_rings, clip_runs,
+                      new_ml_rings, clip_runs, oneway_dir,
                       best_name, utm_transformer)
+import stage_db          # arrow spacing, shared with the CAD writers
 
 ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
           "tertiary": 1.8, "residential": 1.0, "unclassified": 1.0}
@@ -76,6 +78,22 @@ def main():
                         "footprints (same flag as topo2cad.py)")
     p.add_argument("--style", default="bw", choices=STYLES,
                    help="bw = black & white poster, color = CAD-style colors")
+    p.add_argument("--arrows", action="store_true",
+                   help="Draw direction arrows on one-way carriageways, "
+                        "spaced by the same rule the CAD routes use. Opt-in: "
+                        "a poster is a denser medium than a drawing, and on "
+                        "a 150 m radius the arrows compete with the linework.")
+    p.add_argument("--basemap", nargs="?", const="osm", metavar="PROVIDER",
+                   help="Draw a map backdrop under everything: osm, "
+                        "opentopomap, esri-imagery and the rest of "
+                        "basemap.py's providers, or a {z}/{x}/{y} template. "
+                        "Greyscaled under --style bw, where a colour map "
+                        "would fight the black-and-white linework.")
+    p.add_argument("--basemap-alpha", type=float, default=0.35, metavar="A",
+                   help="How strongly the backdrop shows through (0-1, "
+                        "default 0.35 — it is context, not content)")
+    p.add_argument("--basemap-zoom", type=int, metavar="Z")
+    p.add_argument("--basemap-max-tiles", type=int, default=128, metavar="N")
     args = p.parse_args()
     st = STYLES[args.style]
 
@@ -88,6 +106,35 @@ def main():
     fig, ax = plt.subplots(figsize=(14, 14))
     ax.set_facecolor("white")
     ax.set_aspect("equal")
+
+    # Backdrop first, so every line and label sits over it.
+    basemap_credit = ""
+    if args.basemap:
+        import tempfile
+
+        import basemap as bm
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                info = bm.build((s, w, n, e), utm_epsg, Path(tmp) / "bm.tif",
+                                provider=args.basemap, zoom=args.basemap_zoom,
+                                max_tiles=args.basemap_max_tiles)
+                with rasterio.open(info["path"]) as src:
+                    rgb = np.transpose(src.read([1, 2, 3]), (1, 2, 0))
+                    bounds = src.bounds
+            if args.style == "bw":
+                # Rec. 601 luma: a colour map under a black-and-white poster
+                # fights the linework, while grey reads as texture behind it.
+                grey = (rgb @ np.array([0.299, 0.587, 0.114])).astype("uint8")
+                rgb = np.dstack([grey] * 3)
+            ax.imshow(rgb, extent=(bounds.left, bounds.right,
+                                   bounds.bottom, bounds.top),
+                      zorder=0.4, alpha=args.basemap_alpha,
+                      interpolation="bilinear")
+            basemap_credit = info["attribution"]
+            print(bm.describe(info))
+        except bm.BasemapError as exc:
+            # A poster without its backdrop is still a poster
+            print(f"WARNING: no background map — {exc}")
 
     # contours from DEM
     with rasterio.open(args.dem) as src:
@@ -139,7 +186,8 @@ def main():
                                 linestyle=(0, (4, 2.5)))
                 else:
                     lw = ROAD_W.get(tags["highway"], 0.7)
-                    roads_draw.append((best_name(tags), lw, runs))
+                    roads_draw.append((best_name(tags), lw, runs,
+                                       oneway_dir(tags)))
             elif tags.get("natural") == "water":
                 bx, by = to_utm.transform(*zip(*pts))
                 ax.fill(bx, by, facecolor=st["water_fill"],
@@ -157,11 +205,11 @@ def main():
                     bx, by = to_utm.transform(*zip(*run))
                     ax.plot(bx, by, color=st["barrier"], lw=0.6, zorder=2.5)
     # roads as two parallel lines: colored casing with white fill between
-    for _, lw, runs in roads_draw:
+    for _, lw, runs, _ow in roads_draw:
         for bx, by in runs:
             ax.plot(bx, by, color=st["road"], lw=lw * 2.5 + 2, zorder=3,
                     solid_capstyle="round", solid_joinstyle="round")
-    for _, lw, runs in roads_draw:
+    for _, lw, runs, _ow in roads_draw:
         for bx, by in runs:
             ax.plot(bx, by, color="white", lw=lw * 2.5 - 0.2, zorder=3.1,
                     solid_capstyle="round", solid_joinstyle="round")
@@ -170,7 +218,7 @@ def main():
     # A divided carriageway is several OSM ways sharing one name, so labeling
     # per-way prints the name two or four times over.
     longest_run = {}
-    for name, lw, runs in roads_draw:
+    for name, lw, runs, _ow in roads_draw:
         if not name:
             continue
         best = max(runs, key=lambda r: len(r[0]))
@@ -191,6 +239,27 @@ def main():
                 ha="center", va="bottom", zorder=6,
                 bbox=dict(facecolor="white", edgecolor="none", alpha=0.6,
                           pad=0.6))
+
+    # Direction of travel, placed by stage_db.arrow_positions() — the same
+    # call the three CAD writers make, so a poster and the drawing of the
+    # same site put the arrows in the same places.
+    if args.arrows:
+        length = max(6.0, (ux1 - ux0) * 0.012)
+        drawn_arrows = 0
+        for _name, _lw, runs, oneway in roads_draw:
+            if not oneway:
+                continue
+            for bx, by in runs:
+                for x, y, rot in stage_db.arrow_positions(list(zip(bx, by))):
+                    ang = math.radians(rot + (180.0 if oneway < 0 else 0.0))
+                    dx, dy = math.cos(ang) * length / 2, math.sin(ang) * length / 2
+                    ax.annotate("", xy=(x + dx, y + dy), xytext=(x - dx, y - dy),
+                                arrowprops=dict(arrowstyle="-|>", lw=0.9,
+                                                color=st["road_name"],
+                                                shrinkA=0, shrinkB=0),
+                                zorder=3.4)
+                    drawn_arrows += 1
+        print(f"One-way arrows: {drawn_arrows}")
 
     # Same rule as topo2cad.py: supplement everywhere, not only where OSM is
     # nearly empty, and drop footprints an OSM building already covers.
@@ -250,6 +319,11 @@ def main():
               if args.width and args.height else f"รัศมี {args.radius:g} m")
     ax.set_xlabel(f"GPS {args.lat}, {args.lon}   |   UTM {utm_label} "
                   f"(EPSG:{utm_epsg})   |   {extent}", fontsize=11, labelpad=10)
+
+    if basemap_credit:
+        # On the figure, not the axes: the backdrop is credited wherever the
+        # poster is cropped to, and a licence line is not optional.
+        fig.text(0.01, 0.005, basemap_credit, fontsize=7, color="0.35")
 
     out = Path(args.out)
     fig.savefig(out, dpi=450, bbox_inches="tight", facecolor="white")

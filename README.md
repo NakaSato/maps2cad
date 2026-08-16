@@ -415,6 +415,13 @@ Black-and-white print map: buildings filled black, road widths by class,
 contours light gray, Thai labels (Sarabun/Noto Sans Thai), north arrow,
 GPS pin, scale bar, and frame. Writes both .png (300 dpi) and .pdf.
 
+`--arrows` adds direction arrows on one-way carriageways, placed by the same
+`stage_db.arrow_positions()` the CAD writers call, so a poster and the drawing
+of the same site put them in the same places. `--basemap` puts a map backdrop
+under everything — greyscaled under `--style bw`, where a colour map would
+fight the linework — with the provider's credit printed under the frame. Both
+are opt-in: a poster is a denser medium than a drawing.
+
 ## Plottable sheet (paper space + title block)
 
 Model space holds the survey in real metres. `--sheet` adds the sheet you

@@ -237,7 +237,11 @@ its midpoint. Size is `oneway_arrow_size()`, clamped to 3–10 m so a 14 m
 motorway does not get a 14 m arrow. `staging_roads.oneway` carries it (a
 `MIGRATIONS` entry, so older databases upgrade on open), and `db2dxf.py`
 draws from that column — 39 arrows at Pathum Wan and 94 over 500 × 400 m,
-identical in both routes by `dxfdiff.py`.
+identical in both routes by `dxfdiff.py`. `mapposter.py` calls the same
+placement rule behind `--arrows`, so a poster and a drawing of one site
+agree; it is opt-in there because a poster is a denser medium, and
+`generate_detailed_site_map.py` is deliberately untouched — that sheet
+answers to a written spec.
 
 **A repaired polygon is what gets drawn *and* what gets staged.**
 `stage_db.repaired_polygon()` / `polygon_parts()` exist because OSM carries
