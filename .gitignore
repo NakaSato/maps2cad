@@ -17,6 +17,8 @@ __pycache__/
 
 # ngrok tunnel config (contains the tunnel password)
 ngrok.yml
+# ngrok traffic policy (contains the basic-auth password)
+ngrok-policy.yml
 
 # macOS
 .DS_Store
