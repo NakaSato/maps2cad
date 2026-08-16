@@ -977,3 +977,38 @@ def test_grid_ticks_handle_a_spacing_wider_than_the_extent():
 def test_grid_ticks_reject_a_nonsense_spacing():
     assert stage_db.grid_ticks(0, 0, 100, 100, 0) == ([], [])
     assert stage_db.grid_ticks(0, 0, 100, 100, -5) == ([], [])
+
+
+# --- One layer table, shared ------------------------------------------------
+
+def test_the_layer_table_and_its_linetypes_live_in_one_place():
+    """gis2cad.py carried a reduced copy of the table, which is how an
+    imported centreline drew Continuous there and CENTER in its own
+    re-issue — and why an import was missing 27 layers."""
+    import importlib.util as iu
+
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+
+    def load(name):
+        spec = iu.spec_from_file_location(name, scripts / f"{name}.py")
+        mod = iu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    blocks = load("blocks")
+    db2dxf = load("db2dxf")
+    gis2cad_src = (scripts / "gis2cad.py").read_text(encoding="utf-8")
+
+    db2dxf_src = (scripts / "db2dxf.py").read_text(encoding="utf-8")
+    # Equality, not identity: loading blocks through its own spec here
+    # makes a second module object. What matters is that neither writer
+    # defines a table of its own.
+    assert db2dxf.LAYER_STYLE == blocks.LAYER_STYLE
+    assert "LAYER_STYLE = blocks.LAYER_STYLE" in db2dxf_src
+    assert "LAYER_STYLE = blocks.LAYER_STYLE" in gis2cad_src
+    # A centreline is never drawn as a plain line: that is what stops it
+    # being read as the edge of pavement beside it.
+    assert blocks.LAYER_LINETYPE["C-ROAD-CNTR"] == "CENTER"
+    # The pattern is in metres, so without a scale the dashes are
+    # sub-millimetre on paper and read as continuous.
+    assert blocks.LTSCALE == 5.0

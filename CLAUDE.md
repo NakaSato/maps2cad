@@ -564,6 +564,27 @@ opts back into clearing. A merge prints "Merged into" and the project's new
 totals, because a `db2dxf.py` re-issue draws everything staged, not just the
 import you just ran.
 
+**One layer table, in `blocks.py`.** `LAYER_STYLE`, `LAYER_LINETYPE` and
+`LTSCALE` live there and `apply_layer_table()` applies all three;
+`db2dxf.py` and `gis2cad.py` both call it. `gis2cad.py` used to carry a
+reduced copy — 15 layers, no linetypes — which is how an imported
+centreline drew Continuous in the import and CENTER in its own re-issue,
+and why an import was missing 27 layers the staging route defines. A
+centreline that plots as a plain line is read as the edge of pavement
+beside it, which is the whole reason the NCS splits them.
+
+**Drawing furniture needs a requested extent, and an import has none.**
+`db2dxf.py` derives the crop line, dimensions, grid, north arrow and site
+marker from the project row. A project created by `gis2cad.py` carries
+0 × 0 — it brought features, not a site — and drawing them anyway produced
+a rectangle of four identical points, two zero-length dimensions, a north
+arrow scaled to nothing, and a marker labelled `GPS
+13.745099999999999,100.5314`, a coordinate nobody asked for stated as
+though someone had. All of it is now skipped with a printed note when
+`width_m` or `height_m` is 0. `compose.py` writes the requested extent onto
+the project row (`set_extent()`) precisely so a composed run keeps its
+furniture.
+
 **A new layer goes in all three colour tables in the same commit.**
 `dxfdiff` compares the layer *table*, not only the entities, so a layer one
 route defines and another does not is a difference even when every entity
@@ -637,7 +658,8 @@ carrying U+0E00–U+0E7F. All four writers register `TH_STYLE`
 (`arial.ttf`) and bind every MTEXT to one of them — including `sheet.py`,
 whose title block is Thai. Never emit MTEXT on the default `Standard` style.
 The `TEXT_STYLES` dict is duplicated in `topo2cad.py`, `db2dxf.py` and
-`gis2cad.py` (as `LAYER_STYLE` already is); keep the three in step.
+`gis2cad.py`; keep the three in step. `LAYER_STYLE` used to be duplicated
+the same way and no longer is — see below.
 
 Building labels fall back to the `B###` inventory code when OSM has no name.
 This matters: at the Yasothon site 0 of 239 footprints carry an OSM name (238

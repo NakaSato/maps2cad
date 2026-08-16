@@ -255,3 +255,91 @@ def add_oneway_arrow(doc, layout, x: float, y: float, size: float,
     return layout.add_blockref(ONEWAY_ARROW, insert=(x, y), dxfattribs={
         "layer": layer, "xscale": size, "yscale": size, "zscale": size,
         "rotation": rotation})
+
+
+# ---------------------------------------------------------------- layers
+# The one layer table. It lived in db2dxf.py and, in a reduced form, in
+# gis2cad.py — which is how a survey centreline came to draw Continuous in
+# the import and CENTER in its own re-issue, and why gis2cad's drawings
+# were missing 27 layers db2dxf defines. topo2cad.py and osm2cad.py keep
+# their own (key, colour, weight) lists because they name layers through
+# LAYERS keys, and a test compares the three sets rather than trusting
+# anyone to remember.
+LAYER_STYLE = {
+    "C-BLDG-OUTL": (4, 50),
+    "C-BLDG-UNNM": (254, 35),    # footprints OSM has no name for
+    "C-ROAD-EDGE": (30, 35),
+    "C-ROAD-CNTR": (8, 9),
+    "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
+    "C-ROAD-ARRW": (30, 18),     # one-way direction arrows
+    "C-ROAD-BRDG": (7, 40),      # bridges: heavier, over what they cross
+    "C-ROAD-TUNL": (8, 18),      # tunnels: HIDDEN, under the ground
+    "C-ROAD-ROWY": (1, 35),      # right of way, empty and ready to draw
+    "C-TOPO-CONT": (8, 13),
+    "C-TOPO-MAJR": (8, 25),   # index contours: heavier, labelled
+    "C-TOPO-MINR": (8, 9),    # intermediate contours
+    "C-ANNO-TEXT": (2, 25),      # language-neutral: B### codes, elevations
+    "C-ANNO-TEXT-TH": (2, 25),
+    "C-ANNO-TEXT-EN": (7, 25),
+    "C-HYDR-WATR": (5, 18),      # context linework: canals, ponds
+    "C-LAND-VEGT": (3, 13),      # parks, farmland, cemeteries
+    "C-LAND-ZONE": (32, 13),     # built-up land use: residential, industrial
+    "C-SITE-PARK": (140, 13),    # parking areas
+    "C-ANNO-GRID": (253, 9),     # UTM coordinate grid
+    "C-ANNO-DIMS": (2, 18),      # extent dimensions
+    "C-ROAD-PLAZ": (8, 18),      # pedestrian areas and plazas
+    "C-UTIL-LAMP": (51, 13),     # street lighting
+    "C-MISC-OTHR": (9, 9),       # --all-features: whatever no rule claimed
+    "C-MISC-SYMB": (9, 9),
+    "C-RAIL-TRAK": (250, 18),
+    "C-BNDY-BARR": (9, 13),      # walls and fences
+    "C-ANNO-SYMB": (6, 18),      # landmark point symbols
+    "C-UTIL-POWR": (6, 25),      # power lines, pylons and poles
+    "C-UTIL-PIPE": (4, 18),      # pipelines
+    "C-LAND-TREE": (3, 13),      # individual trees
+    "C-ANNO-ADDR": (8, 13),      # house numbers
+    "C-TOPO-SPOT": (8, 18),      # spot heights sampled from the DEM
+    "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
+    # Named places from a third-party source (Overture), with their own
+    # annotation layers so a drafter can freeze C-ANNO-OVTR* and be back to
+    # what OpenStreetMap says. Must match LAYERS in topo2cad.py.
+    "C-ANNO-OVTR": (214, 13),
+    "C-ANNO-OVTR-TH": (214, 18),
+    "C-ANNO-OVTR-EN": (214, 18),
+    "C-ANNO-EXTN": (7, 35),      # crop rectangle on the requested extent
+    "C-ANNO-NORT": (7, 35),
+    "C-ANNO-GPSP": (1, 35),
+    "C-PROP-LINE": (1, 70),
+    "C-PROP-SETB": (2, 25),
+}
+
+# Linetype per layer, where it is not Continuous. NCS convention: a
+# centreline is never mistaken for the edge of pavement beside it, a crop
+# line is never mistaken for a fence, a tunnel is under the ground the plan
+# describes, and the two empty site-plan layers are ready to draw on.
+LAYER_LINETYPE = {
+    "C-ROAD-CNTR": "CENTER",
+    "C-ANNO-EXTN": "DASHED",
+    "C-ROAD-TUNL": "HIDDEN",
+    "C-PROP-LINE": "PHANTOM",
+    "C-PROP-SETB": "DASHED",
+    "C-ROAD-ROWY": "PHANTOM",
+}
+
+# The dash pattern is in drawing units — metres here — so without a scale
+# CENTER is sub-millimetre on paper and reads as continuous.
+LTSCALE = 5.0
+
+
+def apply_layer_table(doc):
+    """Define every layer, its colour, weight and linetype. Returns names."""
+    for name, (color, lw) in LAYER_STYLE.items():
+        layer = (doc.layers.get(name) if name in doc.layers
+                 else doc.layers.add(name, color=color))
+        layer.dxf.color = color
+        layer.dxf.lineweight = lw
+    for name, linetype in LAYER_LINETYPE.items():
+        if name in doc.layers:
+            doc.layers.get(name).dxf.linetype = linetype
+    doc.header["$LTSCALE"] = LTSCALE
+    return list(LAYER_STYLE)

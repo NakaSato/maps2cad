@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # The staging layer owns the XDATA and attribute-table rules, so a survey
 # import writes them exactly the way the OSM routes do.
+import blocks                                                  # noqa: E402
 import stage_db                                               # noqa: E402
 
 # Fields of a file the user supplied are not OpenStreetMap tags, so they go
@@ -56,14 +57,11 @@ LAYERS = {
     "anno_th": "C-ANNO-TEXT-TH",
     "anno_en": "C-ANNO-TEXT-EN",
 }
-LAYER_STYLE = {
-    "C-BLDG-OUTL": (4, 50), "C-ROAD-CNTR": (8, 9), "C-ROAD-EDGE": (30, 35),
-    "C-TOPO-MAJR": (8, 25), "C-TOPO-MINR": (8, 9),
-    "C-ANNO-SYMB": (6, 18), "C-ANNO-TEXT": (2, 25), "C-PROP-LINE": (1, 70),
-    "C-PROP-SETB": (2, 25), "C-TOPO-CONT": (8, 13), "C-HYDR-WATR": (5, 18),
-    "C-LAND-VEGT": (3, 13), "C-ANNO-GPSP": (1, 35),
-    "C-ANNO-TEXT-TH": (2, 25), "C-ANNO-TEXT-EN": (7, 25),
-}
+# The one layer table, shared with db2dxf.py. This file used to
+# carry a reduced copy of it, which is how an imported centreline
+# drew Continuous here and CENTER in its own re-issue, and why an
+# import was missing 27 layers the staging route defines.
+LAYER_STYLE = blocks.LAYER_STYLE
 
 # Must match TEXT_STYLES in topo2cad.py / db2dxf.py.
 # MTEXT background mask, as a multiple of the text height. 'canvas'
@@ -336,11 +334,7 @@ def main(argv=None) -> int:
     for style, font in TEXT_STYLES.items():
         if style not in doc.styles:
             doc.styles.add(style, font=font)
-    for name, (color, lw) in LAYER_STYLE.items():
-        layer = doc.layers.add(name, color=color)
-        layer.dxf.lineweight = lw
-    doc.layers.get("C-PROP-LINE").dxf.linetype = "PHANTOM"
-    doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
+    blocks.apply_layer_table(doc)
     if not a.no_attributes:
         doc.appids.add(GIS_APPID)
 

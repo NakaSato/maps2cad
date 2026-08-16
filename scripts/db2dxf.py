@@ -28,55 +28,16 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import blocks                                              # noqa: E402
+
 # Same NCS layer set the extraction path writes, so drawings from either
 # route drop into the same sheet set.
-LAYER_STYLE = {
-    "C-BLDG-OUTL": (4, 50),
-    "C-BLDG-UNNM": (254, 35),    # footprints OSM has no name for
-    "C-ROAD-EDGE": (30, 35),
-    "C-ROAD-CNTR": (8, 9),
-    "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
-    "C-ROAD-ARRW": (30, 18),     # one-way direction arrows
-    "C-ROAD-BRDG": (7, 40),      # bridges: heavier, over what they cross
-    "C-ROAD-TUNL": (8, 18),      # tunnels: HIDDEN, under the ground
-    "C-ROAD-ROWY": (1, 35),      # right of way, empty and ready to draw
-    "C-TOPO-CONT": (8, 13),
-    "C-TOPO-MAJR": (8, 25),   # index contours: heavier, labelled
-    "C-TOPO-MINR": (8, 9),    # intermediate contours
-    "C-ANNO-TEXT": (2, 25),      # language-neutral: B### codes, elevations
-    "C-ANNO-TEXT-TH": (2, 25),
-    "C-ANNO-TEXT-EN": (7, 25),
-    "C-HYDR-WATR": (5, 18),      # context linework: canals, ponds
-    "C-LAND-VEGT": (3, 13),      # parks, farmland, cemeteries
-    "C-LAND-ZONE": (32, 13),     # built-up land use: residential, industrial
-    "C-SITE-PARK": (140, 13),    # parking areas
-    "C-ANNO-GRID": (253, 9),     # UTM coordinate grid
-    "C-ANNO-DIMS": (2, 18),      # extent dimensions
-    "C-ROAD-PLAZ": (8, 18),      # pedestrian areas and plazas
-    "C-UTIL-LAMP": (51, 13),     # street lighting
-    "C-MISC-OTHR": (9, 9),       # --all-features: whatever no rule claimed
-    "C-MISC-SYMB": (9, 9),
-    "C-RAIL-TRAK": (250, 18),
-    "C-BNDY-BARR": (9, 13),      # walls and fences
-    "C-ANNO-SYMB": (6, 18),      # landmark point symbols
-    "C-UTIL-POWR": (6, 25),      # power lines, pylons and poles
-    "C-UTIL-PIPE": (4, 18),      # pipelines
-    "C-LAND-TREE": (3, 13),      # individual trees
-    "C-ANNO-ADDR": (8, 13),      # house numbers
-    "C-TOPO-SPOT": (8, 18),      # spot heights sampled from the DEM
-    "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
-    # Named places from a third-party source (Overture), with their own
-    # annotation layers so a drafter can freeze C-ANNO-OVTR* and be back to
-    # what OpenStreetMap says. Must match LAYERS in topo2cad.py.
-    "C-ANNO-OVTR": (214, 13),
-    "C-ANNO-OVTR-TH": (214, 18),
-    "C-ANNO-OVTR-EN": (214, 18),
-    "C-ANNO-EXTN": (7, 35),      # crop rectangle on the requested extent
-    "C-ANNO-NORT": (7, 35),
-    "C-ANNO-GPSP": (1, 35),
-    "C-PROP-LINE": (1, 70),
-    "C-PROP-SETB": (2, 25),
-}
+# The layer table lives in blocks.py so gis2cad.py draws on the same
+# layers with the same linetypes; re-exported here because this
+# module's name for it is what the tests and other readers know.
+LAYER_STYLE = blocks.LAYER_STYLE
 
 # Must match TEXT_STYLES / ANNO_STYLE in topo2cad.py — both routes have to
 # hand a drafter the same drawing. AutoCAD renders Thai as ??? without a
@@ -228,16 +189,7 @@ def main(argv=None) -> int:
     for style, font in TEXT_STYLES.items():
         if style not in doc.styles:
             doc.styles.add(style, font=font)
-    for name, (color, lw) in LAYER_STYLE.items():
-        layer = doc.layers.add(name, color=color)
-        layer.dxf.lineweight = lw
-    doc.layers.get("C-PROP-LINE").dxf.linetype = "PHANTOM"
-    doc.layers.get("C-PROP-SETB").dxf.linetype = "DASHED"
-    doc.layers.get("C-ROAD-ROWY").dxf.linetype = "PHANTOM"
-    doc.layers.get("C-ROAD-CNTR").dxf.linetype = "CENTER"
-    doc.layers.get("C-ANNO-EXTN").dxf.linetype = "DASHED"
-    doc.layers.get("C-ROAD-TUNL").dxf.linetype = "HIDDEN"
-    doc.header["$LTSCALE"] = 5.0
+    blocks.apply_layer_table(doc)
 
     # The source OSM tags were staged with the features, so a re-issue is not
     # a drawing stripped of its attributes. Same appid, same 255-byte clip,
@@ -452,18 +404,26 @@ def main(argv=None) -> int:
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
         return m
 
-    # North arrow, derived from the staged extent (drawing furniture, so it
-    # is not staged — the drawing is true-north-up in UTM either way)
+    # Drawing furniture — crop line, dimensions, grid, north arrow — all of
+    # it derives from the requested extent and none of it is staged. A
+    # project created by an import has no requested extent: gis2cad.py
+    # brings features, not a site, and its project row carries 0 x 0. Drawn
+    # anyway, that is a rectangle of four identical points, two zero-length
+    # dimensions and a north arrow scaled to nothing — junk geometry in a
+    # deliverable, which is worse than no furniture at all.
+    has_extent = proj["width_m"] > 0 and proj["height_m"] > 0
     half_w, half_h = proj["width_m"] / 2, proj["height_m"] / 2
-    # Crop rectangle, from the same staged extent topo2cad.py draws it from
-    msp.add_lwpolyline([(cx - half_w, cy - half_h), (cx + half_w, cy - half_h),
-                        (cx + half_w, cy + half_h), (cx - half_w, cy + half_h)],
-                       close=True, dxfattribs={"layer": "C-ANNO-EXTN"})
+    if has_extent:
+        # Crop rectangle, from the same staged extent topo2cad.py draws it from
+        msp.add_lwpolyline(
+            [(cx - half_w, cy - half_h), (cx + half_w, cy - half_h),
+             (cx + half_w, cy + half_h), (cx - half_w, cy + half_h)],
+            close=True, dxfattribs={"layer": "C-ANNO-EXTN"})
     ax_ = cx + half_w * 0.94
     ay = cy + half_h * 0.90
     sz = min(proj["width_m"], proj["height_m"]) * 0.02
     import blocks
-    if a.grid:
+    if a.grid and has_extent:
         spacing = (stage_db.grid_spacing(proj["width_m"], proj["height_m"])
                    if str(a.grid) == "auto" else float(a.grid))
         eastings, northings = stage_db.grid_ticks(
@@ -482,16 +442,26 @@ def main(argv=None) -> int:
             grid_text(f"{gy:,.0f} N", cx - proj["width_m"] / 2 + arm * 2, gy,
                       arm * 1.6, 90.0)
 
-    blocks.add_extent_dimensions(doc, msp, cx, cy, proj["width_m"],
-                                 proj["height_m"], "C-ANNO-DIMS")
-    blocks.add_north_arrow(doc, msp, ax_, ay, sz, "C-ANNO-NORT")
-    msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
-    m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",
-                      dxfattribs={"layer": "C-ANNO-TEXT", "char_height": 5.0,
-                                  "style": "EN_STYLE"})
-    m.set_location((cx + 40, cy),
-                   attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
-    m.set_bg_color("canvas", scale=BG_MASK_SCALE)
+    if has_extent:
+        blocks.add_extent_dimensions(doc, msp, cx, cy, proj["width_m"],
+                                     proj["height_m"], "C-ANNO-DIMS")
+        blocks.add_north_arrow(doc, msp, ax_, ay, sz, "C-ANNO-NORT")
+        # The site marker belongs with the rest of it. Without a requested
+        # extent the project's centre is just the centroid of whatever was
+        # imported, and labelling that "GPS 13.745099999999999,100.5314"
+        # states a coordinate nobody asked for as though someone had.
+        msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
+        m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",
+                          dxfattribs={"layer": "C-ANNO-TEXT",
+                                      "char_height": 5.0,
+                                      "style": "EN_STYLE"})
+        m.set_location((cx + 40, cy),
+                       attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        m.set_bg_color("canvas", scale=BG_MASK_SCALE)
+    else:
+        print("  no requested extent staged for this project (an import "
+              "carries features, not a site) — crop line, dimensions, grid, "
+              "north arrow and site marker skipped")
 
     if a.sheet:
         import datetime
