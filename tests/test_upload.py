@@ -252,3 +252,54 @@ def test_a_first_run_asks_for_no_overlay(tmp_path, monkeypatch):
                         lambda cmd, what, **kw: seen.append(cmd) or "")
     serve.run_generator(_map_only_params())
     assert "--overlay-db" not in seen[0]
+
+
+def test_the_package_keeps_the_names_the_drawing_expects(tmp_path):
+    """The DXF references its background map as "basemap.tif" relative to
+    itself. The per-file download renames on purpose — a folder of
+    "site.dxf" is useless — but a package travels together, so renaming
+    inside it would extract to a drawing with a missing raster."""
+    import zipfile
+
+    run = tmp_path / "job"
+    run.mkdir()
+    for name in ("site.dxf", "basemap.tif", "attributes.csv"):
+        (run / name).write_bytes(b"x")
+    rec = {"id": "abc123", "dir": str(run),
+           "params": {"lat": 14.8165, "lon": 100.5116},
+           "dxf": str(run / "site.dxf"), "tif": str(run / "basemap.tif"),
+           "attrs": str(run / "attributes.csv")}
+    data, name = serve.job_zip(rec)
+    assert name == "maps2cad_14.816500_100.511600.zip"
+    with zipfile.ZipFile(__import__("io").BytesIO(data)) as z:
+        assert set(z.namelist()) == {"site.dxf", "basemap.tif",
+                                     "attributes.csv"}
+
+
+def test_the_package_carries_the_source_table_when_there_is_one(tmp_path):
+    import zipfile
+
+    run = tmp_path / "job"
+    run.mkdir()
+    (run / "site.dxf").write_bytes(b"x")
+    (run / "sources.csv").write_text("source,feature_class,count\n")
+    rec = {"id": "abc", "dir": str(run), "params": {"lat": 0.0, "lon": 0.0},
+           "dxf": str(run / "site.dxf")}
+    data, name = serve.job_zip(rec)
+    with zipfile.ZipFile(__import__("io").BytesIO(data)) as z:
+        assert "sources.csv" in z.namelist()
+    assert name == "maps2cad_abc.zip"
+
+
+def test_a_package_skips_files_that_are_not_there(tmp_path):
+    import zipfile
+
+    run = tmp_path / "job"
+    run.mkdir()
+    (run / "site.dxf").write_bytes(b"x")
+    rec = {"id": "abc", "dir": str(run), "params": {"lat": 1.0, "lon": 2.0},
+           "dxf": str(run / "site.dxf"),
+           "png": str(run / "site_map.png")}      # never written
+    data, _name = serve.job_zip(rec)
+    with zipfile.ZipFile(__import__("io").BytesIO(data)) as z:
+        assert z.namelist() == ["site.dxf"]

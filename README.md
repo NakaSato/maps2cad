@@ -398,6 +398,11 @@ app at a different staging database with `--db`.
 Stdlib only — it shells out to the scripts through `uv run`, so each carries its
 own dependencies.
 
+Each result page also offers the whole run as one zip. It keeps the files
+under the names the drawing expects — `basemap.tif` in particular, which
+the DXF references relative to itself — so the package extracts to a
+drawing that still finds its backdrop.
+
 ### Sharing it over ngrok
 
 ```bash

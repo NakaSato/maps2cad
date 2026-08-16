@@ -471,6 +471,15 @@ that looks like nothing until the drawing opens. The extent is written back
 from the request (`set_extent()`) because an import carries features, not an
 extent, and the crop line, dimensions and grid come from the project row.
 
+*One link hands over the whole run.* `/zip/<job>` packages every file of a
+run under **their on-disk names** — `site.dxf`, `basemap.tif`,
+`attributes.csv`, `sources.csv`, the posters and previews. The per-file
+download route renames deliberately (a folder full of `site.dxf` is
+useless); a package is the opposite case, because the DXF references its
+background map as `basemap.tif` relative to itself and a renamed raster
+extracts to a drawing with a missing backdrop. Handing a colleague the DXF
+alone loses that raster and the table saying where its lines came from.
+
 *An import hands back the drawing it joined, not the file it drew.*
 `/import` writes the upload's own drawing as `import.dxf` and then re-issues
 `site.dxf` from the staging layer, exactly as `compose.py` finishes a run.

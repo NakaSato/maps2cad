@@ -413,6 +413,35 @@ KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          "import_dxf": "import.dxf"}
 
 
+def job_zip(rec: dict) -> tuple[bytes, str]:
+    """Every file of one run, as a zip, under their on-disk names.
+
+    The names matter more here than anywhere else: the DXF references its
+    background map as "basemap.tif" relative to itself, so a package that
+    renamed either would extract to a drawing with a missing raster. The
+    per-file download route renames on purpose (a folder of "site.dxf" is
+    useless); a package is the opposite case — it travels together.
+    """
+    import io
+    import zipfile
+
+    params = rec.get("params") or {}
+    lat, lon = params.get("lat", 0.0), params.get("lon", 0.0)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for kind, name in KINDS.items():
+            path = rec.get(kind)
+            if path and Path(path).is_file():
+                z.write(path, name)
+        # What the drawing is made of, when the run staged anything
+        sources = Path(rec["dir"]) / "sources.csv" if rec.get("dir") else None
+        if sources and sources.is_file():
+            z.write(sources, "sources.csv")
+    stem = (f"maps2cad_{lat:.6f}_{lon:.6f}" if (lat or lon)
+            else f"maps2cad_{rec['id']}")
+    return buf.getvalue(), f"{stem}.zip"
+
+
 def save_job(rec: dict) -> None:
     """Persist a run so history survives a restart."""
     meta = {"id": rec["id"], "params": rec["params"], "when": rec["when"],
@@ -884,6 +913,15 @@ def result_page(rec: dict) -> bytes:
         # so taking one without the other loses the map.
         plain_card("tif", "Backdrop", "Background map"),
     ]
+    # One link for the whole package. Handing a colleague the DXF alone
+    # loses the raster it references and the table saying where its lines
+    # came from; this keeps them together under the names the drawing
+    # expects.
+    files = sum(1 for k in KINDS if rec.get(k))
+    if files > 1:
+        links.append(f'<span class="card"><a href="/zip/{jid}" download>'
+                     f'<b>All {files} files</b>⤓&nbsp; Download package'
+                     f'</a></span>')
 
     # Only offered when the server has Google credentials — an unconfigured
     # button that always errors is worse than no button.
@@ -1545,6 +1583,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b'{"ok":true}', ctype="application/json")
         elif path.startswith("/file/"):
             self.serve_file(path)
+        elif path.startswith("/zip/"):
+            self.serve_zip(path.strip("/").split("/")[-1])
         elif path.startswith("/drive/"):
             self.drive_upload(path.strip("/").split("/")[-1])
         elif path.startswith("/view/"):
@@ -1641,6 +1681,20 @@ class Handler(BaseHTTPRequestHandler):
 <b>Google Drive</b>Open the folder</a></span></div>
 {f'<p class="note">Not uploaded:</p><ul>{skipped}</ul>' if skipped else ''}
 <a class="back" href="/">← Generate another</a>"""))
+
+    def serve_zip(self, jid):
+        with JOBS_LOCK:
+            rec = JOBS.get(jid)
+        if not rec:
+            return self._send(b"Unknown map id", 404, "text/plain")
+        try:
+            data, name = job_zip(rec)
+        except OSError as e:
+            return self._send(f"Could not package this run: {e}".encode(),
+                              500, "text/plain")
+        self._send(data, ctype="application/zip",
+                   extra={"Content-Disposition":
+                          f'attachment; filename="{name}"'})
 
     def serve_file(self, path):
         parts = path.strip("/").split("/")
