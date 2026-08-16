@@ -487,3 +487,25 @@ def test_road_cad_layer(tags, highway, layer):
     from topo2cad import road_cad_layer
 
     assert road_cad_layer(tags, highway) == layer
+
+
+def test_built_up_landuse_is_not_planting():
+    """A factory estate is not a park: a reviewer reads the two
+    differently, so they are separate layers."""
+    from topo2cad import classify_elements
+
+    def area(tags):
+        return {"type": "way", "id": 1, "tags": tags,
+                "geometry": [{"lon": 100.0, "lat": 13.0},
+                             {"lon": 100.001, "lat": 13.0},
+                             {"lon": 100.001, "lat": 13.001},
+                             {"lon": 100.0, "lat": 13.0}]}
+
+    for value in ("industrial", "residential", "commercial"):
+        f = classify_elements([area({"landuse": value})])
+        assert len(f["zoning"]) == 1 and f["green"] == []
+    for value in ("grass", "forest", "farmland"):
+        f = classify_elements([area({"landuse": value})])
+        assert len(f["green"]) == 1 and f["zoning"] == []
+    # leisure stays planting too
+    assert len(classify_elements([area({"leisure": "park"})])["green"]) == 1

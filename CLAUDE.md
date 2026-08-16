@@ -269,6 +269,38 @@ Symbols and their sizes live in `blocks.py` keyed by layer
 layer a point was staged on — a tree that came back pylon-sized would be a
 difference nobody staged.
 
+**Storeys are stored formatted, and built-up land use is not planting.**
+`stage_db.levels_label()` turns `building:levels` (or `height` when there is
+no count) into the `3F` / `12.0 m` a drafter writes, and the *formatted*
+string is the staged column. Two numeric columns would mean the rule in
+Python for the extraction route and the same rule again in the `cad_labels`
+view for the re-issue, and two spellings of one convention is the drift this
+layer exists to prevent. The query also asks for the built-up land-use
+classes it never fetched — residential, commercial, industrial and friends —
+and they draw on `C-LAND-ZONE` rather than `C-LAND-VEGT`: a factory estate
+is not a park, and a reviewer reads the two differently.
+
+**The coordinate grid is computed, never stored.** `grid_spacing()` picks a
+round interval — the same family of numbers the scale bar uses, because a
+grid at 137 m is one nobody can read a coordinate off — and `grid_ticks()`
+returns *round UTM values* rather than offsets from the centre: a line at
+665,700 E is a number a surveyor can use, one at 665,694.02 is not. Both
+live in `stage_db.py` and all three writers call them with the nominal
+extent, which is the only geometry each of them shares, so the grids agree
+without any of it being staged. `--contour-interval` forces the interval
+where a deliverable specifies one; the automatic ~10 levels is for a first
+look, and an interval that would draw hundreds of lines warns rather than
+refuses.
+
+**Parking and gates are drawn regardless of the landmark filter.**
+`amenity=parking` areas go to `C-SITE-PARK` before the POI branch sees
+them, because a site plan needs the parking whether or not a car park
+counts as a landmark worth curating — under the old rule they appeared only
+with `--all-poi`, filed as landmark grounds. Gate nodes
+(`gate|lift_gate|swing_gate|entrance`) draw as an open-leaf symbol on
+`C-BNDY-BARR`: a gate is where you get in, and a plan that shows the fence
+without the gate is missing the part a reviewer looks for.
+
 **Road width is measured where OSM measured it.** `carriageway_width()`
 reads `width` (metres, or feet when the value ends `'`/`ft`), then `lanes`
 × 3.5 m on the trunk classes and × 3.0 m elsewhere, and only then falls
@@ -481,6 +513,35 @@ Anything that writes a name — `serve.py`'s editor, `stage_db.py --set-name`,
 a field-verified Thai name silently plots on the neutral layer. `stage_db.py --set-name/--import-names` then `db2dxf.py` is the
 revision path: it re-issues a corrected drawing in ~0.4 s without touching
 Overpass or the DEM.
+
+**The extent is dimensioned with real DIMENSION entities.**
+`blocks.add_extent_dimensions()` writes two linear dimensions on
+`C-ANNO-DIMS` under a `MAPS2CAD` dimension style, not lines with a number
+beside them: a drafter expects to select one and have it behave like a
+dimension. `render()` is called, because an unrendered dimension has no
+geometry block and viewers draw nothing at all. The text height scales with
+the extent — the same style has to read on a 200 m site plan and an 8 km
+locality map — and the style formats with `dimpost = "<> m"` at zero
+decimals, because this dimensions an extent, not a setting-out. All three
+writers place them from the nominal extent, so they agree without staging.
+Note they are invisible in a whole-drawing plot preview at A3: 3.6 m of text
+across 500 m of ground is four pixels. That is scale, not a defect — the
+geometry is there, and the isolated render shows extension lines,
+arrowheads and `100 m`.
+
+**A sheet carries a legend and a graphic scale bar.** `used_layers()`
+lists only the layers that actually carry an entity, because a key to an
+empty layer is noise and this drawing set creates several empty ones on
+purpose (`C-PROP-LINE`, `C-ROAD-ROWY`). Neither sits behind a filled box:
+a `SOLID` in "white" is ACI 255, which is white only in AutoCAD's palette
+and plots as a black rectangle over the legend everywhere else — and a
+`WIPEOUT` renders the same way in the plot preview. Each label carries its
+own background mask instead, the convention the model-space annotation
+already uses. The bar is four segments, and `nice_bar_length()` bounds the
+*whole* bar rather than one segment: bounding the segment is how it first
+came out 200 mm wide on an A3 sheet. Both are drawn over the viewport
+corner rather than by shrinking the viewport, which would quietly change
+the plot scale `fitting_scale()` promised for every existing sheet.
 
 **Sheets are paper space, drawings are model space.** `sheet.py` (imported by
 `topo2cad.py` and `db2dxf.py`, like `topo2cad.py` is by `mapposter.py`) builds a

@@ -74,3 +74,96 @@ def test_add_sheet_rejects_unknown_size():
     doc = ezdxf.new("R2010", setup=True)
     with pytest.raises(ValueError, match="unknown sheet size"):
         add_sheet(doc, {"centre": (0, 0), "srid": 32648}, size="B3")
+
+
+# ------------------------------------------------------ legend + scale bar
+@pytest.mark.parametrize("scale,step,bar_mm", [
+    (500, 5, 40.0),
+    (1000, 10, 40.0),
+    (2000, 25, 50.0),
+    (5000, 50, 40.0),
+    (20000, 250, 50.0),
+])
+def test_scale_bar_fits_the_paper(scale, step, bar_mm):
+    """Bounding one segment rather than the whole bar is how it first came
+    out 200 mm wide on an A3 sheet."""
+    from sheet import BAR_SEGMENTS, nice_bar_length
+
+    assert nice_bar_length(scale) == step
+    assert step * 1000 / scale * BAR_SEGMENTS == pytest.approx(bar_mm)
+    assert step * 1000 / scale * BAR_SEGMENTS <= 60.0
+
+
+def test_legend_lists_only_layers_that_carry_something():
+    """A key to an empty layer is noise, and this drawing set creates
+    several deliberately empty ones (C-PROP-LINE, C-ROAD-ROWY)."""
+    ezdxf = pytest.importorskip("ezdxf")
+    from sheet import used_layers
+
+    doc = ezdxf.new("R2010", setup=True)
+    for name in ("C-BLDG-OUTL", "C-ROAD-CNTR", "C-PROP-LINE"):
+        doc.layers.add(name)
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (1, 0), (1, 1)],
+                       dxfattribs={"layer": "C-BLDG-OUTL"})
+    msp.add_line((0, 0), (5, 5), dxfattribs={"layer": "C-ROAD-CNTR"})
+    assert used_layers(doc) == ["C-BLDG-OUTL", "C-ROAD-CNTR"]
+
+
+def test_sheet_carries_a_legend_and_a_bar():
+    ezdxf = pytest.importorskip("ezdxf")
+    from sheet import add_sheet
+
+    doc = ezdxf.new("R2010", setup=True)
+    doc.layers.add("C-BLDG-OUTL", color=4)
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10)],
+                                    dxfattribs={"layer": "C-BLDG-OUTL"})
+    layout = add_sheet(doc, {"centre": (100.0, 200.0), "srid": 32647,
+                             "extent": (400, 300)}, size="A3", scale=2000)
+    texts = [e.text for e in layout if e.dxftype() == "MTEXT"]
+    assert any("LEGEND" in s for s in texts)
+    assert any("อาคาร" in s for s in texts)          # the layer that is used
+    assert any("metres" in s for s in texts)         # the bar's unit label
+    # ...and nothing about a layer with no entities on it
+    assert not any("Property line" in s for s in texts)
+
+
+# ------------------------------------------------------ extent dimensions
+def test_extent_dimensions_measure_the_extent():
+    """Real DIMENSION entities, not lines with a number beside them: a
+    drafter expects to select one and see it behave like a dimension."""
+    ezdxf = pytest.importorskip("ezdxf")
+    import blocks
+
+    doc = ezdxf.new("R2010", setup=True)
+    doc.styles.add("EN_STYLE", font="arial.ttf")
+    doc.layers.add("C-ANNO-DIMS", color=2)
+    msp = doc.modelspace()
+    blocks.add_extent_dimensions(doc, msp, 665694.0, 1520106.0, 400.0, 300.0,
+                                 "C-ANNO-DIMS")
+    dims = msp.query("DIMENSION")
+    assert len(dims) == 2
+    assert {round(d.get_measurement()) for d in dims} == {400, 300}
+    assert {d.dxf.layer for d in dims} == {"C-ANNO-DIMS"}
+    assert {d.dxf.dimstyle for d in dims} == {blocks.DIM_STYLE}
+    # rendered, or there is nothing for a viewer to draw
+    for d in dims:
+        block = doc.blocks[d.dxf.geometry]
+        kinds = {e.dxftype() for e in block}
+        assert "LINE" in kinds and "MTEXT" in kinds
+
+
+def test_dim_style_scales_with_the_drawing():
+    """The same style has to read on a 200 m site plan and an 8 km
+    locality map."""
+    ezdxf = pytest.importorskip("ezdxf")
+    import blocks
+
+    for extent, expect_bigger in ((200.0, False), (8000.0, True)):
+        doc = ezdxf.new("R2010", setup=True)
+        doc.layers.add("C-ANNO-DIMS")
+        blocks.add_extent_dimensions(doc, doc.modelspace(), 0, 0, extent,
+                                     extent, "C-ANNO-DIMS")
+        height = doc.dimstyles.get(blocks.DIM_STYLE).dxf.dimtxt
+        assert (height > 10.0) is expect_bigger
+        assert height >= 2.0          # never smaller than legible

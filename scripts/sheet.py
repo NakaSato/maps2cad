@@ -39,7 +39,7 @@ def _line(msp, x1, y1, x2, y2, layer, lw=25):
                  dxfattribs={"layer": layer, "lineweight": lw})
 
 
-def _text(msp, s, x, y, height, layer, bold=False):
+def _text(msp, s, x, y, height, layer, bold=False, mask=False):
     from ezdxf.enums import MTextEntityAlignment
 
     # The title block is bilingual (มาตราส่วน, วันที่ …), so it always uses
@@ -49,10 +49,73 @@ def _text(msp, s, x, y, height, layer, bold=False):
                                           "char_height": height,
                                           "style": TITLE_STYLE})
     m.set_location((x, y), attachment_point=MTextEntityAlignment.MIDDLE_LEFT)
+    if mask:
+        # The same trick the model-space annotation uses: the text cuts a
+        # clean hole through whatever it crosses. None would REMOVE it.
+        m.set_bg_color("canvas", scale=1.1)
     return m
 
 
 ROUND_SCALES = [200, 250, 500, 1000, 1250, 2000, 2500, 5000, 10000, 20000]
+
+# What each layer is, for the legend. Bilingual because the sheet is read
+# by a Thai reviewer and filed by an engineer who may not be. Only layers
+# that actually carry something are listed — a key to an empty layer is
+# noise, and this drawing set creates several deliberately empty ones.
+LEGEND_LABELS = {
+    "C-BLDG-OUTL": "อาคาร / Building",
+    "C-ROAD-CNTR": "ถนน (แนวกลาง) / Road centreline",
+    "C-ROAD-EDGE": "ขอบทาง / Edge of pavement",
+    "C-ROAD-PATH": "ทางเดิน / Footway",
+    "C-ROAD-ARRW": "ทิศทางเดินรถ / One-way",
+    "C-ROAD-BRDG": "สะพาน / Bridge",
+    "C-ROAD-TUNL": "อุโมงค์ / Tunnel",
+    "C-TOPO-MAJR": "เส้นชั้นความสูงหลัก / Index contour",
+    "C-TOPO-MINR": "เส้นชั้นความสูงรอง / Contour",
+    "C-TOPO-SPOT": "ระดับจุด / Spot height",
+    "C-HYDR-WATR": "แหล่งน้ำ / Water",
+    "C-LAND-VEGT": "พื้นที่สีเขียว / Vegetation",
+    "C-LAND-ZONE": "การใช้ที่ดิน / Land use",
+    "C-LAND-TREE": "ต้นไม้ / Tree",
+    "C-RAIL-TRAK": "ทางรถไฟ / Railway",
+    "C-BNDY-BARR": "รั้ว ประตู / Fence, gate",
+    "C-UTIL-POWR": "สายไฟฟ้า เสา / Power line, pylon",
+    "C-UTIL-PIPE": "ท่อ / Pipeline",
+    "C-SITE-PARK": "ที่จอดรถ / Parking",
+    "C-SITE-POI": "พื้นที่สำคัญ / Landmark grounds",
+    "C-ANNO-SYMB": "สถานที่สำคัญ / Landmark",
+    "C-ANNO-GRID": "กริดพิกัด UTM / UTM grid",
+    "C-ANNO-EXTN": "ขอบเขตพื้นที่ / Limit of extent",
+    "C-PROP-LINE": "แนวเขตที่ดิน / Property line",
+}
+
+
+def used_layers(doc) -> list:
+    """Layers that carry at least one entity in model space, in the order
+    the legend lists them."""
+    present = {e.dxf.layer for e in doc.modelspace()}
+    return [name for name in LEGEND_LABELS if name in present]
+
+
+# The bar is drawn as four segments, so the step is a quarter of the whole
+BAR_SEGMENTS = 4
+
+
+def nice_bar_length(scale, max_mm=60.0):
+    """Ground distance per segment, so the whole bar fits `max_mm`.
+
+    Bounding one segment instead of the bar is how it first came out
+    200 mm wide on an A3 sheet — four segments of the length that fitted.
+    """
+    ground = max_mm * scale / 1000.0        # metres the whole bar may span
+    best = 1
+    for step in (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500,
+                 1000, 2000, 5000):
+        if step * BAR_SEGMENTS <= ground:
+            best = step
+        else:
+            break
+    return best
 
 
 def fitting_scale(extent_w_m, extent_h_m, size="A3"):
@@ -66,6 +129,65 @@ def fitting_scale(extent_w_m, extent_h_m, size="A3"):
         if (extent_w_m * 1000 / s) <= vp_w and (extent_h_m * 1000 / s) <= vp_h:
             return s, vp_w, vp_h
     return ROUND_SCALES[-1], vp_w, vp_h
+
+
+def _scale_bar(psp, x, y, scale, layer_frame, layer_text):
+    """A divided graphic scale bar: the thing a reader measures with when
+    the sheet has been photocopied and the ratio no longer holds."""
+    step = nice_bar_length(scale)
+    seg_mm = step * 1000.0 / scale
+    height = 1.6
+    for i in range(BAR_SEGMENTS):
+        x0 = x + i * seg_mm
+        # Alternating filled and open boxes, the standard bar
+        if i % 2 == 0:
+            psp.add_solid([(x0, y), (x0 + seg_mm, y),
+                           (x0, y + height), (x0 + seg_mm, y + height)],
+                          dxfattribs={"layer": layer_frame})
+        else:
+            psp.add_lwpolyline([(x0, y), (x0 + seg_mm, y),
+                                (x0 + seg_mm, y + height), (x0, y + height)],
+                               close=True, dxfattribs={"layer": layer_frame})
+    for i in (0, BAR_SEGMENTS // 2, BAR_SEGMENTS):
+        _text(psp, f"{step * i:g}", x + i * seg_mm - 1.5, y - 2.0, 1.8,
+              layer_text, mask=True)
+    _text(psp, "เมตร / metres", x + BAR_SEGMENTS * seg_mm + 2.5, y + 0.6, 1.8,
+          layer_text, mask=True)
+    return BAR_SEGMENTS * seg_mm
+
+
+def _legend(psp, doc, x, y, layer_frame, layer_text, max_rows=14):
+    """A key to the layers this drawing actually uses.
+
+    Drawn over the viewport corner on a masked box, which is where a
+    drafter expects it and what keeps the viewport at the size
+    fitting_scale() promised — making room by shrinking it would quietly
+    change the plot scale of every existing sheet.
+    """
+    names = used_layers(doc)[:max_rows]
+    if not names:
+        return
+    row_h, width = 4.2, 62.0
+    height = row_h * (len(names) + 1) + 2
+    # No fill behind it. A SOLID in "white" is ACI 255, which is white only
+    # in AutoCAD's palette and plots as a black rectangle elsewhere, and a
+    # WIPEOUT renders the same way in the plot preview. Each label carries
+    # its own background mask instead — the convention the model-space
+    # annotation already uses, and one that survives every renderer.
+    psp.add_lwpolyline([(x, y - height), (x + width, y - height),
+                        (x + width, y), (x, y)], close=True,
+                       dxfattribs={"layer": layer_frame, "lineweight": 35})
+    _text(psp, "สัญลักษณ์ / LEGEND", x + 3, y - 3.0, 2.2, layer_text,
+          mask=True)
+    row_y = y - 3.0 - row_h
+    for name in names:
+        colour = doc.layers.get(name).dxf.color if name in doc.layers else 7
+        psp.add_line((x + 3, row_y), (x + 12, row_y),
+                     dxfattribs={"layer": layer_frame, "color": colour,
+                                 "lineweight": 35})
+        _text(psp, LEGEND_LABELS[name], x + 14, row_y, 1.9, layer_text,
+              mask=True)
+        row_y -= row_h
 
 
 def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
@@ -138,6 +260,13 @@ def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
         view_center_point=(cx, cy),
         view_height=view_height_m,
         dxfattribs={"layer": LAYERS["viewport"]})
+
+    # ---- scale bar and legend, over the viewport corner ------------------
+    bar_x = margin + 6
+    bar_y = margin + 8
+    _scale_bar(psp, bar_x, bar_y, scale, LAYERS["frame"], LAYERS["text"])
+    _legend(psp, doc, margin + 6, ph - margin - 6,
+            LAYERS["frame"], LAYERS["text"])
 
     # ---- title block contents ------------------------------------------
     tx = bx + 4

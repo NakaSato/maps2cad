@@ -382,7 +382,8 @@ def intersects_box(pts, box, margin=0.0005):
 # `path` is footways/cycleways/steps, kept apart because they are separate
 # NCS layers here (a 1.5 m path drawn with two kerb lines reads as a road).
 TYPE_CHOICES = ("building", "road", "path", "water", "green", "rail",
-                "barrier", "landmark", "power", "tree")
+                "barrier", "landmark", "power", "tree", "landuse",
+                "parking")
 
 
 def select_types(features, types):
@@ -414,6 +415,12 @@ def select_types(features, types):
         keep["points"] = [m for m in keep["points"] if m[0] != "power"]
     if "tree" not in types:
         keep["points"] = [m for m in keep["points"] if m[0] != "tree"]
+    if "landuse" not in types:
+        keep["zoning"] = []
+    if "parking" not in types:
+        keep["parking"] = []
+    if "barrier" not in types:
+        keep["points"] = [m for m in keep["points"] if m[0] != "gate"]
     return keep
 
 
@@ -506,6 +513,10 @@ def parse_args(argv=None):
                         "--layer-by highway gives C-ROAD-CNTR-RESIDENTIAL. "
                         "Affects the DXF only; --db always stages the base "
                         "NCS layer, which is the layer set db2dxf.py knows.")
+    p.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
+                   help="Draw a UTM coordinate grid: crosses every SPACING "
+                        "metres with the easting and northing along two "
+                        "edges. Bare --grid picks a round interval.")
     p.add_argument("--basemap", nargs="?", const="osm", metavar="PROVIDER",
                    help="Fetch a background map for the extent and place "
                         "it beneath the linework: osm, opentopomap, "
@@ -651,11 +662,13 @@ def main(argv=None) -> int:
     pois, site_pois = features["pois"], features["site_pois"]
     power, pipelines = features["power"], features["pipelines"]
     point_marks = features["points"]
+    zoning, parking = features["zoning"], features["parking"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, "
           f"{len(water)} water, {len(green)} green, {len(rails)} rail, "
           f"{len(barriers)} barriers, {len(pois)} POI points, "
           f"{len(site_pois)} POI areas, {len(power)} power, "
-          f"{len(pipelines)} pipeline, {len(point_marks)} pylon/tree")
+          f"{len(pipelines)} pipeline, {len(point_marks)} pylon/tree, "
+          f"{len(zoning)} land-use, {len(parking)} parking")
 
     # The output path is resolved before drawing, not after: a background
     # map is written beside the .dxf, and the DXF stores a path to it.
@@ -686,6 +699,12 @@ def main(argv=None) -> int:
                            ("poi", 6, 18), ("site_poi", 5, 25),
                            ("power", 6, 25), ("pipeline", 4, 18),
                            ("tree", 3, 13), ("addr", 8, 13),
+                           ("zoning", 32, 13), ("parking", 140, 13),
+                           ("grid", 253, 9), ("dims", 2, 18),
+                           # Created empty: this route has no DEM to sample,
+                           # but db2dxf.py defines the layer either way and
+                           # the two layer tables have to agree.
+                           ("spot", 8, 18),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(t2c.LAYERS[key], color=color)
@@ -801,10 +820,15 @@ def main(argv=None) -> int:
         if name or not a.names_only:
             mtext_bilingual(th, en, cx, cy, 3.5,
                             fallback=None if a.names_only else code)
-        house = tags_for(tag_index, fid).get("addr:housenumber")
+        btags = tags_for(tag_index, fid)
+        house = btags.get("addr:housenumber")
         if house:
             hx, hy = t2c.offset_along_normal(cx, cy, 0.0, -3.0)
             mtext(house, hx, hy, 2.2, layer=t2c.LAYERS["addr"])
+        levels = _anchor_rules.levels_label(btags)
+        if levels:
+            lx2, ly2 = t2c.offset_along_normal(cx, cy, 0.0, -5.4)
+            mtext(levels, lx2, ly2, 2.2, layer=t2c.LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         drawn.append({"feature_id": fid, "feature_type": "building",
                       "cad_layer": poly_layer,
@@ -814,6 +838,7 @@ def main(argv=None) -> int:
                           "osm_name": name or "", "display_name": name or code,
                           "name_th": th or "", "name_en": en or "",
                           "addr_house": house or "",
+                          "levels_label": levels,
                           "source": "openstreetmap",
                           "latitude": round(blat, 8),
                           "longitude": round(blon, 8)})
@@ -923,9 +948,12 @@ def main(argv=None) -> int:
                        fid)
                 runs.append(upts)
             if runs:
+                # The feature's own name, not `name` from the enclosing
+                # scope: that was the *last building's*, and on a file with
+                # no buildings it was not assigned at all.
                 drawn.append({"feature_id": fid, "feature_type": kind,
                               "cad_layer": cad_layer,
-                              "display_name": name or ""})
+                              "display_name": (th or en) or ""})
                 staged_context.append({
                     "feature_id": fid, "kind": kind, "cad_layer": base,
                     "name_th": th or "", "name_en": en or "",
@@ -936,6 +964,8 @@ def main(argv=None) -> int:
     draw_lines(green, "green", t2c.LAYERS["green"], label=True)
     draw_lines(rails, "rail", t2c.LAYERS["rail"])
     draw_lines(barriers, "barrier", t2c.LAYERS["barrier"])
+    draw_lines(zoning, "zoning", t2c.LAYERS["zoning"], label=True)
+    draw_lines(parking, "parking", t2c.LAYERS["parking"], label=True)
     draw_lines(power, "power", t2c.LAYERS["power"])
     draw_lines(pipelines, "pipeline", t2c.LAYERS["pipeline"])
 
@@ -983,14 +1013,16 @@ def main(argv=None) -> int:
     for kind, plon, plat, fid, ptype in sorted(point_marks,
                                                key=lambda m: m[3]):
         px, py = to_utm.transform(plon, plat)
-        base = t2c.LAYERS["tree" if kind == "tree" else "power"]
+        base = t2c.LAYERS[{"tree": "tree",
+                           "gate": "barrier"}.get(kind, "power")]
         layer = layer_for(base, fid)
         attach(blocks.add_symbol(doc, msp, px, py,
                                  blocks.symbol_size(base), layer), fid)
         drawn.append({"feature_id": fid, "feature_type": kind,
                       "cad_layer": layer, "display_name": ""})
         staged_pois.append({"feature_id": fid,
-                            "poi_key": "natural" if kind == "tree" else "power",
+                            "poi_key": {"tree": "natural",
+                                        "gate": "barrier"}.get(kind, "power"),
                             "poi_type": ptype, "name_th": "", "name_en": "",
                             "display_name": "", "cad_layer": base,
                             "x": px, "y": py,
@@ -1018,6 +1050,29 @@ def main(argv=None) -> int:
     msp.add_lwpolyline([(cx - hw, cy - hh), (cx + hw, cy - hh),
                         (cx + hw, cy + hh), (cx - hw, cy + hh)],
                        close=True, dxfattribs={"layer": t2c.LAYERS["extent"]})
+    if a.grid:
+        spacing = (_anchor_rules.grid_spacing(ext_w, ext_h)
+                   if str(a.grid) == "auto" else float(a.grid))
+        eastings, northings = _anchor_rules.grid_ticks(cx, cy, ext_w, ext_h,
+                                                       spacing)
+        arm = min(ext_w, ext_h) * 0.006
+        for gx in eastings:
+            for gy in northings:
+                msp.add_line((gx - arm, gy), (gx + arm, gy),
+                             dxfattribs={"layer": t2c.LAYERS["grid"]})
+                msp.add_line((gx, gy - arm), (gx, gy + arm),
+                             dxfattribs={"layer": t2c.LAYERS["grid"]})
+        for gx in eastings:
+            mtext(f"{gx:,.0f} E", gx, cy - hh + arm * 2, arm * 1.6,
+                  layer=t2c.LAYERS["grid"])
+        for gy in northings:
+            mtext(f"{gy:,.0f} N", cx - hw + arm * 2, gy, arm * 1.6,
+                  rotation=90.0, layer=t2c.LAYERS["grid"])
+        print(f"Grid: {spacing:g} m, {len(eastings)} x {len(northings)} "
+              "lines")
+
+    blocks.add_extent_dimensions(doc, msp, cx, cy, ext_w, ext_h,
+                                 t2c.LAYERS["dims"])
     blocks.add_north_arrow(doc, msp, cx + hw * 0.94, cy + hh * 0.90,
                            min(ext_w, ext_h) * 0.02, t2c.LAYERS["north"])
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": t2c.LAYERS["site"]})
@@ -1067,7 +1122,7 @@ def main(argv=None) -> int:
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "addr_house", "source",
+            "name_th", "name_en", "addr_house", "levels_label", "source",
             "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)

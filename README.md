@@ -428,7 +428,7 @@ under everything — greyscaled under `--style bw`, where a colour map would
 fight the linework — with the provider's credit printed under the frame. Both
 are opt-in: a poster is a denser medium than a drawing.
 
-## Plottable sheet (paper space + title block)
+## Plottable sheet (paper space + title block, legend, scale bar)
 
 Model space holds the survey in real metres. `--sheet` adds the sheet you
 actually plot — a paper-space layout with a border, a viewport locked to a
@@ -482,12 +482,16 @@ DXF drops straight into an engineering drawing set.
 | `C-ROAD-ROWY` | Empty, PHANTOM — for a drafter to draw the legal right-of-way |
 | `C-TOPO-MAJR` / `C-TOPO-MINR` | Contours as 3D polylines at true elevation; every 5th is an index contour, labelled |
 | `C-HYDR-WATR` / `C-LAND-VEGT` | Canals, ponds; parks, farmland, cemeteries |
-| `C-RAIL-TRAK` / `C-BNDY-BARR` | Railways; walls and fences |
+| `C-RAIL-TRAK` / `C-BNDY-BARR` | Railways; walls, fences, and gates as access-point symbols |
 | `C-ANNO-SYMB` / `C-SITE-POI` | Landmark point symbols; landmark grounds with no building tag |
 | `C-UTIL-POWR` / `C-UTIL-PIPE` | Power lines with their pylons and poles; pipelines |
 | `C-LAND-TREE` | Individual trees (`natural=tree`), drawn as their own symbol |
-| `C-ANNO-ADDR` | House numbers (`addr:housenumber`), small, under the building label |
+| `C-ANNO-ADDR` | House numbers (`addr:housenumber`) and storeys (`3F`), under the building label |
+| `C-LAND-ZONE` | Built-up land use — residential, commercial, industrial |
+| `C-SITE-PARK` | Parking areas, drawn whatever the landmark filter says |
 | `C-TOPO-SPOT` | Spot heights sampled from the DEM on a 5 × 5 grid |
+| `C-ANNO-GRID` | UTM coordinate grid (`--grid`), crosses on round eastings and northings |
+| `C-ANNO-DIMS` | Extent dimensions as real DIMENSION entities |
 | `C-ANNO-TEXT` | Language-neutral text: B### codes, contour elevations, the GPS tag |
 | `C-ANNO-TEXT-TH` / `C-ANNO-TEXT-EN` | Thai and Latin labels — freeze one to plot a single-language sheet |
 | `C-ANNO-EXTN` | The requested extent, DASHED. A crop line, not a clip: linework runs ~55 m past it and footprints are never cut |
@@ -499,6 +503,9 @@ Carriageway width comes from the OSM `width` or `lanes` tags where a mapper
 supplied them (`width=4` draws 4 m, not the 6 m the class would guess);
 `ROAD_WIDTH_M` is the fallback. `--hatch` fills water and vegetation with the
 CAD patterns a drafter expects, and `--no-spots` turns off the levels.
+`--grid` adds the UTM coordinate grid a survey sheet carries, and
+`--contour-interval 0.5` forces an interval where a deliverable specifies
+one instead of letting the DEM's range choose.
 
 Coordinates are metres in the UTM zone **derived from the coordinate** —
 EPSG:32647 west of 102°E, EPSG:32648 east of it. Nothing is hardcoded:

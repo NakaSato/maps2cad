@@ -47,6 +47,10 @@ LAYER_STYLE = {
     "C-ANNO-TEXT-EN": (7, 25),
     "C-HYDR-WATR": (5, 18),      # context linework: canals, ponds
     "C-LAND-VEGT": (3, 13),      # parks, farmland, cemeteries
+    "C-LAND-ZONE": (32, 13),     # built-up land use: residential, industrial
+    "C-SITE-PARK": (140, 13),    # parking areas
+    "C-ANNO-GRID": (253, 9),     # UTM coordinate grid
+    "C-ANNO-DIMS": (2, 18),      # extent dimensions
     "C-RAIL-TRAK": (250, 18),
     "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols
@@ -83,6 +87,7 @@ ANNO_TEXT_STYLE = {
     # Digits either way, and off both language layers on purpose
     "C-ANNO-ADDR": "EN_STYLE",
     "C-TOPO-SPOT": "EN_STYLE",
+    "C-ANNO-GRID": "EN_STYLE",
 }
 
 
@@ -175,6 +180,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-contours", action="store_true")
     ap.add_argument("--no-spots", action="store_true",
                     help="Leave the staged spot heights off the drawing")
+    ap.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
+                    help="Draw the UTM coordinate grid (same rule as "
+                         "topo2cad.py --grid)")
     ap.add_argument("--hatch", action="store_true",
                     help="Hatch water and vegetation areas (same patterns "
                          "topo2cad.py --hatch uses)")
@@ -404,6 +412,15 @@ def main(argv=None) -> int:
                                   always_xy=True)
     cx, cy = to_utm.transform(proj["lon"], proj["lat"])
 
+    def grid_text(text, x, y, height, rotation):
+        m = msp.add_mtext(text, dxfattribs={
+            "layer": "C-ANNO-GRID", "char_height": height,
+            "style": "EN_STYLE"})
+        m.set_location((x, y), rotation=rotation,
+                       attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+        m.set_bg_color("canvas", scale=BG_MASK_SCALE)
+        return m
+
     # North arrow, derived from the staged extent (drawing furniture, so it
     # is not staged — the drawing is true-north-up in UTM either way)
     half_w, half_h = proj["width_m"] / 2, proj["height_m"] / 2
@@ -415,6 +432,27 @@ def main(argv=None) -> int:
     ay = cy + half_h * 0.90
     sz = min(proj["width_m"], proj["height_m"]) * 0.02
     import blocks
+    if a.grid:
+        spacing = (stage_db.grid_spacing(proj["width_m"], proj["height_m"])
+                   if str(a.grid) == "auto" else float(a.grid))
+        eastings, northings = stage_db.grid_ticks(
+            cx, cy, proj["width_m"], proj["height_m"], spacing)
+        arm = min(proj["width_m"], proj["height_m"]) * 0.006
+        for gx in eastings:
+            for gy in northings:
+                msp.add_line((gx - arm, gy), (gx + arm, gy),
+                             dxfattribs={"layer": "C-ANNO-GRID"})
+                msp.add_line((gx, gy - arm), (gx, gy + arm),
+                             dxfattribs={"layer": "C-ANNO-GRID"})
+        for gx in eastings:
+            grid_text(f"{gx:,.0f} E", gx, cy - proj["height_m"] / 2 + arm * 2,
+                      arm * 1.6, 0.0)
+        for gy in northings:
+            grid_text(f"{gy:,.0f} N", cx - proj["width_m"] / 2 + arm * 2, gy,
+                      arm * 1.6, 90.0)
+
+    blocks.add_extent_dimensions(doc, msp, cx, cy, proj["width_m"],
+                                 proj["height_m"], "C-ANNO-DIMS")
     blocks.add_north_arrow(doc, msp, ax_, ay, sz, "C-ANNO-NORT")
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
     m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",

@@ -105,6 +105,16 @@ def parse_args():
                         "dense site this is mostly restaurants and cafes: 144 "
                         "landmark points instead of 9 over 770 x 410 m in "
                         "central Bangkok.")
+    p.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
+                   help="Draw a UTM coordinate grid: crosses at every "
+                        "SPACING metres with the easting and northing "
+                        "written along two edges. Bare --grid picks a round "
+                        "interval giving about six lines across the extent.")
+    p.add_argument("--contour-interval", type=float, metavar="M",
+                   help="Force the contour interval in metres instead of "
+                        "letting the DEM's own range pick one (~10 levels). "
+                        "A deliverable that specifies 0.5 m contours needs "
+                        "this; the automatic choice is for a first look.")
     p.add_argument("--no-spots", action="store_true",
                    help="Do not sample spot heights off the DEM. The default "
                         "writes a 5 x 5 grid of levelled points on "
@@ -186,8 +196,11 @@ def fetch_osm(s, w, n, e):
       way["natural"="water"]({s},{w},{n},{e});
       way["leisure"~"^(park|garden|pitch|playground|golf_course)$"]({s},{w},{n},{e});
       way["landuse"~"^(grass|forest|meadow|orchard|farmland|cemetery)$"]({s},{w},{n},{e});
+      way["landuse"~"^(residential|commercial|industrial|retail|construction|quarry|military|education|religious)$"]({s},{w},{n},{e});
       way["railway"]({s},{w},{n},{e});
       way["barrier"]({s},{w},{n},{e});
+      node["barrier"~"^(gate|lift_gate|swing_gate|entrance)$"]({s},{w},{n},{e});
+      way["amenity"="parking"]({s},{w},{n},{e});
       way["power"]({s},{w},{n},{e});
       way["man_made"="pipeline"]({s},{w},{n},{e});
       node["power"~"^(tower|pole|portal|transformer|substation)$"]({s},{w},{n},{e});
@@ -394,6 +407,13 @@ def poi_kind(tags, curated=True):
     return None
 
 
+# Land use that is built on rather than planted. The green branch keeps
+# grass, forest, farmland and the rest; these read as zoning on a plan.
+BUILT_UP_LANDUSE = {"residential", "commercial", "industrial", "retail",
+                    "construction", "quarry", "military", "education",
+                    "religious"}
+
+
 def source_tags(elements):
     """feature_id -> the element's original OSM tags.
 
@@ -457,15 +477,20 @@ def classify_elements(elements, curated=True):
     """
     buildings, roads, pois, site_pois = [], [], [], []
     water, green, rails, barriers = [], [], [], []
-    power, pipelines, points = [], [], []
+    power, pipelines, points, zoning = [], [], [], []
+    parking = []
 
     def kind_of(tags):
         return poi_kind(tags, curated=curated)
 
     for el in elements:
         tags = el.get("tags", {})
-        if el["type"] == "node" and (tags.get("power")
-                                     or tags.get("natural") == "tree"):
+        if el["type"] == "node" and tags.get("barrier"):
+            # A gate is an access point; a site plan shows where you get in
+            points.append(("gate", el["lon"], el["lat"],
+                           f"node/{el['id']}", tags["barrier"]))
+        elif el["type"] == "node" and (tags.get("power")
+                                       or tags.get("natural") == "tree"):
             # Unnamed by nature: a pylon or a tree is identified by its
             # symbol, not by a label, so these never reach the POI branch.
             kind = "tree" if tags.get("natural") == "tree" else "power"
@@ -487,6 +512,10 @@ def classify_elements(elements, curated=True):
                               tags["highway"], fid, oneway_dir(tags)))
             elif "waterway" in tags or tags.get("natural") == "water":
                 water.append((names_by_lang(tags), pts, fid))
+            elif tags.get("amenity") == "parking" and len(pts) >= 3:
+                parking.append((names_by_lang(tags), pts, fid))
+            elif tags.get("landuse") in BUILT_UP_LANDUSE:
+                zoning.append((names_by_lang(tags), pts, fid))
             elif "leisure" in tags or "landuse" in tags:
                 green.append((names_by_lang(tags), pts, fid))
             elif "railway" in tags:
@@ -539,7 +568,8 @@ def classify_elements(elements, curated=True):
     return {"buildings": buildings, "roads": roads, "water": water,
             "green": green, "rails": rails, "barriers": barriers,
             "pois": pois, "site_pois": site_pois,
-            "power": power, "pipelines": pipelines, "points": points}
+            "power": power, "pipelines": pipelines, "points": points,
+            "zoning": zoning, "parking": parking}
 
 
 # Carriageway width in metres per highway class, used to draw each road as
@@ -706,6 +736,20 @@ LAYERS = {
     # Spot heights: the elevation at a point, which is what a surveyor
     # levels to. Contours give the shape, a spot height gives the number.
     "spot": "C-TOPO-SPOT",
+    # Built-up land use — residential, commercial, industrial. Kept off
+    # C-LAND-VEGT, which is planting: a factory estate is not a park, and a
+    # reviewer reads the two differently.
+    "zoning": "C-LAND-ZONE",
+    # UTM coordinate grid: crosses at the intersections with the easting
+    # and northing written along two edges, which is how a survey sheet
+    # lets a reader take a coordinate off the paper.
+    "grid": "C-ANNO-GRID",
+    # Real DIMENSION entities on the extent, so the drawing states its own
+    # size instead of leaving a reviewer to measure it.
+    "dims": "C-ANNO-DIMS",
+    # Parking: drawn whatever the POI filter says, because a site plan
+    # needs the parking whether or not a car park counts as a landmark.
+    "parking": "C-SITE-PARK",
     # House numbers, small and language-neutral, under the building label.
     "addr": "C-ANNO-ADDR",
     # Landmark grounds that carry no building tag — hospital and school
@@ -750,6 +794,7 @@ ANNO_STYLE = {
     "C-ANNO-ADDR": (8, "EN_STYLE"),
     # An elevation is a number; it belongs with the neutral annotation
     "C-TOPO-SPOT": (8, "EN_STYLE"),
+    "C-ANNO-GRID": (253, "EN_STYLE"),
 }
 
 # Vertical gap between the English and Thai label of the same feature, as a
@@ -1042,9 +1087,15 @@ def main():
     lo, hi = np.nanpercentile(smooth, [2, 98])
     span = max(hi - lo, 1.0)
     # pick a "nice" interval giving ~10 levels
-    for interval in (0.5, 1, 2, 5, 10, 20, 50):
-        if span / interval <= 12:
-            break
+    interval = a.contour_interval or 0.0
+    if interval <= 0:
+        for interval in (0.5, 1, 2, 5, 10, 20, 50):
+            if span / interval <= 12:
+                break
+    elif span / interval > 400:
+        # 0.1 m contours over 40 m of relief is 400 lines nobody can read
+        print(f"WARNING: a {interval:g} m interval over {span:.0f} m of "
+              "relief would draw hundreds of contours; drawing them anyway.")
     levels = np.arange(math.floor(lo / interval) * interval,
                        math.ceil(hi / interval) * interval + interval, interval)
     print(f"Contour interval: {interval} m ({len(levels)} levels)")
@@ -1071,11 +1122,13 @@ def main():
     pois, site_pois = features["pois"], features["site_pois"]
     power, pipelines = features["power"], features["pipelines"]
     point_marks = features["points"]
+    zoning, parking = features["zoning"], features["parking"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas, "
           f"{len(power)} power, {len(pipelines)} pipeline, "
-          f"{len(point_marks)} pylon/tree")
+          f"{len(point_marks)} pylon/tree/gate, {len(zoning)} land-use, "
+          f"{len(parking)} parking")
 
     if not a.no_ml:
         # Always supplement, not only when OSM is nearly empty. The old
@@ -1106,7 +1159,9 @@ def main():
                            ("poi", 6, 18), ("site_poi", 5, 25),
                            ("power", 6, 25), ("pipeline", 4, 18),
                            ("tree", 3, 13), ("addr", 8, 13),
-                           ("spot", 8, 18),
+                           ("spot", 8, 18), ("zoning", 32, 13),
+                           ("grid", 253, 9), ("dims", 2, 18),
+                           ("parking", 140, 13),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(LAYERS[key], color=color)
@@ -1290,10 +1345,16 @@ def main():
         # House number under the label, small and language-neutral — the
         # same row cad_labels emits, at the same offset, so a re-issue puts
         # it in the same place.
-        house = (tag_index.get(fid) or {}).get("addr:housenumber")
+        btags = tag_index.get(fid) or {}
+        house = btags.get("addr:housenumber")
         if house:
             hx, hy = offset_along_normal(cx, cy, 0.0, -3.0)
             mtext(house, hx, hy, 2.2, layer=LAYERS["addr"])
+        # Storeys under the number, at the offset cad_labels uses
+        levels = _anchor_rules.levels_label(btags)
+        if levels:
+            lx2, ly2 = offset_along_normal(cx, cy, 0.0, -5.4)
+            mtext(levels, lx2, ly2, 2.2, layer=LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         record(fid, "building", LAYERS["building"], label)
         blon, blat = to_wgs.transform(cx, cy)
@@ -1301,6 +1362,7 @@ def main():
                           "osm_name": name or "", "display_name": label,
                           "name_th": th or "", "name_en": en or "",
                           "addr_house": house or "",
+                          "levels_label": levels,
                           "source": "openstreetmap" if not fid.startswith("ms/")
                           else "microsoft_ml",
                           "latitude": round(blat, 8),
@@ -1442,6 +1504,8 @@ def main():
         print(f"Hatched: {n_hatch} water/vegetation area(s)")
     draw_lines(rails, "rail", LAYERS["rail"])
     draw_lines(barriers, "barrier", LAYERS["barrier"])
+    draw_lines(zoning, "zoning", LAYERS["zoning"], label=True)
+    draw_lines(parking, "parking", LAYERS["parking"], label=True)
     draw_lines(power, "power", LAYERS["power"])
     draw_lines(pipelines, "pipeline", LAYERS["pipeline"])
 
@@ -1491,12 +1555,14 @@ def main():
     for kind, plon, plat, fid, ptype in sorted(point_marks,
                                                key=lambda m: m[3]):
         px, py = to_utm.transform(plon, plat)
-        layer = LAYERS["tree" if kind == "tree" else "power"]
+        layer = LAYERS[{"tree": "tree", "gate": "barrier"}.get(kind,
+                                                            "power")]
         attach(_blocks.add_symbol(doc, msp, px, py,
                                   _blocks.symbol_size(layer), layer), fid)
         record(fid, kind, layer, "")
         staged_pois.append({"feature_id": fid,
-                            "poi_key": "natural" if kind == "tree" else "power",
+                            "poi_key": {"tree": "natural",
+                                        "gate": "barrier"}.get(kind, "power"),
                             "poi_type": ptype, "name_th": "", "name_en": "",
                             "display_name": "", "cad_layer": layer,
                             "x": px, "y": py,
@@ -1531,6 +1597,30 @@ def main():
     ay = cy + (ext_h / 2) * 0.90
     sz = min(ext_w, ext_h) * 0.02
     import blocks
+    if a.grid:
+        spacing = (_anchor_rules.grid_spacing(ext_w, ext_h)
+                   if str(a.grid) == "auto" else float(a.grid))
+        eastings, northings = _anchor_rules.grid_ticks(cx, cy, ext_w, ext_h,
+                                                       spacing)
+        arm = min(ext_w, ext_h) * 0.006
+        for gx in eastings:
+            for gy in northings:
+                msp.add_line((gx - arm, gy), (gx + arm, gy),
+                             dxfattribs={"layer": LAYERS["grid"]})
+                msp.add_line((gx, gy - arm), (gx, gy + arm),
+                             dxfattribs={"layer": LAYERS["grid"]})
+        # Written along the south and west edges, inside the crop line
+        for gx in eastings:
+            mtext(f"{gx:,.0f} E", gx, cy - ext_h / 2 + arm * 2, arm * 1.6,
+                  layer=LAYERS["grid"])
+        for gy in northings:
+            mtext(f"{gy:,.0f} N", cx - ext_w / 2 + arm * 2, gy, arm * 1.6,
+                  rotation=90.0, layer=LAYERS["grid"])
+        print(f"Grid: {spacing:g} m, {len(eastings)} x {len(northings)} "
+              "lines")
+
+    blocks.add_extent_dimensions(doc, msp, cx, cy, ext_w, ext_h,
+                                 LAYERS["dims"])
     blocks.add_north_arrow(doc, msp, ax_, ay, sz, LAYERS["north"])
 
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
@@ -1585,7 +1675,7 @@ def main():
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "addr_house", "source",
+            "name_th", "name_en", "addr_house", "levels_label", "source",
             "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)

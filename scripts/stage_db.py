@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS staging_buildings (
     name_en         TEXT,               -- name:en, for C-ANNO-TEXT-EN
     addr_house      TEXT,               -- addr:housenumber, drawn small on
                                         -- C-ANNO-ADDR beneath the name
+    levels_label    TEXT,               -- "3F" or "12.0 m", already
+                                        -- formatted: see levels_label()
     cad_layer       TEXT    NOT NULL DEFAULT 'C-BLDG-OUTL',
     geom_wkb        BLOB    NOT NULL,   -- (Multi)Polygon in the project SRID
     label_x         REAL    NOT NULL,   -- interior point, metres
@@ -319,6 +321,13 @@ CREATE VIEW cad_labels AS
       FROM staging_buildings
      WHERE addr_house IS NOT NULL AND addr_house <> ''
     UNION ALL
+    -- Storeys under the house number: "3F" is read the same in either
+    -- script, so it stays off the language layers like the codes do.
+    SELECT project_id, 'building_levels', levels_label,
+           label_x, label_y, 0.0, 2.2, 'C-ANNO-ADDR', -5.4
+      FROM staging_buildings
+     WHERE levels_label IS NOT NULL AND levels_label <> ''
+    UNION ALL
     -- Landmark points. label_x/label_y is already clear of the symbol, so
     -- these rows need only the same language stacking as everything else.
     SELECT project_id, 'poi', name_th,
@@ -398,7 +407,8 @@ STAGED_TABLES = ("staging_buildings", "staging_roads", "staging_contours",
 
 MIGRATIONS = {
     "staging_buildings": (("name_th", "TEXT"), ("name_en", "TEXT"),
-                          ("addr_house", "TEXT")),
+                          ("addr_house", "TEXT"),
+                          ("levels_label", "TEXT")),
     "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT"),
                       ("oneway", "INTEGER NOT NULL DEFAULT 0")),
     "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
@@ -607,6 +617,49 @@ def interior_point(geom):
     return pt.x, pt.y
 
 
+# Coordinate grid. A survey sheet carries one so a reader can pick a
+# northing and easting off the paper; this repo drew none, which is the
+# sort of omission a reviewer notices before anything else.
+GRID_STEPS = (10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1000.0,
+              2000.0, 5000.0)
+
+
+def grid_spacing(width_m, height_m, target=6):
+    """A round grid interval giving roughly `target` lines across the
+    extent — the same family of round numbers a scale bar uses, because a
+    grid at 137 m is a grid nobody can read a coordinate off."""
+    span = max(float(width_m), float(height_m))
+    ideal = span / max(target, 1)
+    for step in GRID_STEPS:
+        if step >= ideal:
+            return step
+    return GRID_STEPS[-1]
+
+
+def grid_ticks(centre_x, centre_y, width_m, height_m, spacing):
+    """(eastings, northings) of the grid lines inside the extent.
+
+    Round UTM values, not offsets from the centre: a grid line at
+    665,700 E is a number a surveyor can use, one at 665,694.02 is not.
+    Computed from the nominal extent so all three writers — which each know
+    only the centre and the metres — agree without sharing geometry.
+    """
+    if spacing <= 0:
+        return [], []
+    west, east = centre_x - width_m / 2, centre_x + width_m / 2
+    south, north = centre_y - height_m / 2, centre_y + height_m / 2
+
+    def series(lo, hi):
+        first = math.ceil(lo / spacing) * spacing
+        out, value = [], first
+        while value <= hi:
+            out.append(round(value, 6))
+            value += spacing
+        return out
+
+    return series(west, east), series(south, north)
+
+
 # Hatch pattern per context kind, at a scale that reads between 1:500 and
 # 1:5000. ANSI31 is the CAD convention for water and AR-SAND for ground
 # cover, both in ezdxf's standard pattern table, so a drafter sees the fill
@@ -628,6 +681,33 @@ def hatch_area(msp, points, kind, layer):
     hatch.set_pattern_fill(pattern, scale=scale)
     hatch.paths.add_polyline_path(points, is_closed=True)
     return hatch
+
+
+def levels_label(tags) -> str:
+    """Storeys or height as a drafter writes it: "3F", or "12.0 m".
+
+    Stored formatted rather than as two numeric columns, deliberately. The
+    alternative is a rule in Python for the extraction route and the same
+    rule again in the cad_labels view for the re-issue, and two spellings
+    of one convention is exactly the drift this layer exists to prevent.
+
+    `building:levels` wins over `height`: a storey count is what a site
+    plan annotates, and it survives a mapper who guessed the metres.
+    """
+    levels = str(tags.get("building:levels", "")).strip()
+    if levels:
+        try:
+            count = float(levels)
+        except ValueError:
+            count = 0.0
+        if 0 < count < 200:
+            return f"{count:g}F"
+    raw = str(tags.get("height", "")).strip().lower().removesuffix("m").strip()
+    try:
+        metres = float(raw)
+    except ValueError:
+        return ""
+    return f"{metres:.1f} m" if 0 < metres < 1000 else ""
 
 
 def repaired_polygon(exterior, holes=()):
@@ -878,17 +958,17 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
             r.get("display_name") or r.get("code") or "",
             *split_by_script(r.get("osm_name"), r.get("name_th"),
                              r.get("name_en")),
-            r.get("addr_house") or None,
+            r.get("addr_house") or None, r.get("levels_label") or None,
             r.get("cad_layer", "C-BLDG-OUTL"),
             shp_wkb.dumps(geom), lx, ly, 0.0, geom.area, lat, lon,
             minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_buildings (project_id, feature_id,"
         " osm_id, source, building_type, osm_name, code, display_name,"
-        " name_th, name_en, addr_house, cad_layer,"
+        " name_th, name_en, addr_house, levels_label, cad_layer,"
         " geom_wkb, label_x, label_y, label_rotation, area_m2, latitude,"
         " longitude, minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     restored = apply_verified(conn, project_id)
     if restored:

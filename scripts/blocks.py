@@ -103,6 +103,24 @@ def ensure_pylon_symbol(doc) -> str:
     return PYLON_SYMBOL
 
 
+GATE_SYMBOL = "GATE_SYMB"
+
+
+def ensure_gate_symbol(doc) -> str:
+    """A gate: the two leaves swung open, which is how a gate is drawn on
+    a site plan — an access point, not a blob."""
+    if GATE_SYMBOL in doc.blocks:
+        return GATE_SYMBOL
+    blk = doc.blocks.new(name=GATE_SYMBOL)
+    blk.add_line((-1, 0), (-0.2, 0), dxfattribs={"layer": "0"})
+    blk.add_line((0.2, 0), (1, 0), dxfattribs={"layer": "0"})
+    blk.add_arc((-0.2, 0), radius=0.8, start_angle=0, end_angle=70,
+                dxfattribs={"layer": "0"})
+    blk.add_arc((0.2, 0), radius=0.8, start_angle=110, end_angle=180,
+                dxfattribs={"layer": "0"})
+    return GATE_SYMBOL
+
+
 # Which symbol belongs on which layer. Both CAD routes go through
 # add_symbol(), so a tree drawn during extraction and the same tree redrawn
 # from the staging layer cannot come out as different marks — db2dxf.py
@@ -110,6 +128,7 @@ def ensure_pylon_symbol(doc) -> str:
 SYMBOL_FOR_LAYER = {
     "C-LAND-TREE": ensure_tree_symbol,
     "C-UTIL-POWR": ensure_pylon_symbol,
+    "C-BNDY-BARR": ensure_gate_symbol,
 }
 
 
@@ -117,7 +136,8 @@ SYMBOL_FOR_LAYER = {
 # table rather than stored per row: db2dxf.py knows only the layer a point
 # was staged on, and a tree that came back the size of a pylon would be a
 # difference nobody staged.
-SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0}
+SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0,
+                  "C-BNDY-BARR": 2.0}
 DEFAULT_SYMBOL_SIZE = 2.0
 
 
@@ -132,6 +152,63 @@ def add_symbol(doc, layout, x: float, y: float, size: float, layer: str):
     name = ensure(doc)
     return layout.add_blockref(name, insert=(x, y), dxfattribs={
         "layer": layer, "xscale": size, "yscale": size, "zscale": size})
+
+
+# Dimensions are DIMENSION entities with a style of their own, not lines
+# with a number beside them: a drafter expects to select one, see the
+# extension lines highlight, and have it update if the geometry moves.
+DIM_STYLE = "MAPS2CAD"
+
+
+def ensure_dim_style(doc, text_height: float, style: str = "EN_STYLE"):
+    """Define the dimension style once per document, sized for the drawing.
+
+    Text height is passed in rather than fixed: the same style has to read
+    on a 200 m site plan and an 8 km locality map, and a 2.5 mm number on
+    the second is invisible.
+    """
+    if DIM_STYLE in doc.dimstyles:
+        return DIM_STYLE
+    dim = doc.dimstyles.add(DIM_STYLE)
+    dim.dxf.dimtxsty = style if style in doc.styles else "Standard"
+    dim.dxf.dimtxt = text_height              # text height, drawing units
+    dim.dxf.dimasz = text_height * 0.8        # arrow size
+    dim.dxf.dimexe = text_height * 0.4        # extension beyond the line
+    dim.dxf.dimexo = text_height * 0.3        # offset from the geometry
+    dim.dxf.dimgap = text_height * 0.25
+    dim.dxf.dimdec = 0                        # whole metres: this is an
+    dim.dxf.dimlfac = 1.0                     # extent, not a setting-out
+    dim.dxf.dimpost = "<> m"
+    return DIM_STYLE
+
+
+def add_extent_dimensions(doc, layout, centre_x, centre_y, width_m,
+                          height_m, layer):
+    """Dimension the extent rectangle: one horizontal, one vertical.
+
+    Placed outside the crop line so they never sit on the drawing, and
+    rendered so the DXF carries the numbers a reviewer would otherwise
+    have to measure.
+    """
+    text_height = max(2.0, min(width_m, height_m) * 0.012)
+    ensure_dim_style(doc, text_height)
+    half_w, half_h = width_m / 2.0, height_m / 2.0
+    west, east = centre_x - half_w, centre_x + half_w
+    south, north = centre_y - half_h, centre_y + half_h
+    offset = text_height * 2.5
+
+    out = []
+    horizontal = layout.add_linear_dim(
+        base=(centre_x, south - offset), p1=(west, south), p2=(east, south),
+        dimstyle=DIM_STYLE, dxfattribs={"layer": layer})
+    horizontal.render()
+    out.append(horizontal)
+    vertical = layout.add_linear_dim(
+        base=(west - offset, centre_y), p1=(west, south), p2=(west, north),
+        angle=90.0, dimstyle=DIM_STYLE, dxfattribs={"layer": layer})
+    vertical.render()
+    out.append(vertical)
+    return out
 
 
 def ensure_oneway_arrow(doc) -> str:

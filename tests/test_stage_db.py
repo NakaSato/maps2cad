@@ -911,3 +911,69 @@ def test_hatch_patterns_cover_the_kinds_that_are_areas():
     assert set(stage_db.HATCH_PATTERNS) == {"water", "green"}
     for pattern, scale in stage_db.HATCH_PATTERNS.values():
         assert isinstance(pattern, str) and scale > 0
+
+
+# --------------------------------------------------------- building storeys
+@pytest.mark.parametrize("tags,expected", [
+    ({"building:levels": "3"}, "3F"),
+    ({"building:levels": "12"}, "12F"),
+    ({"height": "12"}, "12.0 m"),
+    ({"height": "12.5 m"}, "12.5 m"),
+    # a storey count is what a plan annotates, so it wins over metres
+    ({"building:levels": "3", "height": "9"}, "3F"),
+    ({"height": "abc"}, ""),
+    ({"building:levels": "900"}, ""),      # not a building, a typo
+    ({"height": "0"}, ""),
+    ({}, ""),
+])
+def test_levels_label(tags, expected):
+    assert stage_db.levels_label(tags) == expected
+
+
+def test_levels_label_is_stored_formatted_not_recomputed():
+    """One spelling of the convention: the column holds what both writers
+    draw, rather than a rule in Python and the same rule again in SQL."""
+    conn = connect(":memory:")
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    from shapely.geometry import box
+    stage_buildings(conn, pid, [
+        {"feature_id": "way/1", "source": "openstreetmap", "osm_name": "",
+         "code": "B001", "display_name": "B001", "building_type": None,
+         "addr_house": "99/1", "levels_label": "3F", "geom": box(0, 0, 10, 8)}])
+    rows = {r["feature_class"]: (r["text"], r["cad_layer"], r["label_offset"])
+            for r in conn.execute("SELECT * FROM cad_labels")}
+    assert rows["building_addr"] == ("99/1", "C-ANNO-ADDR", -3.0)
+    assert rows["building_levels"] == ("3F", "C-ANNO-ADDR", -5.4)
+
+
+# -------------------------------------------------------- coordinate grid
+@pytest.mark.parametrize("width,height,expected", [
+    (400, 300, 100.0),
+    (1000, 750, 200.0),
+    (8000, 8000, 2000.0),
+    (100, 80, 20.0),      # ideal 16.7 -> the next round step up
+])
+def test_grid_spacing_is_a_round_number(width, height, expected):
+    """A grid at 137 m is a grid nobody can read a coordinate off."""
+    assert stage_db.grid_spacing(width, height) == expected
+    assert stage_db.grid_spacing(width, height) in stage_db.GRID_STEPS
+
+
+def test_grid_ticks_land_on_round_utm_values():
+    """665,700 E is a number a surveyor can use; 665,694.02 is not."""
+    east, north = stage_db.grid_ticks(665694.02, 1520106.78, 400, 300, 100.0)
+    assert east == [665500.0, 665600.0, 665700.0, 665800.0]
+    assert north == [1520000.0, 1520100.0, 1520200.0]
+    # every tick inside the extent
+    assert all(665494.02 <= x <= 665894.02 for x in east)
+    assert all(1519956.78 <= y <= 1520256.78 for y in north)
+
+
+def test_grid_ticks_handle_a_spacing_wider_than_the_extent():
+    east, north = stage_db.grid_ticks(665694.02, 1520106.78, 50, 40, 1000.0)
+    assert east == [] and north == []
+
+
+def test_grid_ticks_reject_a_nonsense_spacing():
+    assert stage_db.grid_ticks(0, 0, 100, 100, 0) == ([], [])
+    assert stage_db.grid_ticks(0, 0, 100, 100, -5) == ([], [])

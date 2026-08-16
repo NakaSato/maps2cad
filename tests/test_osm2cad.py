@@ -612,3 +612,50 @@ def test_types_can_drop_utilities_and_trees(tmp_path):
     no_utils = osm2cad.select_types(f, {"building"})
     assert no_utils["power"] == [] and no_utils["pipelines"] == []
     assert no_utils["points"] == []
+
+
+ACCESS = """<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <bounds minlat="15.8300" minlon="104.3900"
+          maxlat="15.8380" maxlon="104.3990"/>
+  <node id="1" lat="15.8320" lon="104.3920"/>
+  <node id="2" lat="15.8330" lon="104.3920"/>
+  <node id="3" lat="15.8330" lon="104.3940"/>
+  <node id="4" lat="15.8320" lon="104.3940"/>
+  <node id="9" lat="15.8325" lon="104.3919">
+    <tag k="barrier" v="gate"/></node>
+  <way id="100"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
+    <nd ref="1"/><tag k="amenity" v="parking"/>
+    <tag k="name" v="ลานจอดรถ"/></way>
+</osm>
+"""
+
+
+def test_parking_and_gates_are_drawn_without_a_single_building(tmp_path):
+    """This file has no buildings at all, which is what caught draw_lines
+    reading `name` from the enclosing scope — it was the last building's,
+    and with no buildings it was never assigned."""
+    ezdxf = pytest.importorskip("ezdxf")
+    out = tmp_path / "access.dxf"
+    assert osm2cad.main(["--input", str(write(tmp_path, ACCESS, "a.osm")),
+                         "--out", str(out)]) == 0
+    doc = ezdxf.readfile(out)
+    msp = doc.modelspace()
+    assert [e.dxf.name for e in msp if e.dxftype() == "INSERT"
+            and e.dxf.layer == "C-BNDY-BARR"] == ["GATE_SYMB"]
+    assert [e.dxftype() for e in msp
+            if e.dxf.layer == "C-SITE-PARK"] == ["LWPOLYLINE"]
+
+
+def test_context_features_carry_their_own_name(tmp_path):
+    """A canal must not be attributed with a building's name."""
+    import csv as csv_mod
+
+    pytest.importorskip("ezdxf")
+    out = tmp_path / "a.dxf"
+    assert osm2cad.main(["--input", str(write(tmp_path, ACCESS, "a.osm")),
+                         "--out", str(out)]) == 0
+    with open(tmp_path / "attributes.csv", encoding="utf-8") as f:
+        rows = list(csv_mod.DictReader(f))
+    parking = [r for r in rows if r["feature_type"] == "parking"]
+    assert parking and {r["display_name"] for r in parking} == {"ลานจอดรถ"}
