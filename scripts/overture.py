@@ -169,8 +169,14 @@ def fetch_places(box, release=None, cache_dir=None, refresh=False):
     try:
         import duckdb
     except ImportError:
-        raise OvertureError("duckdb is needed to read Overture's parquet; "
-                            "run this through `uv run` or pip install duckdb")
+        # topo2cad.py imports this module but does not declare duckdb: a
+        # 20 MB parquet engine has no business in the dependency set of
+        # every run when one opt-in flag uses it. So the fetch runs as its
+        # own `uv run` of this file, which installs what its PEP 723 header
+        # declares, and the cache file is the hand-off. Without this the
+        # first extent a drawing asks for would fail on the import while
+        # every cached one worked, which is the worst kind of bug to meet.
+        return _fetch_via_uv(box, release, cache_dir, path), False
 
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
@@ -200,6 +206,30 @@ def fetch_places(box, release=None, cache_dir=None, refresh=False):
     cache_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(places, ensure_ascii=False), encoding="utf-8")
     return places, False
+
+
+def _fetch_via_uv(box, release, cache_dir, path):
+    """Run this file under `uv run` to fill the cache, then read it."""
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if not uv:
+        raise OvertureError(
+            "duckdb is needed to read Overture's parquet, and `uv` is not on "
+            "PATH to install it — run `uv run scripts/overture.py` for this "
+            "extent first, or pip install duckdb")
+    s, w, n, e = box
+    cmd = [uv, "run", str(Path(__file__).resolve()),
+           "--bbox", f"{s},{w},{n},{e}", "--cache-dir", str(cache_dir)]
+    if release:
+        cmd += ["--release", release]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not path.is_file():
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise OvertureError("the Overture fetch subprocess failed: "
+                            + (detail[-1] if detail else "no output"))
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def place_tags(place) -> dict:
@@ -263,8 +293,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--lat", type=float, required=True)
-    ap.add_argument("--lon", type=float, required=True)
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
+    ap.add_argument("--bbox", metavar="S,W,N,E",
+                    help="fetch this box instead of one around --lat/--lon; "
+                         "this is how topo2cad.py drives the fetch when its "
+                         "own environment has no duckdb")
+    ap.add_argument("--cache-dir", help=f"default: {CACHE_DIR}")
     ap.add_argument("--width", type=float, default=200.0)
     ap.add_argument("--height", type=float, default=150.0)
     ap.add_argument("--min-confidence", type=float,
@@ -280,9 +315,24 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="write the places to this JSON file too")
     a = ap.parse_args(argv)
 
-    box = bbox_around(a.lat, a.lon, None, a.width, a.height)
+    if a.bbox:
+        try:
+            box = tuple(float(v) for v in a.bbox.split(","))
+            if len(box) != 4:
+                raise ValueError
+        except ValueError:
+            print("ERROR: --bbox wants four numbers: S,W,N,E",
+                  file=sys.stderr)
+            return 1
+    elif a.lat is None or a.lon is None:
+        print("ERROR: give --lat and --lon, or --bbox S,W,N,E",
+              file=sys.stderr)
+        return 1
+    else:
+        box = bbox_around(a.lat, a.lon, None, a.width, a.height)
     try:
-        places, cached = fetch_places(box, a.release, refresh=a.refresh)
+        places, cached = fetch_places(box, a.release, cache_dir=a.cache_dir,
+                                      refresh=a.refresh)
     except OvertureError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

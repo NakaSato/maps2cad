@@ -84,6 +84,10 @@ LEGEND_LABELS = {
     "C-SITE-PARK": "ที่จอดรถ / Parking",
     "C-SITE-POI": "พื้นที่สำคัญ / Landmark grounds",
     "C-ANNO-SYMB": "สถานที่สำคัญ / Landmark",
+    # Named in the key by its source, deliberately: a reviewer reading the
+    # sheet is entitled to know which names came from OSM and which from a
+    # commercial feed nobody here surveyed.
+    "C-ANNO-OVTR": "สถานที่ (ข้อมูล Overture) / Place (Overture)",
     "C-ANNO-GRID": "กริดพิกัด UTM / UTM grid",
     "C-ANNO-EXTN": "ขอบเขตพื้นที่ / Limit of extent",
     "C-PROP-LINE": "แนวเขตที่ดิน / Property line",

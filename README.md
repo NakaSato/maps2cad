@@ -445,8 +445,14 @@ bureau — where the rest is 22 japanese\_restaurant, 20 clothing\_store and
 13 jewelry\_store. `--overture-confidence` moves the floor and
 `--all-places` keeps every category.
 
+On rural ground this is the whole argument for it: at 14.8165, 100.5116 OSM
+has **no** landmark points at all, and Overture supplies สถานีตำรวจภูธร,
+สำนักงานสาธารณสุขอำเภอ and the village kindergarten — which is exactly what
+an officer locates that parcel by. It is on by default in the web app, and
+the plottable sheet lists it in the legend under its own source name.
+
 The query reads Overture's public S3 parquet through DuckDB and takes about
-a minute, so each extent is cached under `cache/overture/` — keyed on the
+20–60 s, so each extent is cached under `cache/overture/` — keyed on the
 extent and release but **not** on the confidence floor, so trying 0.9 then
 0.8 costs one query, not two. Overture's buildings theme was measured at 4½
 minutes for the same box and is not used: Microsoft's quadkey tiles already

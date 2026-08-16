@@ -150,6 +150,29 @@ def test_fetch_places_serves_the_cache_without_duckdb(tmp_path):
     assert cached and places[0]["name"] == "วัดโพธิ์"
 
 
+def test_a_missing_duckdb_and_no_uv_says_what_to_run(tmp_path, monkeypatch):
+    """topo2cad.py does not declare duckdb — a 20 MB parquet engine has no
+    business in every run — so the fetch re-runs this file under uv. When
+    that is not available either, say so instead of failing on an import."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_duckdb(name, *args, **kwargs):
+        if name == "duckdb":
+            raise ImportError("no duckdb")
+        return real_import(name, *args, **kwargs)
+
+    import shutil
+
+    monkeypatch.setattr(builtins, "__import__", no_duckdb)
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+    with pytest.raises(overture.OvertureError) as excinfo:
+        overture.fetch_places((13.0, 100.0, 13.01, 100.01),
+                              release="2026-07-22.0", cache_dir=tmp_path)
+    assert "duckdb" in str(excinfo.value)
+
+
 def test_overture_places_label_on_their_own_layer_family():
     """Freezing the third-party source has to take its names with it, or the
     drawing keeps a label pointing at nothing."""

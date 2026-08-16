@@ -233,6 +233,11 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         # --final drops the DRAFT marking from an unsigned sheet, which is
         # a decision rather than a setting.
         "all_poi": True,
+        # Overture's named places, on their own layer. It adds ~20 s to the
+        # first run of an extent and nothing to a repeat, because the fetch
+        # caches per extent — and a name a drafter can see the source of
+        # beats a blank where OSM never had one.
+        "overture": True,
         "poster": True,
         "poster_arrows": True,
         "map_arrows": True,
@@ -325,6 +330,8 @@ def run_generator(p: dict) -> dict:
             cad_cmd.append("--names-only")
         if p.get("all_poi"):
             cad_cmd.append("--all-poi")
+        if p.get("overture"):
+            cad_cmd.append("--overture")
         if p.get("mono"):
             cad_cmd.append("--mono")
         logs.append(run_step(cad_cmd, "CAD export"))

@@ -555,6 +555,25 @@ data. Overture's **buildings** theme was measured at 268 s for the same box
 against ~6 MB Microsoft quadkey tiles, so it is not used; Google Open
 Buildings was rejected outright at 1,016 MB for the tile covering Bangkok.
 
+*It fetches without joining the dependency set.* `topo2cad.py` deliberately
+does not declare `duckdb` — a 20 MB parquet engine has no business in every
+run for one opt-in flag — so when the import is missing `fetch_places()`
+re-runs `overture.py` under its own `uv run` and reads the cache file back.
+Without that hand-off the first extent a site asks for fails on the import
+while every cached one works, which is the worst shape a bug can take. The
+cache honours `MAPS2CAD_DATA`, like `basemap.py`'s, so a Render deploy
+writes it to the mounted disk and not into the image.
+
+*It is on by default in the web app and named in the legend.* `serve.py`
+defaults `overture` on with the rest of what *adds* to a run, since the
+cost lands only on the first run of an extent; and `sheet.py`'s
+`LEGEND_LABELS` names it "สถานที่ (ข้อมูล Overture) / Place (Overture)"
+rather than lumping it in with the landmarks — a reviewer reading the sheet
+is entitled to know which names nobody here surveyed. At 14.8165, 100.5116
+this is the whole argument for the feature: OSM returns **0** landmark
+points and Overture returns สถานีตำรวจภูธรท่าวุ้ง, สำนักงานสาธารณสุขอำเภอ
+and the kindergarten — which is what an officer locates that parcel by.
+
 *OSM wins a tie.* `drop_known()` drops a place whose name matches an OSM
 feature within 25 m — name *and* proximity, because two branches of one
 chain are two places while the same shop mapped twice is one. `dxfaudit.py`
