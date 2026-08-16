@@ -564,6 +564,27 @@ opts back into clearing. A merge prints "Merged into" and the project's new
 totals, because a `db2dxf.py` re-issue draws everything staged, not just the
 import you just ran.
 
+**A parcel without its corner coordinates is a picture.** `--corners` on
+`gis2cad.py` and `db2dxf.py` marks and labels every boundary corner on
+`C-PROP-CORN` and writes `corner_coordinates.csv`: easting, northing, and
+the **bearing and distance to the next corner**, closing back to the
+first. That is the table a Thai reviewer reads off a ผังบริเวณ and a
+setting-out crew works from. Both writers call
+`blocks.add_corner_marks()`, which calls `stage_db.corner_table()`, so an
+import and its re-issue cannot disagree about where a corner is or what it
+is called (`dxfdiff` IDENTICAL).
+
+Three things it must keep right. Bearings are **north-based and
+clockwise** — `atan2(dE, dN)`, not the `atan2(dy, dx)` a plotting library
+wants, which would swap east and north on every leg. The closing vertex
+Shapely repeats is dropped, or one corner is tabled twice and the last leg
+reads zero length. And the labels skip I and O, which read as 1 and 0 on a
+plotted sheet. A rectangle drawn in WGS 84 tables as 089°38′ rather than
+090°00′ at Bangkok — that is meridian convergence, and it is right: these
+are grid bearings, which is what the drawing is in. Only `user_gis:` rows
+are tabled; an OSM building outline is not a surveyed boundary and tabling
+its corners to the millimetre would say it was.
+
 **One layer table, in `blocks.py`.** `LAYER_STYLE`, `LAYER_LINETYPE` and
 `LTSCALE` live there and `apply_layer_table()` applies all three;
 `db2dxf.py` and `gis2cad.py` both call it. `gis2cad.py` used to carry a

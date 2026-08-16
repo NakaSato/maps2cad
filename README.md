@@ -300,6 +300,26 @@ provenance record. A combined drawing without one is not combined, it is
 mixed — and a reviewer asking where a boundary line came from deserves a
 better answer than "GIS".
 
+### Corner coordinates for a parcel
+
+A boundary is only useful with its numbers. `--corners` marks and labels
+every corner and writes the setting-out table beside the drawing:
+
+```bash
+uv run scripts/gis2cad.py --input survey/boundary.geojson --corners
+```
+
+```
+parcel,corner,easting,northing,bearing,distance_m
+แปลงที่ดิน A,A1,665532.293,1520028.31,089°38'10",86.516
+แปลงที่ดิน A,A2,665618.808,1520028.859,359°38'09",66.378
+```
+
+Bearings are grid bearings, north-based and clockwise — so a rectangle
+drawn in WGS 84 tables as 089°38′ rather than 090°00′ at Bangkok. That is
+meridian convergence, and it is what the drawing is in. `db2dxf.py
+--corners` writes the same table for parcels staged in a project.
+
 ## SQLite staging layer
 
 Stage extracted features with their CAD label anchors already computed, so the
