@@ -70,6 +70,70 @@ def add_poi_symbol(doc, layout, x: float, y: float, size: float, layer: str):
         "layer": layer, "xscale": size, "yscale": size, "zscale": size})
 
 
+TREE_SYMBOL = "TREE_SYMB"
+PYLON_SYMBOL = "PYLON_SYMB"
+
+
+def ensure_tree_symbol(doc) -> str:
+    """A tree: a circle with a small cross at its trunk.
+
+    Unit radius about the origin like the others, so one definition serves
+    a 200 m plan and a 2 km one. The cross is what separates it from the
+    landmark circle at a glance on a printed sheet.
+    """
+    if TREE_SYMBOL in doc.blocks:
+        return TREE_SYMBOL
+    blk = doc.blocks.new(name=TREE_SYMBOL)
+    blk.add_circle((0, 0), radius=1.0, dxfattribs={"layer": "0"})
+    blk.add_line((-0.35, 0), (0.35, 0), dxfattribs={"layer": "0"})
+    blk.add_line((0, -0.35), (0, 0.35), dxfattribs={"layer": "0"})
+    return TREE_SYMBOL
+
+
+def ensure_pylon_symbol(doc) -> str:
+    """A pylon or power pole: a square with its diagonals, the convention
+    for a tower on a utility plan."""
+    if PYLON_SYMBOL in doc.blocks:
+        return PYLON_SYMBOL
+    blk = doc.blocks.new(name=PYLON_SYMBOL)
+    blk.add_lwpolyline([(-1, -1), (1, -1), (1, 1), (-1, 1)], close=True,
+                       dxfattribs={"layer": "0"})
+    blk.add_line((-1, -1), (1, 1), dxfattribs={"layer": "0"})
+    blk.add_line((-1, 1), (1, -1), dxfattribs={"layer": "0"})
+    return PYLON_SYMBOL
+
+
+# Which symbol belongs on which layer. Both CAD routes go through
+# add_symbol(), so a tree drawn during extraction and the same tree redrawn
+# from the staging layer cannot come out as different marks — db2dxf.py
+# knows only the layer a point was staged on.
+SYMBOL_FOR_LAYER = {
+    "C-LAND-TREE": ensure_tree_symbol,
+    "C-UTIL-POWR": ensure_pylon_symbol,
+}
+
+
+# Plan size of each mark in drawing units (metres). Kept beside the symbol
+# table rather than stored per row: db2dxf.py knows only the layer a point
+# was staged on, and a tree that came back the size of a pylon would be a
+# difference nobody staged.
+SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0}
+DEFAULT_SYMBOL_SIZE = 2.0
+
+
+def symbol_size(layer: str) -> float:
+    return SIZE_FOR_LAYER.get(layer, DEFAULT_SYMBOL_SIZE)
+
+
+def add_symbol(doc, layout, x: float, y: float, size: float, layer: str):
+    """Place the symbol that belongs on `layer` — a landmark circle unless
+    the layer says otherwise."""
+    ensure = SYMBOL_FOR_LAYER.get(layer, ensure_poi_symbol)
+    name = ensure(doc)
+    return layout.add_blockref(name, insert=(x, y), dxfattribs={
+        "layer": layer, "xscale": size, "yscale": size, "zscale": size})
+
+
 def ensure_oneway_arrow(doc) -> str:
     """Define the direction-of-travel arrow once per document.
 

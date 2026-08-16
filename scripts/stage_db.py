@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS staging_buildings (
     display_name    TEXT    NOT NULL,   -- what the drawing actually labels
     name_th         TEXT,               -- name:th, for C-ANNO-TEXT-TH
     name_en         TEXT,               -- name:en, for C-ANNO-TEXT-EN
+    addr_house      TEXT,               -- addr:housenumber, drawn small on
+                                        -- C-ANNO-ADDR beneath the name
     cad_layer       TEXT    NOT NULL DEFAULT 'C-BLDG-OUTL',
     geom_wkb        BLOB    NOT NULL,   -- (Multi)Polygon in the project SRID
     label_x         REAL    NOT NULL,   -- interior point, metres
@@ -183,6 +185,24 @@ CREATE TABLE IF NOT EXISTS staging_contours (
     length_m        REAL
 );
 
+-- Spot heights read off the DEM: the elevation at a point, which is what
+-- a surveyor reads off a plan. Contours give the shape of the ground;
+-- spot heights give a number you can level to.
+--
+-- Staged rather than treated as drawing furniture because db2dxf.py has no
+-- DEM to sample — without this table a re-issue would come back with the
+-- contours and no heights, which is the sort of silent loss this layer
+-- exists to prevent.
+CREATE TABLE IF NOT EXISTS staging_spots (
+    id              INTEGER PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    elevation_m     REAL    NOT NULL,
+    x               REAL    NOT NULL,   -- project SRID
+    y               REAL    NOT NULL,
+    cad_layer       TEXT    NOT NULL DEFAULT 'C-TOPO-SPOT',
+    UNIQUE (project_id, x, y)
+);
+
 -- The source OSM tags of every drawn feature, one row per tag.
 --
 -- Long rather than wide: OSM features carry wildly different tag sets — a
@@ -292,6 +312,13 @@ CREATE VIEW cad_labels AS
      WHERE rn = 1 AND COALESCE(name_th, '') = ''
                   AND COALESCE(name_en, '') = ''
     UNION ALL
+    -- House numbers sit under whatever label the building already carries,
+    -- small and language-neutral: a number is a number in either script.
+    SELECT project_id, 'building_addr', addr_house,
+           label_x, label_y, 0.0, 2.2, 'C-ANNO-ADDR', -3.0
+      FROM staging_buildings
+     WHERE addr_house IS NOT NULL AND addr_house <> ''
+    UNION ALL
     -- Landmark points. label_x/label_y is already clear of the symbol, so
     -- these rows need only the same language stacking as everything else.
     SELECT project_id, 'poi', name_th,
@@ -366,10 +393,12 @@ CREATE VIEW cad_labels AS
 # staging_* table here in the same commit that creates it, or the second run
 # of a site silently keeps the first run's features.
 STAGED_TABLES = ("staging_buildings", "staging_roads", "staging_contours",
-                 "staging_pois", "staging_context", "staging_tags")
+                 "staging_pois", "staging_context", "staging_tags",
+                 "staging_spots")
 
 MIGRATIONS = {
-    "staging_buildings": (("name_th", "TEXT"), ("name_en", "TEXT")),
+    "staging_buildings": (("name_th", "TEXT"), ("name_en", "TEXT"),
+                          ("addr_house", "TEXT")),
     "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT"),
                       ("oneway", "INTEGER NOT NULL DEFAULT 0")),
     "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
@@ -578,6 +607,29 @@ def interior_point(geom):
     return pt.x, pt.y
 
 
+# Hatch pattern per context kind, at a scale that reads between 1:500 and
+# 1:5000. ANSI31 is the CAD convention for water and AR-SAND for ground
+# cover, both in ezdxf's standard pattern table, so a drafter sees the fill
+# AutoCAD would draw. It lives here rather than in topo2cad because
+# db2dxf.py hatches the same rows and must not import the Overpass side to
+# find out how.
+HATCH_PATTERNS = {"water": ("ANSI31", 4.0), "green": ("AR-SAND", 0.6)}
+
+
+def hatch_area(msp, points, kind, layer):
+    """Fill one closed run with the pattern its kind uses.
+
+    Not associative: the boundary is a separate polyline on its own layer,
+    and a drafter editing the outline expects to refresh the hatch rather
+    than have it silently follow.
+    """
+    pattern, scale = HATCH_PATTERNS[kind]
+    hatch = msp.add_hatch(dxfattribs={"layer": layer})
+    hatch.set_pattern_fill(pattern, scale=scale)
+    hatch.paths.add_polyline_path(points, is_closed=True)
+    return hatch
+
+
 def repaired_polygon(exterior, holes=()):
     """The polygon a writer should draw *and* stage.
 
@@ -739,6 +791,33 @@ def attribute_rows(drawn, tags_by_id):
     return sorted(rows, key=lambda r: (r["feature_id"], r["key"]))
 
 
+def stage_spots(conn, project_id, rows) -> int:
+    """records: dicts with x, y (project SRID) and elevation_m."""
+    conn.executemany(
+        "INSERT OR REPLACE INTO staging_spots (project_id, x, y,"
+        " elevation_m, cad_layer) VALUES (?,?,?,?,?)",
+        [(project_id, float(r["x"]), float(r["y"]),
+          float(r["elevation_m"]), r.get("cad_layer", "C-TOPO-SPOT"))
+         for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def spot_grid(west, south, east, north, columns=5, rows_n=5):
+    """Sample points for spot heights, inset from the extent.
+
+    A grid rather than a scatter: a reviewer reads levels across a site by
+    comparing neighbours, and the inset keeps the numbers off the crop line
+    where the frame or the title block would sit on them.
+    """
+    if columns < 1 or rows_n < 1:
+        return []
+    span_x, span_y = east - west, north - south
+    step_x, step_y = span_x / (columns + 1), span_y / (rows_n + 1)
+    return [(west + step_x * (i + 1), south + step_y * (j + 1))
+            for j in range(rows_n) for i in range(columns)]
+
+
 def stage_tags(conn, project_id, rows, appid=XDATA_APPID) -> int:
     """Store the attribute rows; `rows` is attribute_rows() output.
 
@@ -781,7 +860,7 @@ def write_attribute_csv(path, rows) -> int:
 
 def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
     """records: dicts with feature_id, source, geom (shapely, project SRID),
-    osm_name, code, display_name, building_type."""
+    osm_name, code, display_name, building_type, addr_house."""
     from shapely import wkb as shp_wkb
 
     rows = []
@@ -799,16 +878,17 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
             r.get("display_name") or r.get("code") or "",
             *split_by_script(r.get("osm_name"), r.get("name_th"),
                              r.get("name_en")),
+            r.get("addr_house") or None,
             r.get("cad_layer", "C-BLDG-OUTL"),
             shp_wkb.dumps(geom), lx, ly, 0.0, geom.area, lat, lon,
             minx, miny, maxx, maxy))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_buildings (project_id, feature_id,"
         " osm_id, source, building_type, osm_name, code, display_name,"
-        " name_th, name_en, cad_layer,"
+        " name_th, name_en, addr_house, cad_layer,"
         " geom_wkb, label_x, label_y, label_rotation, area_m2, latitude,"
         " longitude, minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     restored = apply_verified(conn, project_id)
     if restored:

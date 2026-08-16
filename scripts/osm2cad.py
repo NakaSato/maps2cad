@@ -382,7 +382,7 @@ def intersects_box(pts, box, margin=0.0005):
 # `path` is footways/cycleways/steps, kept apart because they are separate
 # NCS layers here (a 1.5 m path drawn with two kerb lines reads as a road).
 TYPE_CHOICES = ("building", "road", "path", "water", "green", "rail",
-                "barrier", "landmark")
+                "barrier", "landmark", "power", "tree")
 
 
 def select_types(features, types):
@@ -409,6 +409,11 @@ def select_types(features, types):
             keep[key] = []
     if "landmark" not in types:
         keep["pois"], keep["site_pois"] = [], []
+    if "power" not in types:
+        keep["power"], keep["pipelines"] = [], []
+        keep["points"] = [m for m in keep["points"] if m[0] != "power"]
+    if "tree" not in types:
+        keep["points"] = [m for m in keep["points"] if m[0] != "tree"]
     return keep
 
 
@@ -644,10 +649,13 @@ def main(argv=None) -> int:
     water, green = features["water"], features["green"]
     rails, barriers = features["rails"], features["barriers"]
     pois, site_pois = features["pois"], features["site_pois"]
+    power, pipelines = features["power"], features["pipelines"]
+    point_marks = features["points"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, "
           f"{len(water)} water, {len(green)} green, {len(rails)} rail, "
           f"{len(barriers)} barriers, {len(pois)} POI points, "
-          f"{len(site_pois)} POI areas")
+          f"{len(site_pois)} POI areas, {len(power)} power, "
+          f"{len(pipelines)} pipeline, {len(point_marks)} pylon/tree")
 
     # The output path is resolved before drawing, not after: a background
     # map is written beside the .dxf, and the DXF stores a path to it.
@@ -672,9 +680,12 @@ def main(argv=None) -> int:
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
+                           ("road_bridge", 7, 40), ("road_tunnel", 8, 18),
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
+                           ("power", 6, 25), ("pipeline", 4, 18),
+                           ("tree", 3, 13), ("addr", 8, 13),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(t2c.LAYERS[key], color=color)
@@ -687,6 +698,7 @@ def main(argv=None) -> int:
     row.dxf.lineweight = 35
     doc.layers.get(t2c.LAYERS["road_centre"]).dxf.linetype = "CENTER"
     doc.layers.get(t2c.LAYERS["extent"]).dxf.linetype = "DASHED"
+    doc.layers.get(t2c.LAYERS["road_tunnel"]).dxf.linetype = "HIDDEN"
     doc.header["$LTSCALE"] = 5.0
     if not a.no_attributes:
         doc.appids.add(XDATA_APPID)
@@ -789,6 +801,10 @@ def main(argv=None) -> int:
         if name or not a.names_only:
             mtext_bilingual(th, en, cx, cy, 3.5,
                             fallback=None if a.names_only else code)
+        house = tags_for(tag_index, fid).get("addr:housenumber")
+        if house:
+            hx, hy = t2c.offset_along_normal(cx, cy, 0.0, -3.0)
+            mtext(house, hx, hy, 2.2, layer=t2c.LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         drawn.append({"feature_id": fid, "feature_type": "building",
                       "cad_layer": poly_layer,
@@ -797,6 +813,7 @@ def main(argv=None) -> int:
         inventory.append({"feature_id": fid, "code": code,
                           "osm_name": name or "", "display_name": name or code,
                           "name_th": th or "", "name_en": en or "",
+                          "addr_house": house or "",
                           "source": "openstreetmap",
                           "latitude": round(blat, 8),
                           "longitude": round(blon, 8)})
@@ -804,9 +821,10 @@ def main(argv=None) -> int:
     # ---- roads -----------------------------------------------------------
     staged_roads = []
     for (th, en), ref, pts, highway, fid, oneway in roads:
-        width_m = t2c.ROAD_WIDTH_M.get(highway, 5.0)
+        road_tags = tags_for(tag_index, fid)
+        width_m = t2c.carriageway_width(road_tags, highway)
         is_path = highway in t2c.PATH_TYPES
-        base = t2c.LAYERS["road_path" if is_path else "road_centre"]
+        base = t2c.road_cad_layer(road_tags, highway)
         cad_layer = layer_for(base, fid)
         road_runs = []
         for run in t2c.clip_runs(pts, s, w, n, e):
@@ -918,6 +936,8 @@ def main(argv=None) -> int:
     draw_lines(green, "green", t2c.LAYERS["green"], label=True)
     draw_lines(rails, "rail", t2c.LAYERS["rail"])
     draw_lines(barriers, "barrier", t2c.LAYERS["barrier"])
+    draw_lines(power, "power", t2c.LAYERS["power"])
+    draw_lines(pipelines, "pipeline", t2c.LAYERS["pipeline"])
 
     label_longest(
         [r for r in staged_context if r["labelled"]],
@@ -958,6 +978,23 @@ def main(argv=None) -> int:
                                  "geom_pts": upts})
 
     staged_pois = []
+    # Pylons, poles and trees: a symbol and no label. They stage in the POI
+    # table with an empty display_name, which cad_labels skips.
+    for kind, plon, plat, fid, ptype in sorted(point_marks,
+                                               key=lambda m: m[3]):
+        px, py = to_utm.transform(plon, plat)
+        base = t2c.LAYERS["tree" if kind == "tree" else "power"]
+        layer = layer_for(base, fid)
+        attach(blocks.add_symbol(doc, msp, px, py,
+                                 blocks.symbol_size(base), layer), fid)
+        drawn.append({"feature_id": fid, "feature_type": kind,
+                      "cad_layer": layer, "display_name": ""})
+        staged_pois.append({"feature_id": fid,
+                            "poi_key": "natural" if kind == "tree" else "power",
+                            "poi_type": ptype, "name_th": "", "name_en": "",
+                            "display_name": "", "cad_layer": base,
+                            "x": px, "y": py,
+                            "latitude": plat, "longitude": plon})
     for (th, en), plon, plat, kind, fid in sorted(pois, key=lambda p: p[4]):
         px, py = to_utm.transform(plon, plat)
         attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0,
@@ -1030,7 +1067,8 @@ def main(argv=None) -> int:
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "source", "latitude", "longitude"])
+            "name_th", "name_en", "addr_house", "source",
+            "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)
     named = sum(1 for r in inventory if r["osm_name"])

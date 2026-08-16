@@ -105,6 +105,16 @@ def parse_args():
                         "dense site this is mostly restaurants and cafes: 144 "
                         "landmark points instead of 9 over 770 x 410 m in "
                         "central Bangkok.")
+    p.add_argument("--no-spots", action="store_true",
+                   help="Do not sample spot heights off the DEM. The default "
+                        "writes a 5 x 5 grid of levelled points on "
+                        "C-TOPO-SPOT: contours give the shape of the ground, "
+                        "a spot height gives a number to level to.")
+    p.add_argument("--hatch", action="store_true",
+                   help="Hatch water and vegetation areas with the CAD "
+                        "patterns a drafter expects, instead of leaving them "
+                        "as outlines. Off by default: a hatch at 1:5000 on a "
+                        "dense site is a lot of ink.")
     p.add_argument("--no-attributes", action="store_true",
                    help="Do not attach the source OSM tags to each entity as "
                         "XDATA, and do not write attributes.csv. The default "
@@ -178,6 +188,10 @@ def fetch_osm(s, w, n, e):
       way["landuse"~"^(grass|forest|meadow|orchard|farmland|cemetery)$"]({s},{w},{n},{e});
       way["railway"]({s},{w},{n},{e});
       way["barrier"]({s},{w},{n},{e});
+      way["power"]({s},{w},{n},{e});
+      way["man_made"="pipeline"]({s},{w},{n},{e});
+      node["power"~"^(tower|pole|portal|transformer|substation)$"]({s},{w},{n},{e});
+      node["natural"="tree"]({s},{w},{n},{e});
       way["amenity"]({s},{w},{n},{e});
       way["tourism"]({s},{w},{n},{e});
       way["historic"]({s},{w},{n},{e});
@@ -443,13 +457,21 @@ def classify_elements(elements, curated=True):
     """
     buildings, roads, pois, site_pois = [], [], [], []
     water, green, rails, barriers = [], [], [], []
+    power, pipelines, points = [], [], []
 
     def kind_of(tags):
         return poi_kind(tags, curated=curated)
 
     for el in elements:
         tags = el.get("tags", {})
-        if el["type"] == "node" and kind_of(tags) and best_name(tags):
+        if el["type"] == "node" and (tags.get("power")
+                                     or tags.get("natural") == "tree"):
+            # Unnamed by nature: a pylon or a tree is identified by its
+            # symbol, not by a label, so these never reach the POI branch.
+            kind = "tree" if tags.get("natural") == "tree" else "power"
+            points.append((kind, el["lon"], el["lat"],
+                           f"node/{el['id']}", tags.get("power") or "tree"))
+        elif el["type"] == "node" and kind_of(tags) and best_name(tags):
             # Unnamed landmark nodes (a waste basket, a bicycle stand) carry
             # no information a drafter can use, so a name is still required
             pois.append((names_by_lang(tags), el["lon"], el["lat"],
@@ -471,6 +493,10 @@ def classify_elements(elements, curated=True):
                 rails.append((names_by_lang(tags), pts, fid))
             elif "barrier" in tags:
                 barriers.append((names_by_lang(tags), pts, fid))
+            elif "power" in tags:
+                power.append((names_by_lang(tags), pts, fid))
+            elif tags.get("man_made") == "pipeline":
+                pipelines.append((names_by_lang(tags), pts, fid))
             elif kind_of(tags) and len(pts) >= 3:
                 # A landmark mapped as an area but not tagged `building`:
                 # hospital and school grounds, temple precincts, car parks.
@@ -512,7 +538,8 @@ def classify_elements(elements, curated=True):
                                           part_id, kind_of(tags)))
     return {"buildings": buildings, "roads": roads, "water": water,
             "green": green, "rails": rails, "barriers": barriers,
-            "pois": pois, "site_pois": site_pois}
+            "pois": pois, "site_pois": site_pois,
+            "power": power, "pipelines": pipelines, "points": points}
 
 
 # Carriageway width in metres per highway class, used to draw each road as
@@ -528,6 +555,74 @@ ROAD_WIDTH_M = {
     "footway": 2.0, "path": 1.5, "cycleway": 2.0, "steps": 1.5,
     "pedestrian": 6.0,
 }
+
+def carriageway_width(tags, highway) -> float:
+    """Metres across the carriageway, from the tags where OSM has them.
+
+    The class default is a guess — every `residential` road drawn 6.0 m
+    whether it is a 4 m soi or an 8 m avenue. A mapper who typed `width` or
+    `lanes` measured or counted something, so that wins:
+
+      width=4        -> 4.0     (also "4 m", "4.5m")
+      lanes=4        -> 12.0    (3 m a lane, the Thai rural standard)
+      neither        -> the class default
+
+    A parsed width under a metre is ignored: `width=0.5` on a carriageway
+    is a mapping error, and drawing kerbs half a metre apart hides the road
+    rather than sizing it.
+    """
+    raw = str(tags.get("width", "")).strip().lower()
+    if raw:
+        number = ""
+        for ch in raw:
+            if ch.isdigit() or (ch == "." and "." not in number):
+                number += ch
+            elif number:
+                break
+        try:
+            metres = float(number)
+        except ValueError:
+            metres = 0.0
+        # "12'" and "12 ft" are feet; OSM allows both and they are not rare
+        if metres >= 1.0:
+            if "'" in raw or "ft" in raw:
+                metres *= 0.3048
+            if metres >= 1.0:
+                return metres
+    lanes = str(tags.get("lanes", "")).strip()
+    if lanes.isdigit() and int(lanes) > 0:
+        return min(int(lanes) * lane_width(highway), 40.0)
+    return ROAD_WIDTH_M.get(highway, 5.0)
+
+
+# Lane widths: 3.5 m on the classes built to a highway standard, 3.0 m on
+# everything else, which is what a Thai soi actually measures. A dual
+# carriageway is two OSM ways, so counting lanes per way is also what stops
+# `lanes` from doubling the road.
+TRUNK_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link",
+                 "primary", "primary_link"}
+
+
+def lane_width(highway) -> float:
+    return 3.5 if highway in TRUNK_CLASSES else 3.0
+
+
+def road_cad_layer(tags, highway) -> str:
+    """Which road layer this way belongs on.
+
+    A bridge and a tunnel are drawn on their own layers because a drafter
+    plotting a site plan needs them separable — a tunnel is under the
+    ground the plan describes, and a bridge crosses whatever is beneath it.
+    Paths keep their own layer regardless: a footbridge is still a footway.
+    """
+    if highway in PATH_TYPES:
+        return LAYERS["road_path"]
+    if str(tags.get("tunnel", "")).lower() not in ("", "no"):
+        return LAYERS["road_tunnel"]
+    if str(tags.get("bridge", "")).lower() not in ("", "no"):
+        return LAYERS["road_bridge"]
+    return LAYERS["road_centre"]
+
 
 # Drawn as a single line on C-ROAD-PATH with no edge-of-pavement offset.
 PATH_TYPES = {"footway", "path", "cycleway", "steps", "pedestrian",
@@ -574,6 +669,11 @@ LAYERS = {
     # `oneway` tag (and the roundabouts that imply it). Their own layer so a
     # drafter can plot the drawing without traffic direction on it.
     "road_arrow": "C-ROAD-ARRW",
+    # A bridge crosses whatever is under it and a tunnel runs beneath the
+    # ground the plan describes; a drafter needs both separable from the
+    # carriageways at grade.
+    "road_bridge": "C-ROAD-BRDG",
+    "road_tunnel": "C-ROAD-TUNL",
     # No OSM source for a legal right-of-way, so this is created empty and
     # ready for a drafter to draw the ROW onto, like C-PROP-LINE.
     "road_row": "C-ROAD-ROWY",
@@ -597,6 +697,17 @@ LAYERS = {
     "rail": "C-RAIL-TRAK",
     "barrier": "C-BNDY-BARR",
     "poi": "C-ANNO-SYMB",
+    # Utilities and planting. Power infrastructure is on almost every Thai
+    # site plan and OSM maps it well: lines on C-UTIL-POWR with the pylons
+    # and poles as symbols on the same layer, pipelines beside them.
+    "power": "C-UTIL-POWR",
+    "pipeline": "C-UTIL-PIPE",
+    "tree": "C-LAND-TREE",
+    # Spot heights: the elevation at a point, which is what a surveyor
+    # levels to. Contours give the shape, a spot height gives the number.
+    "spot": "C-TOPO-SPOT",
+    # House numbers, small and language-neutral, under the building label.
+    "addr": "C-ANNO-ADDR",
     # Landmark grounds that carry no building tag — hospital and school
     # campuses, temple precincts, car parks. Kept off C-BLDG-OUTL so a
     # 3,000 m2 car park does not read as a structure.
@@ -633,6 +744,12 @@ ANNO_STYLE = {
     "C-ANNO-TEXT": (2, "EN_STYLE"),      # neutral: codes, elevations, N, GPS
     "C-ANNO-TEXT-TH": (2, "TH_STYLE"),
     "C-ANNO-TEXT-EN": (7, "EN_STYLE"),
+    # House numbers are digits and separators in either script, so they
+    # take the Latin style and stay off both language layers — freezing
+    # Thai or English must not blank the addresses.
+    "C-ANNO-ADDR": (8, "EN_STYLE"),
+    # An elevation is a number; it belongs with the neutral annotation
+    "C-TOPO-SPOT": (8, "EN_STYLE"),
 }
 
 # Vertical gap between the English and Thai label of the same feature, as a
@@ -784,7 +901,7 @@ def new_ml_rings(existing_rings, ms_rings):
 def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
                 contours=(), contour_layers=None,
                 poi_points=(), poi_areas=(), context=(), attributes=(),
-                merge=False):
+                spots=(), merge=False):
     """Stage what was just drawn into the SQLite layer, with CAD label
     anchors precomputed so the drawing step is plain SELECTs.
 
@@ -867,6 +984,7 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     # The source tags travel with the drawing, so db2dxf.py can re-attach
     # the same XDATA instead of re-issuing a drawing stripped of it.
     n_t = stage_db.stage_tags(conn, pid, list(attributes))
+    n_sp_h = stage_db.stage_spots(conn, pid, list(spots))
 
     labels = conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
                           " project_id = ?", (pid,)).fetchone()[0]
@@ -880,7 +998,8 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
     print(f"{verb} {a.db}: project '{project}' (id {pid}) — "
           f"{n_b} buildings, {n_r} roads, {n_c} contours, "
           f"{n_p} POI points, {n_sp} POI areas, {n_x} context, "
-          f"{n_t} tags, {labels} CAD labels ready")
+          f"{n_t} tags, {n_sp_h} spot heights, "
+          f"{labels} CAD labels ready")
     if existed:
         # A re-issue draws everything staged, not just this import
         print(f"  project now holds {totals['staging_buildings']} buildings "
@@ -950,9 +1069,13 @@ def main():
     water, green = features["water"], features["green"]
     rails, barriers = features["rails"], features["barriers"]
     pois, site_pois = features["pois"], features["site_pois"]
+    power, pipelines = features["power"], features["pipelines"]
+    point_marks = features["points"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
-          f"{len(pois)} POI points, {len(site_pois)} POI areas")
+          f"{len(pois)} POI points, {len(site_pois)} POI areas, "
+          f"{len(power)} power, {len(pipelines)} pipeline, "
+          f"{len(point_marks)} pylon/tree")
 
     if not a.no_ml:
         # Always supplement, not only when OSM is nearly empty. The old
@@ -977,9 +1100,13 @@ def main():
                            ("anno_th", 2, 25), ("anno_en", 7, 25),
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
+                           ("road_bridge", 7, 40), ("road_tunnel", 8, 18),
                            ("water", 5, 18), ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
+                           ("power", 6, 25), ("pipeline", 4, 18),
+                           ("tree", 3, 13), ("addr", 8, 13),
+                           ("spot", 8, 18),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(LAYERS[key], color=color)
@@ -997,6 +1124,8 @@ def main():
     # Dashed, so the crop line cannot be mistaken for a fence, a wall or a
     # property boundary — it is a limit of extent, not surveyed geometry.
     doc.layers.get(LAYERS["extent"]).dxf.linetype = "DASHED"
+    # A tunnel is under the ground this plan describes, so it plots hidden
+    doc.layers.get(LAYERS["road_tunnel"]).dxf.linetype = "HIDDEN"
     # Dashes are in drawing units — metres here — so without a scale the
     # CENTER pattern is sub-millimetre on paper and reads as continuous.
     doc.header["$LTSCALE"] = 5.0
@@ -1081,6 +1210,35 @@ def main():
             if mx is not None:
                 mtext(f"{lev:g}", mx, my, 2.5, rotation=rot)
 
+    # Spot heights: the DEM sampled on a grid inset from the extent, so a
+    # reviewer can read levels across the site rather than interpolating
+    # between contours. Staged, because db2dxf.py has no DEM to sample.
+    staged_spots = []
+    if not a.no_spots:
+        cx0, cy0 = to_utm.transform(w, s)
+        cx1, cy1 = to_utm.transform(e, n)
+        with rasterio.open(a.dem) as src:
+            for gx, gy in _anchor_rules.spot_grid(cx0, cy0, cx1, cy1):
+                glon, glat = to_wgs.transform(gx, gy)
+                try:
+                    value = next(src.sample([(glon, glat)]))[0]
+                except (StopIteration, IndexError):
+                    continue
+                if value is None or (src.nodata is not None
+                                     and value == src.nodata):
+                    continue
+                elev = float(value)
+                if not math.isfinite(elev):
+                    continue
+                msp.add_circle((gx, gy), radius=0.6,
+                               dxfattribs={"layer": LAYERS["spot"]})
+                # {:+.1f}, not "+" + the number: a point below datum
+                # would otherwise be labelled "+-0.3"
+                mtext(f"{elev:+.1f}", gx + 2.5, gy, 2.5,
+                      layer=LAYERS["spot"])
+                staged_spots.append({"x": gx, "y": gy, "elevation_m": elev})
+        print(f"Spot heights: {len(staged_spots)} sampled from the DEM")
+
     # Buildings: outline, then a label centred inside every footprint —
     # its name when OSM has one, otherwise a B### code carried in the
     # inventory CSV so field teams can fill the name in later.
@@ -1129,12 +1287,20 @@ def main():
         if name or not a.names_only:
             mtext_bilingual(th, en, cx, cy, 3.5,
                             fallback=None if a.names_only else code)
+        # House number under the label, small and language-neutral — the
+        # same row cad_labels emits, at the same offset, so a re-issue puts
+        # it in the same place.
+        house = (tag_index.get(fid) or {}).get("addr:housenumber")
+        if house:
+            hx, hy = offset_along_normal(cx, cy, 0.0, -3.0)
+            mtext(house, hx, hy, 2.2, layer=LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         record(fid, "building", LAYERS["building"], label)
         blon, blat = to_wgs.transform(cx, cy)
         inventory.append({"feature_id": fid, "code": code,
                           "osm_name": name or "", "display_name": label,
                           "name_th": th or "", "name_en": en or "",
+                          "addr_house": house or "",
                           "source": "openstreetmap" if not fid.startswith("ms/")
                           else "microsoft_ml",
                           "latitude": round(blat, 8),
@@ -1146,9 +1312,11 @@ def main():
     import blocks as _blocks
     for (th, en), ref, pts, highway, fid, oneway in roads:
         name = th or en
-        width_m = ROAD_WIDTH_M.get(highway, 5.0)
+        road_tags = tag_index.get(fid) or {}
+        # Measured where OSM has it, guessed by class only where it does not
+        width_m = carriageway_width(road_tags, highway)
         is_path = highway in PATH_TYPES
-        cad_layer = LAYERS["road_path" if is_path else "road_centre"]
+        cad_layer = road_cad_layer(road_tags, highway)
         road_runs = []
         for run in clip_runs(pts, s, w, n, e):
             ux, uy = to_utm.transform(*zip(*run))
@@ -1259,8 +1427,23 @@ def main():
 
     draw_lines(water, "water", LAYERS["water"], label=True)
     draw_lines(green, "green", LAYERS["green"], label=True)
+    if a.hatch:
+        # Closed runs only: an open canal centreline has no area to fill.
+        # db2dxf.py hatches the same rows, recovering "closed" the same way.
+        n_hatch = 0
+        for rec in staged_context:
+            if rec["kind"] not in _anchor_rules.HATCH_PATTERNS:
+                continue
+            for run in rec["runs"]:
+                if len(run) >= 4 and run[0] == run[-1]:
+                    _anchor_rules.hatch_area(msp, run, rec["kind"],
+                                             rec["cad_layer"])
+                    n_hatch += 1
+        print(f"Hatched: {n_hatch} water/vegetation area(s)")
     draw_lines(rails, "rail", LAYERS["rail"])
     draw_lines(barriers, "barrier", LAYERS["barrier"])
+    draw_lines(power, "power", LAYERS["power"])
+    draw_lines(pipelines, "pipeline", LAYERS["pipeline"])
 
     # Context names dedupe within their own kind, matching the view's
     # PARTITION BY project_id, kind, display_name.
@@ -1302,6 +1485,22 @@ def main():
                                  "geom_pts": upts})
 
     staged_pois = []
+    # Pylons, poles and trees: a symbol and nothing else. They stage in the
+    # POI table with an empty display_name, which cad_labels already skips,
+    # so db2dxf.py redraws the mark without inventing a label for it.
+    for kind, plon, plat, fid, ptype in sorted(point_marks,
+                                               key=lambda m: m[3]):
+        px, py = to_utm.transform(plon, plat)
+        layer = LAYERS["tree" if kind == "tree" else "power"]
+        attach(_blocks.add_symbol(doc, msp, px, py,
+                                  _blocks.symbol_size(layer), layer), fid)
+        record(fid, kind, layer, "")
+        staged_pois.append({"feature_id": fid,
+                            "poi_key": "natural" if kind == "tree" else "power",
+                            "poi_type": ptype, "name_th": "", "name_en": "",
+                            "display_name": "", "cad_layer": layer,
+                            "x": px, "y": py,
+                            "latitude": plat, "longitude": plon})
     for (th, en), plon, plat, kind, fid in sorted(pois, key=lambda p: p[4]):
         px, py = to_utm.transform(plon, plat)
         import blocks
@@ -1386,7 +1585,7 @@ def main():
     with open(inv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "feature_id", "code", "osm_name", "display_name",
-            "name_th", "name_en", "source",
+            "name_th", "name_en", "addr_house", "source",
             "latitude", "longitude"])
         writer.writeheader()
         writer.writerows(inventory)
@@ -1413,7 +1612,8 @@ def main():
         stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,
                     contours, contour_layers,
                     poi_points=staged_pois, poi_areas=staged_site_pois,
-                    context=staged_context, attributes=attrs)
+                    context=staged_context, attributes=attrs,
+                    spots=staged_spots)
     print(f"CRS: EPSG:{utm_epsg} (UTM {utm_label}), units = meters. "
           f"Center at UTM ({cx:.1f}, {cy:.1f})")
 

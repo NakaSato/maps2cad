@@ -254,6 +254,42 @@ does pull `rasterio`/`pillow` into that stack, declared in its PEP 723
 header: tiles arrive in Web Mercator and must be reprojected, not
 corner-stretched.
 
+**Detail added for CAD, and what keeps each half honest.** Four classes
+were added to the extraction because a Thai site plan carries them and OSM
+maps them: power lines with their pylons and poles (`C-UTIL-POWR`),
+pipelines (`C-UTIL-PIPE`), individual trees (`C-LAND-TREE`) and house
+numbers (`C-ANNO-ADDR`). The first three are geometry, so they ride the
+existing tables — lines in `staging_context` under a new `kind`, pylons and
+trees in `staging_pois` with an empty `display_name`, which `cad_labels`
+already skips, so an unnamed mark cannot grow a label. House numbers needed
+a column (`staging_buildings.addr_house`, a `MIGRATIONS` entry) and a row in
+`cad_labels`, which is what lets `db2dxf.py` redraw them at the same offset.
+Symbols and their sizes live in `blocks.py` keyed by layer
+(`SYMBOL_FOR_LAYER`, `SIZE_FOR_LAYER`) because `db2dxf.py` knows only the
+layer a point was staged on — a tree that came back pylon-sized would be a
+difference nobody staged.
+
+**Road width is measured where OSM measured it.** `carriageway_width()`
+reads `width` (metres, or feet when the value ends `'`/`ft`), then `lanes`
+× 3.5 m on the trunk classes and × 3.0 m elsewhere, and only then falls
+back to `ROAD_WIDTH_M`. Every `residential` road used to be drawn 6.0 m
+whether it was a 4 m soi or an 8 m avenue. A parsed width under a metre is
+ignored as a mapping error, and lanes are capped at 40 m. `road_cad_layer()`
+splits bridges and tunnels off the carriageway layers — a footbridge stays a
+footway, and a way tagged both bridge and tunnel is drawn as a tunnel.
+
+**Spot heights are staged because `db2dxf.py` has no DEM.** `topo2cad.py`
+samples the DEM on `stage_db.spot_grid()`'s inset 5 × 5 grid and writes both
+the mark and the level; the grid is inset so the numbers do not land on the
+crop line. Without `staging_spots` a re-issue would come back with contours
+and no levels. The label format is `{:+.1f}` rather than `"+" + value`,
+because a point below datum was printing as `+-0.3`. Hatching
+(`HATCH_PATTERNS`, `hatch_area`) lives in `stage_db.py` for the same reason
+the arrow rule does: `db2dxf.py` fills the same rows and must not import the
+Overpass side to learn how. It is opt-in (`--hatch`) — a hatch at 1:5000 on
+a dense site is a lot of ink — and only closed runs are filled, since an
+open canal centreline has no area.
+
 **A repaired polygon is what gets drawn *and* what gets staged.**
 `stage_db.repaired_polygon()` / `polygon_parts()` exist because OSM carries
 self-intersecting rings — จุฬาลงกรณ์มหาวิทยาลัย is one — and `buffer(0)`

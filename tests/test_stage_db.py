@@ -874,3 +874,40 @@ def test_appid_defaults_to_osm_for_an_older_database():
                  (pid, "way/1", "building", "C-BLDG-OUTL", "building", "yes"))
     conn.commit()
     assert stage_db.tags_by_feature(conn, pid)["way/1"][0] == "OSM"
+
+
+# ------------------------------------------------ spot heights and hatching
+def test_spot_grid_insets_from_the_extent():
+    """The numbers must not land on the crop line, where the frame or the
+    title block sits on them."""
+    pts = stage_db.spot_grid(0, 0, 100, 60, columns=3, rows_n=2)
+    assert len(pts) == 6
+    assert all(0 < x < 100 and 0 < y < 60 for x, y in pts)
+    xs = sorted({round(x, 6) for x, _ in pts})
+    assert xs == [25.0, 50.0, 75.0]          # evenly spaced, none on an edge
+
+
+def test_spot_grid_handles_a_degenerate_request():
+    assert stage_db.spot_grid(0, 0, 10, 10, columns=0, rows_n=3) == []
+
+
+def test_spots_round_trip_and_are_cleared_on_re_extraction():
+    conn = connect(":memory:")
+    pid = create_project(conn, "p", 13.7, 100.5, 500, 400, 32647)
+    assert stage_db.stage_spots(conn, pid, [
+        {"x": 10.0, "y": 20.0, "elevation_m": 12.5},
+        {"x": 30.0, "y": 20.0, "elevation_m": -0.4}]) == 2
+    rows = [tuple(r) for r in conn.execute(
+        "SELECT x, y, elevation_m, cad_layer FROM staging_spots ORDER BY x")]
+    assert rows == [(10.0, 20.0, 12.5, "C-TOPO-SPOT"),
+                    (30.0, 20.0, -0.4, "C-TOPO-SPOT")]
+    # a re-extraction must not leave last run's levels behind
+    create_project(conn, "p", 13.7, 100.5, 200, 150, 32647)
+    assert conn.execute("SELECT COUNT(*) FROM staging_spots").fetchone()[0] == 0
+
+
+def test_hatch_patterns_cover_the_kinds_that_are_areas():
+    """Rail and barrier are lines; hatching them would fill a fence."""
+    assert set(stage_db.HATCH_PATTERNS) == {"water", "green"}
+    for pattern, scale in stage_db.HATCH_PATTERNS.values():
+        assert isinstance(pattern, str) and scale > 0

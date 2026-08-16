@@ -445,3 +445,45 @@ def test_multi_outer_relation_keeps_its_courtyard():
     buildings = classify_elements(elements)["buildings"]
     holes = {fid: len(h) for _n, (_ext, h), fid in buildings}
     assert holes == {"relation/7/0": 0, "relation/7/1": 1}
+
+
+# --------------------------------------------------------- road geometry
+@pytest.mark.parametrize("tags,highway,expected", [
+    ({}, "residential", 6.0),                 # class default, unchanged
+    ({"width": "4"}, "residential", 4.0),     # a mapper measured it
+    ({"width": "4.5 m"}, "residential", 4.5),
+    ({"width": "12'"}, "residential", 3.6576),  # feet, which OSM allows
+    ({"lanes": "4"}, "residential", 12.0),    # 3.0 m a lane off the trunk classes
+    ({"lanes": "4"}, "primary", 14.0),        # 3.5 m on a highway-standard class
+    ({"width": "0.5"}, "residential", 6.0),   # mapping error, ignored
+    ({"width": "wide"}, "residential", 6.0),  # unparseable, ignored
+    ({"lanes": "0"}, "residential", 6.0),
+    ({"width": "4", "lanes": "6"}, "residential", 4.0),   # width wins
+])
+def test_carriageway_width(tags, highway, expected):
+    from topo2cad import carriageway_width
+
+    assert carriageway_width(tags, highway) == pytest.approx(expected, abs=1e-3)
+
+
+def test_carriageway_width_is_capped():
+    """A tagging slip like lanes=99 must not draw a 300 m road."""
+    from topo2cad import carriageway_width
+
+    assert carriageway_width({"lanes": "99"}, "motorway") == 40.0
+
+
+@pytest.mark.parametrize("tags,highway,layer", [
+    ({}, "residential", "C-ROAD-CNTR"),
+    ({"bridge": "yes"}, "residential", "C-ROAD-BRDG"),
+    ({"tunnel": "yes"}, "primary", "C-ROAD-TUNL"),
+    ({"bridge": "no"}, "residential", "C-ROAD-CNTR"),
+    # A footbridge is still a footway: one line, no kerbs
+    ({"bridge": "yes"}, "footway", "C-ROAD-PATH"),
+    # Tunnel wins over bridge on the rare way tagged both
+    ({"bridge": "yes", "tunnel": "yes"}, "primary", "C-ROAD-TUNL"),
+])
+def test_road_cad_layer(tags, highway, layer):
+    from topo2cad import road_cad_layer
+
+    assert road_cad_layer(tags, highway) == layer

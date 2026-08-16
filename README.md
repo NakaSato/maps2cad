@@ -478,17 +478,27 @@ DXF drops straight into an engineering drawing set.
 | `C-ROAD-EDGE` | Both edges of pavement, offset by carriageway class |
 | `C-ROAD-PATH` | Footways, cycleways, steps — one line, no kerbs |
 | `C-ROAD-ARRW` | One-way direction arrows, from the OSM `oneway` tag |
+| `C-ROAD-BRDG` / `C-ROAD-TUNL` | Bridges; tunnels, HIDDEN — under the ground the plan describes |
 | `C-ROAD-ROWY` | Empty, PHANTOM — for a drafter to draw the legal right-of-way |
 | `C-TOPO-MAJR` / `C-TOPO-MINR` | Contours as 3D polylines at true elevation; every 5th is an index contour, labelled |
 | `C-HYDR-WATR` / `C-LAND-VEGT` | Canals, ponds; parks, farmland, cemeteries |
 | `C-RAIL-TRAK` / `C-BNDY-BARR` | Railways; walls and fences |
 | `C-ANNO-SYMB` / `C-SITE-POI` | Landmark point symbols; landmark grounds with no building tag |
+| `C-UTIL-POWR` / `C-UTIL-PIPE` | Power lines with their pylons and poles; pipelines |
+| `C-LAND-TREE` | Individual trees (`natural=tree`), drawn as their own symbol |
+| `C-ANNO-ADDR` | House numbers (`addr:housenumber`), small, under the building label |
+| `C-TOPO-SPOT` | Spot heights sampled from the DEM on a 5 × 5 grid |
 | `C-ANNO-TEXT` | Language-neutral text: B### codes, contour elevations, the GPS tag |
 | `C-ANNO-TEXT-TH` / `C-ANNO-TEXT-EN` | Thai and Latin labels — freeze one to plot a single-language sheet |
 | `C-ANNO-EXTN` | The requested extent, DASHED. A crop line, not a clip: linework runs ~55 m past it and footprints are never cut |
 | `C-ANNO-NORT` / `C-ANNO-GPSP` | North arrow block; circle and label at the input coordinate |
 | `C-PROP-LINE` / `C-PROP-SETB` | Empty, ready for parcel boundaries and setbacks (OSM has no source for either) |
 | `C-ANNO-BMAP` / `C-SITE-ORTH` | `--basemap` backdrop with its attribution; `--underlay` imagery you own |
+
+Carriageway width comes from the OSM `width` or `lanes` tags where a mapper
+supplied them (`width=4` draws 4 m, not the 6 m the class would guess);
+`ROAD_WIDTH_M` is the fallback. `--hatch` fills water and vegetation with the
+CAD patterns a drafter expects, and `--no-spots` turns off the levels.
 
 Coordinates are metres in the UTM zone **derived from the coordinate** —
 EPSG:32647 west of 102°E, EPSG:32648 east of it. Nothing is hardcoded:

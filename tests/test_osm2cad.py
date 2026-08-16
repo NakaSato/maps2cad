@@ -553,3 +553,62 @@ def test_merging_keeps_one_project_row_and_its_id(tmp_path):
         ids.append([r[0] for r in conn.execute("SELECT id FROM projects")])
         conn.close()
     assert ids[0] == ids[1] == [1]
+
+
+# ------------------------------------------------- utilities and planting
+UTILITIES = """<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <bounds minlat="15.8300" minlon="104.3900"
+          maxlat="15.8380" maxlon="104.3990"/>
+  <node id="1" lat="15.8320" lon="104.3920"/>
+  <node id="2" lat="15.8322" lon="104.3920"/>
+  <node id="3" lat="15.8322" lon="104.3924"/>
+  <node id="4" lat="15.8320" lon="104.3924"/>
+  <node id="12" lat="15.8330" lon="104.3940"/>
+  <node id="13" lat="15.8350" lon="104.3960"/>
+  <node id="20" lat="15.8332" lon="104.3942"><tag k="power" v="tower"/></node>
+  <node id="22" lat="15.8325" lon="104.3930">
+    <tag k="natural" v="tree"/></node>
+  <way id="100"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
+    <nd ref="1"/><tag k="building" v="yes"/>
+    <tag k="addr:housenumber" v="99/1"/></way>
+  <way id="200"><nd ref="12"/><nd ref="13"/><tag k="power" v="line"/></way>
+  <way id="300"><nd ref="12"/><nd ref="13"/>
+    <tag k="man_made" v="pipeline"/></way>
+</osm>
+"""
+
+
+def test_utilities_and_planting_reach_their_own_layers(tmp_path):
+    ezdxf = pytest.importorskip("ezdxf")
+    out = tmp_path / "utils.dxf"
+    assert osm2cad.main(["--input", str(write(tmp_path, UTILITIES, "u.osm")),
+                         "--out", str(out)]) == 0
+    doc = ezdxf.readfile(out)
+    msp = doc.modelspace()
+    layers = {e.dxf.layer for e in msp}
+    assert {"C-UTIL-POWR", "C-UTIL-PIPE", "C-LAND-TREE", "C-ANNO-ADDR"} <= layers
+    # A pylon and a tree are different marks, not two circles
+    blocks = {e.dxf.name for e in msp if e.dxftype() == "INSERT"}
+    assert {"PYLON_SYMB", "TREE_SYMB"} <= blocks
+    # ...and the tree is drawn smaller than the pylon
+    size = {e.dxf.name: e.dxf.xscale for e in msp if e.dxftype() == "INSERT"}
+    assert size["TREE_SYMB"] < size["PYLON_SYMB"]
+    house = [e.text for e in msp
+             if e.dxftype() == "MTEXT" and e.dxf.layer == "C-ANNO-ADDR"]
+    assert house == ["99/1"]
+
+
+def test_types_can_drop_utilities_and_trees(tmp_path):
+    """--types building alone must not smuggle a pylon in."""
+    elements, _ = read(write(tmp_path, UTILITIES, "u.osm"))
+    f = classify_elements(elements)
+    assert len(f["power"]) == 1 and len(f["pipelines"]) == 1
+    assert {m[0] for m in f["points"]} == {"power", "tree"}
+
+    only_power = osm2cad.select_types(f, {"power"})
+    assert only_power["buildings"] == []
+    assert {m[0] for m in only_power["points"]} == {"power"}
+    no_utils = osm2cad.select_types(f, {"building"})
+    assert no_utils["power"] == [] and no_utils["pipelines"] == []
+    assert no_utils["points"] == []

@@ -36,6 +36,8 @@ LAYER_STYLE = {
     "C-ROAD-CNTR": (8, 9),
     "C-ROAD-PATH": (8, 13),      # footways: one line, no edge of pavement
     "C-ROAD-ARRW": (30, 18),     # one-way direction arrows
+    "C-ROAD-BRDG": (7, 40),      # bridges: heavier, over what they cross
+    "C-ROAD-TUNL": (8, 18),      # tunnels: HIDDEN, under the ground
     "C-ROAD-ROWY": (1, 35),      # right of way, empty and ready to draw
     "C-TOPO-CONT": (8, 13),
     "C-TOPO-MAJR": (8, 25),   # index contours: heavier, labelled
@@ -48,6 +50,11 @@ LAYER_STYLE = {
     "C-RAIL-TRAK": (250, 18),
     "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols
+    "C-UTIL-POWR": (6, 25),      # power lines, pylons and poles
+    "C-UTIL-PIPE": (4, 18),      # pipelines
+    "C-LAND-TREE": (3, 13),      # individual trees
+    "C-ANNO-ADDR": (8, 13),      # house numbers
+    "C-TOPO-SPOT": (8, 18),      # spot heights sampled from the DEM
     "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
     "C-ANNO-EXTN": (7, 35),      # crop rectangle on the requested extent
     "C-ANNO-NORT": (7, 35),
@@ -73,6 +80,9 @@ ANNO_TEXT_STYLE = {
     "C-ANNO-TEXT": "EN_STYLE",
     "C-ANNO-TEXT-TH": "TH_STYLE",
     "C-ANNO-TEXT-EN": "EN_STYLE",
+    # Digits either way, and off both language layers on purpose
+    "C-ANNO-ADDR": "EN_STYLE",
+    "C-TOPO-SPOT": "EN_STYLE",
 }
 
 
@@ -163,6 +173,11 @@ def main(argv=None) -> int:
     ap.add_argument("--no-labels", action="store_true",
                     help="geometry only, leave C-ANNO-TEXT empty")
     ap.add_argument("--no-contours", action="store_true")
+    ap.add_argument("--no-spots", action="store_true",
+                    help="Leave the staged spot heights off the drawing")
+    ap.add_argument("--hatch", action="store_true",
+                    help="Hatch water and vegetation areas (same patterns "
+                         "topo2cad.py --hatch uses)")
     ap.add_argument("--no-attributes", action="store_true",
                     help="Do not re-attach the staged OSM tags as XDATA, and "
                          "do not write attributes.csv")
@@ -199,6 +214,7 @@ def main(argv=None) -> int:
     doc.layers.get("C-ROAD-ROWY").dxf.linetype = "PHANTOM"
     doc.layers.get("C-ROAD-CNTR").dxf.linetype = "CENTER"
     doc.layers.get("C-ANNO-EXTN").dxf.linetype = "DASHED"
+    doc.layers.get("C-ROAD-TUNL").dxf.linetype = "HIDDEN"
     doc.header["$LTSCALE"] = 5.0
 
     # The source OSM tags were staged with the features, so a re-issue is not
@@ -287,8 +303,9 @@ def main(argv=None) -> int:
     for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer FROM"
                             " staging_pois WHERE project_id = ?", (pid,)):
         for pt in parts(wkb.loads(row["geom_wkb"]), "Point"):
-            attach(blocks.add_poi_symbol(doc, msp, pt.x, pt.y, 2.0,
-                                         row["cad_layer"]),
+            layer = row["cad_layer"]
+            attach(blocks.add_symbol(doc, msp, pt.x, pt.y,
+                                     blocks.symbol_size(layer), layer),
                    row["feature_id"])
             n_p += 1
 
@@ -302,6 +319,39 @@ def main(argv=None) -> int:
                     [(x, y, row["elevation_m"]) for x, y in line.coords],
                     dxfattribs={"layer": row["cad_layer"]})
                 n_c += 1
+
+    # Spot heights: the elevation this route cannot sample for itself, so
+    # it draws exactly what extraction staged.
+    n_s = 0
+    if not a.no_spots:
+        for row in conn.execute(
+                "SELECT x, y, elevation_m, cad_layer FROM staging_spots"
+                " WHERE project_id = ? ORDER BY y, x", (pid,)):
+            msp.add_circle((row["x"], row["y"]), radius=0.6,
+                           dxfattribs={"layer": row["cad_layer"]})
+            m = msp.add_mtext(f"{row['elevation_m']:+.1f}", dxfattribs={
+                "layer": row["cad_layer"], "char_height": 2.5,
+                "style": ANNO_TEXT_STYLE.get(row["cad_layer"], "EN_STYLE")})
+            m.set_location((row["x"] + 2.5, row["y"]),
+                           attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+            m.set_bg_color("canvas", scale=BG_MASK_SCALE)
+            n_s += 1
+
+    # Hatching, from the same rows and the same patterns the extraction
+    # route uses — stage_db has no hatch of its own to disagree with.
+    n_h = 0
+    if a.hatch:
+        for row in conn.execute(
+                "SELECT kind, geom_wkb, cad_layer FROM staging_context"
+                " WHERE project_id = ? ORDER BY feature_id", (pid,)):
+            if row["kind"] not in stage_db.HATCH_PATTERNS:
+                continue
+            for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
+                coords = list(line.coords)
+                if len(coords) >= 4 and coords[0] == coords[-1]:
+                    stage_db.hatch_area(msp, coords, row["kind"],
+                                        row["cad_layer"])
+                    n_h += 1
 
     # ---- annotation: one SELECT against the view ----------------------
     n_t = 0
@@ -410,6 +460,8 @@ def main(argv=None) -> int:
     print(f"  {n_b} building outlines, {n_r} road centrelines "
           f"(+{n_e} edges, {n_a} one-way arrows), {n_c} contours, "
           f"{n_x} context lines, {n_p} POI symbols, {n_t} MTEXT")
+    if n_s or n_h:
+        print(f"  {n_s} spot heights, {n_h} hatched area(s)")
     if n_at:
         print(f"  {n_at} source tags re-attached as XDATA and written to "
               f"{out.with_name('attributes.csv').name}")
