@@ -226,6 +226,8 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         "all_poi": one("all_poi") == "on",
         "poster": one("poster") == "on",
         "map_arrows": one("map_arrows") == "on",
+        # Checked by default, so an unticked box means black
+        "plot_colour": one("plot_colour", "on") == "on",
         "poster_arrows": one("poster_arrows") == "on",
         "mono": one("mono") == "on",
         "final": one("final") == "on",
@@ -330,6 +332,11 @@ def run_generator(p: dict) -> dict:
             pdf_cmd = script_cmd(DXF2PDF) + [dxf, "-o", plot]
             pdf_cmd += (["--layout", "SHEET", "--size", sheet]
                         if sheet and sheet != "none" else ["--size", "A3"])
+            # A preview is read on a screen, where the NCS layer colours are
+            # the fastest way to see what is on which layer. dxf2pdf keeps
+            # black as *its* default, which is right for a plotted sheet.
+            if p.get("plot_colour", True):
+                pdf_cmd.append("--color")
             logs.append(run_step(pdf_cmd, "DXF plot preview"))
             record["plot"] = plot
         except BadRequest as e:      # preview is a convenience, not the export
@@ -741,6 +748,8 @@ that resolves the B### codes.</p>
     <label class="check"><input type="checkbox" name="poster_arrows"> Poster: one-way arrows</label>
     <label class="check" id="map_arrows_row"><input type="checkbox"
       id="map_arrows" name="map_arrows"> Site map: one-way arrows</label>
+    <label class="check"><input type="checkbox" name="plot_colour" checked>
+      Colour plot preview (layer colours)</label>
   </div>
   <p class="note" id="gov_note" style="display:none;margin-top:10px">
   The government sheet renders what its spec lists: one-way arrows and the
@@ -1747,7 +1756,7 @@ drawing.</p>
             log = run_step(cmd, "Re-issue")
             plot = str(run / "site_preview.pdf")
             try:
-                pdf_cmd = script_cmd(DXF2PDF) + [dxf, "-o", plot]
+                pdf_cmd = script_cmd(DXF2PDF) + [dxf, "-o", plot, "--color"]
                 pdf_cmd += (["--layout", "SHEET", "--size", sheet]
                             if sheet != "none" else ["--size", "A3"])
                 log += "\n" + run_step(pdf_cmd, "Plot preview")
@@ -1861,7 +1870,8 @@ drawing.</p>
             plot = str(run / "site_preview.pdf")
             try:
                 log += "\n" + run_step(
-                    script_cmd(DXF2PDF) + [dxf, "--size", "A3", "-o", plot],
+                    script_cmd(DXF2PDF) + [dxf, "--size", "A3", "-o", plot,
+                                           "--color"],
                     "Plot preview")
             except BadRequest:
                 plot = None
@@ -1959,6 +1969,11 @@ def main(argv=None):
         STAGING_DB = root / "staging.sqlite"
         for d in (DEM_DIR, OUT):
             d.mkdir(parents=True, exist_ok=True)
+        # The scripts run as subprocesses and find their own caches through
+        # this, so --data-dir has to reach them too: without it a tile cache
+        # lands beside the code and dies with the container, re-fetching
+        # tiles a usage policy asks us not to re-fetch.
+        os.environ["MAPS2CAD_DATA"] = str(root)
     if a.db:
         STAGING_DB = Path(a.db).resolve()
     global SESSIONS
