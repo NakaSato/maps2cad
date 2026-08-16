@@ -204,3 +204,51 @@ def test_the_import_only_drawing_has_its_own_name():
     assert serve.KINDS["dxf"] == "site.dxf"
     assert serve.KINDS["import_dxf"] == "import.dxf"
     assert serve.KINDS["import_dxf"] != serve.KINDS["dxf"]
+
+
+def _map_only_params():
+    return serve.parse_form({"lat": ["13.7455"], "lon": ["100.5325"],
+                             "width": ["300"], "height": ["200"],
+                             "export": ["map"]})
+
+
+def test_the_site_map_overlays_the_projects_survey_data(tmp_path,
+                                                        monkeypatch):
+    """A user who imports a parcel gets it on the submission sheet too, not
+    only in the DXF — the two exports describe the same site."""
+    import importlib.util as iu
+
+    spec = iu.spec_from_file_location(
+        "stage_db", Path(serve.__file__).parent / "stage_db.py")
+    stage_db = iu.module_from_spec(spec)
+    spec.loader.exec_module(stage_db)
+
+    db = tmp_path / "staging.sqlite"
+    conn = stage_db.connect(db)
+    stage_db.create_project(conn, "13.745500_100.532500_300x200",
+                            13.7455, 100.5325, 300, 200, 32647)
+    conn.close()
+    monkeypatch.setattr(serve, "STAGING_DB", db)
+    monkeypatch.setattr(serve, "OUT", tmp_path / "web")
+
+    seen = []
+    monkeypatch.setattr(serve, "run_step",
+                        lambda cmd, what, **kw: seen.append(cmd) or "")
+    serve.run_generator(_map_only_params())
+    cmd = seen[0]
+    assert "--overlay-db" in cmd
+    assert cmd[cmd.index("--overlay-project") + 1] == \
+        "13.745500_100.532500_300x200"
+
+
+def test_a_first_run_asks_for_no_overlay(tmp_path, monkeypatch):
+    """Nothing is staged yet on a first run, and pointing the renderer at a
+    project that does not exist would fail the export for an overlay's
+    sake."""
+    monkeypatch.setattr(serve, "STAGING_DB", tmp_path / "absent.sqlite")
+    monkeypatch.setattr(serve, "OUT", tmp_path / "web")
+    seen = []
+    monkeypatch.setattr(serve, "run_step",
+                        lambda cmd, what, **kw: seen.append(cmd) or "")
+    serve.run_generator(_map_only_params())
+    assert "--overlay-db" not in seen[0]

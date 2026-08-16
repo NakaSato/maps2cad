@@ -481,6 +481,14 @@ reprojects when the project's srid differs from the sheet's CRS — plotting
 zone 48 numbers on a zone 47 sheet is how a boundary lands a zone away and
 still looks drawn.
 
+The web app passes it automatically: `run_generator()` overlays the job's
+own project when — and only when — that project is already staged, so a
+first run at a fresh coordinate asks for no overlay (pointing the renderer
+at a project that does not exist would fail the export for an overlay's
+sake) and a re-run after an import carries the parcel onto the sheet. The
+CAD and map exports name the project the same way, which is what lets the
+two describe the same site.
+
 *The web has the same two rules.* `/import` passes the target project's
 srid as `--epsg` unless the form states one — an EPSG typed in is someone
 saying what their file is in, and it wins — and `/project/<id>` shows the

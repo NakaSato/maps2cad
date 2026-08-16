@@ -278,6 +278,13 @@ def run_generator(p: dict) -> dict:
               "when": datetime.now().strftime("%Y-%m-%d %H:%M")}
     logs = []
 
+    # One project name for both exports: the site map overlays the same
+    # staged survey data the DXF carries, so a user who imported a parcel
+    # gets it on the submission sheet too rather than only in CAD.
+    project = (p.get("gov", {}).get("project_name")
+               or f"{p['lat']:.6f}_{p['lon']:.6f}_"
+                  f"{p['width']:.0f}x{p['height']:.0f}")
+
     if p["export"] in ("both", "map"):
         pdf = str(run / "site_map.pdf")
         png = str(run / "site_map.png")
@@ -297,6 +304,12 @@ def run_generator(p: dict) -> dict:
                 cmd.append("--arrows")
             if p.get("basemap"):
                 cmd += ["--basemap", p["basemap"]]
+        # Only when that project is actually staged: on a first run nothing
+        # is, and pointing the renderer at a project that does not exist
+        # would fail the whole export for the sake of an overlay.
+        if project_srid(project):
+            cmd += ["--overlay-db", str(STAGING_DB),
+                    "--overlay-project", project]
         if p["profile"] == "government":
             if p["final"]:
                 cmd.append("--final")
@@ -309,9 +322,6 @@ def run_generator(p: dict) -> dict:
     if p["export"] in ("both", "cad"):
         dem = ensure_dem(p["lat"], p["lon"])
         dxf = str(run / "site.dxf")
-        project = (p.get("gov", {}).get("project_name")
-                   or f"{p['lat']:.6f}_{p['lon']:.6f}_"
-                      f"{p['width']:.0f}x{p['height']:.0f}")
         cad_cmd = script_cmd(CAD) + [
             "--lat", repr(p["lat"]), "--lon", repr(p["lon"]),
             "--width", repr(p["width"]), "--height", repr(p["height"]),
