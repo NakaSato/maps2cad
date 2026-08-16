@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -131,7 +132,13 @@ DEFAULT_PROVIDER = "osm"
 # per-run folder would re-fetch the same tiles for every re-plot of the same
 # site, which is exactly the behaviour a tile usage policy asks you not to
 # have.
-DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "cache" / "tiles"
+# Under MAPS2CAD_DATA when the app sets it — that is the volume a
+# container mounts, and a cache written next to the code instead is thrown
+# away on every deploy, re-fetching tiles a usage policy asks us not to
+# re-fetch. Falls back to the repo's own cache/ directory for CLI runs.
+DEFAULT_CACHE_DIR = Path(os.environ.get("MAPS2CAD_DATA")
+                         or Path(__file__).resolve().parent.parent) \
+    / "cache" / "tiles"
 DEFAULT_MAX_TILES = 128
 # Faded hard: this is a backdrop for linework, not something to read.
 DEFAULT_FADE = 65

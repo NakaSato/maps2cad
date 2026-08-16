@@ -11,6 +11,11 @@
 #     building inventory CSV if a name matters.
 #   * the DEM tile cache is lost too, so the first CAD export after a cold
 #     start re-downloads ~40 MB from Copernicus before it can draw.
+#   * so is the map-tile cache under <data>/cache/tiles, which means a
+#     background map re-fetches its tiles after every spin-down. Tile
+#     servers are shared infrastructure and OpenStreetMap's usage policy
+#     asks for caching, so on the free plan use --basemap sparingly, or
+#     move to a plan with a disk.
 #   * memory is 512 MB. A CAD run peaks around 165 MB, so this fits, but
 #     there is not much headroom for concurrent generations.
 #
