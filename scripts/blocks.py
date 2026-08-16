@@ -153,6 +153,9 @@ SYMBOL_FOR_LAYER = {
 # was staged on, and a tree that came back the size of a pylon would be a
 # difference nobody staged.
 SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0,
+                  # A boundary corner is a point, not a feature: the mark
+                  # says "here", the label says which row of the table.
+                  "C-PROP-CORN": 0.6,
                   "C-BNDY-BARR": 2.0, "C-UTIL-LAMP": 1.5,
                   # smallest of the lot: --all-features draws hundreds of
                   # these and they must not swamp the drawing
@@ -310,6 +313,7 @@ LAYER_STYLE = {
     "C-ANNO-NORT": (7, 35),
     "C-ANNO-GPSP": (1, 35),
     "C-PROP-LINE": (1, 70),
+    "C-PROP-CORN": (1, 25),      # boundary corner marks and their labels
     "C-PROP-SETB": (2, 25),
 }
 
@@ -343,3 +347,46 @@ def apply_layer_table(doc):
             doc.layers.get(name).dxf.linetype = linetype
     doc.header["$LTSCALE"] = LTSCALE
     return list(LAYER_STYLE)
+
+
+# How a corner label sits beside its mark, in metres. Small: a parcel
+# corner is read at plan scale, not from across the sheet, and a 3 m offset
+# (what a landmark label uses) puts A1 inside the neighbouring plot.
+CORNER_LABEL_DX = 1.5
+CORNER_LABEL_HEIGHT = 2.2
+
+
+def add_corner_marks(doc, layout, parcels, layer="C-PROP-CORN",
+                     style="EN_STYLE"):
+    """Mark and label every boundary corner; return the setting-out rows.
+
+    `parcels` is [(shapely polygon, name)]. Both writers that can hold a
+    supplied parcel — gis2cad.py drawing the import and db2dxf.py drawing
+    the project it joined — call this, so the marks, the labels and the
+    table cannot disagree between a drawing and its re-issue.
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    import stage_db
+
+    from ezdxf.enums import MTextEntityAlignment
+
+    rows = []
+    for index, (geom, name) in enumerate(parcels):
+        table = stage_db.corner_table(geom, index, name)
+        rows.extend(table)
+        for row in table:
+            x, y = row["easting"], row["northing"]
+            add_symbol(doc, layout, x, y, symbol_size(layer), layer)
+            label = layout.add_mtext(row["corner"], dxfattribs={
+                "layer": layer, "char_height": CORNER_LABEL_HEIGHT,
+                "style": style if style in doc.styles else "Standard"})
+            label.set_location(
+                (x + CORNER_LABEL_DX, y),
+                attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
+            # The same background mask every other label carries: a corner
+            # label lands on the boundary line by definition.
+            label.set_bg_color("canvas", scale=1.1)
+    return rows

@@ -746,6 +746,8 @@ def main(argv=None) -> int:
     prop.dxf.lineweight = 70
     setb = doc.layers.add(t2c.LAYERS["setback"], color=2, linetype="DASHED")
     setb.dxf.lineweight = 25
+    corner = doc.layers.add(t2c.LAYERS["corner"], color=1)
+    corner.dxf.lineweight = 25
     row = doc.layers.add(t2c.LAYERS["road_row"], color=1, linetype="PHANTOM")
     row.dxf.lineweight = 35
     doc.layers.get(t2c.LAYERS["road_centre"]).dxf.linetype = "CENTER"

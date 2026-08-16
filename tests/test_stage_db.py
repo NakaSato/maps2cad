@@ -1012,3 +1012,70 @@ def test_the_layer_table_and_its_linetypes_live_in_one_place():
     # The pattern is in metres, so without a scale the dashes are
     # sub-millimetre on paper and read as continuous.
     assert blocks.LTSCALE == 5.0
+
+
+# --- Boundary corner table (setting-out) ------------------------------------
+
+def test_corner_bearings_are_north_based_and_clockwise(tmp_path):
+    """A survey table states grid bearings from north, clockwise — what a
+    total station is set to. The maths is atan2(dE, dN), not the
+    atan2(dy, dx) a plotting library wants, and getting that backwards
+    swaps east and north on every leg."""
+    from shapely.geometry import Polygon
+
+    rows = stage_db.corner_table(
+        Polygon([(100, 200), (130, 200), (130, 220), (100, 220)]))
+    assert [r["bearing"] for r in rows] == ["090°00'00\"", "000°00'00\"",
+                                            "270°00'00\"", "180°00'00\""]
+    assert [r["distance_m"] for r in rows] == [30.0, 20.0, 30.0, 20.0]
+
+
+def test_the_closing_vertex_is_not_tabled_twice():
+    """Shapely repeats the first coordinate to close a ring. Tabling it
+    would list one corner twice and give the last leg zero length."""
+    from shapely.geometry import Polygon
+
+    poly = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    assert len(list(poly.exterior.coords)) == 5
+    assert len(stage_db.polygon_corners(poly)) == 4
+    assert all(r["distance_m"] > 0 for r in stage_db.corner_table(poly))
+
+
+def test_corner_labels_carry_the_parcel(tmp_path):
+    from shapely.geometry import Polygon
+
+    poly = Polygon([(0, 0), (1, 0), (1, 1)])
+    assert [r["corner"] for r in stage_db.corner_table(poly, 0)] == \
+        ["A1", "A2", "A3"]
+    assert [r["corner"] for r in stage_db.corner_table(poly, 1)] == \
+        ["B1", "B2", "B3"]
+    # I and O are skipped: they read as 1 and 0 on a plotted sheet
+    assert "I" not in stage_db.CORNER_LABELS
+    assert "O" not in stage_db.CORNER_LABELS
+
+
+def test_seconds_carry_instead_of_printing_sixty():
+    """A bearing of 12°59'60" is not a bearing."""
+    import math
+
+    for angle in range(0, 360):
+        for frac in (0.0, 0.99999, 0.5):
+            deg = angle + frac
+            x2 = math.sin(math.radians(deg))
+            y2 = math.cos(math.radians(deg))
+            text = stage_db.azimuth_dms(0, 0, x2, y2)
+            assert "60\"" not in text, text
+            assert "'60" not in text, text
+
+
+def test_the_corner_csv_holds_what_a_setting_out_crew_needs(tmp_path):
+    from shapely.geometry import Polygon
+
+    rows = stage_db.corner_table(
+        Polygon([(0, 0), (10, 0), (10, 10), (0, 10)]), 0, "แปลง A")
+    out = tmp_path / "corner_coordinates.csv"
+    assert stage_db.write_corner_csv(out, rows) == 4
+    text = out.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == \
+        "parcel,corner,easting,northing,bearing,distance_m"
+    assert "แปลง A" in text

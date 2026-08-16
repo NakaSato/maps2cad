@@ -675,7 +675,7 @@ def test_the_staging_writer_defines_exactly_those_layers():
     spec.loader.exec_module(db2dxf)
 
     # The three empty site-plan layers are added outside the colour table
-    extra = ("property", "setback", "road_row")
+    extra = ("property", "setback", "road_row", "corner")
     names = {topo2cad.LAYERS[k]
              for k in _created_layer_keys("topo2cad.py") | set(extra)}
     assert set(db2dxf.LAYER_STYLE) == names, (

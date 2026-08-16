@@ -282,6 +282,11 @@ def main(argv=None) -> int:
     ap.add_argument("--no-attributes", action="store_true",
                     help="Do not attach the file's own fields to each entity "
                          "as XDATA, and do not write attributes.csv")
+    ap.add_argument("--corners", action="store_true",
+                    help="Mark and label the boundary corners of every "
+                         "polygon and write corner_coordinates.csv beside "
+                         "the drawing: easting, northing, and the bearing "
+                         "and distance to the next corner.")
     ap.add_argument("--mono", action="store_true",
                     help="Monochrome: every layer on ACI 7 (same as "
                          "topo2cad.py --mono)")
@@ -361,6 +366,7 @@ def main(argv=None) -> int:
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     counts = {"polygon": 0, "line": 0, "point": 0, "label": 0, "edge": 0}
+    corner_parcels = []                 # every polygon, for --corners
     drawn, feature_tags = [], {}
     for path, gdf in frames:
         gdf = gdf.to_crs(f"EPSG:{epsg}")
@@ -396,6 +402,7 @@ def main(argv=None) -> int:
 
             for poly in parts(geom, "Polygon"):
                 layer = forced or LAYERS["polygon"]
+                corner_parcels.append((poly, label or ""))
                 attach(msp.add_lwpolyline(list(poly.exterior.coords),
                                           close=True,
                                           dxfattribs={"layer": layer}))
@@ -447,6 +454,17 @@ def main(argv=None) -> int:
         stage(a, frames, epsg, c, attrs)
 
     out = Path(a.out) if a.out else Path(a.input[0]).with_suffix(".dxf")
+    # The setting-out table for every polygon this import drew. db2dxf.py
+    # writes the same table from the staging layer through the same helper,
+    # so an import and its re-issue cannot disagree about where a corner is
+    # or what it is called.
+    if a.corners and corner_parcels:
+        rows = blocks.add_corner_marks(doc, msp, corner_parcels)
+        corner_path = out.with_name("corner_coordinates.csv")
+        stage_db.write_corner_csv(corner_path, rows)
+        print(f"Corners: {len(rows)} on {len(corner_parcels)} parcel(s) "
+              f"-> {corner_path}")
+
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.mono:
         apply_mono(doc)

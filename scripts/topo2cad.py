@@ -947,6 +947,11 @@ LAYERS = {
     "extent": "C-ANNO-EXTN",
     "property": "C-PROP-LINE",
     "setback": "C-PROP-SETB",
+    # Boundary corner marks and their labels. Empty from this route: OSM
+    # has no surveyed parcel to take corners from, and tabling an OSM
+    # building outline to the millimetre would say someone had measured it.
+    # Created anyway, like C-PROP-LINE, so every layer table agrees.
+    "corner": "C-PROP-CORN",
 }
 
 
@@ -1381,6 +1386,8 @@ def main():
     prop.dxf.lineweight = 70
     setb = doc.layers.add(LAYERS["setback"], color=2, linetype="DASHED")
     setb.dxf.lineweight = 25
+    corner = doc.layers.add(LAYERS["corner"], color=1)
+    corner.dxf.lineweight = 25
     row = doc.layers.add(LAYERS["road_row"], color=1, linetype="PHANTOM")
     row.dxf.lineweight = 35
     # NCS convention: a centreline is drawn with the CENTER linetype so it is

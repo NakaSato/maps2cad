@@ -728,6 +728,83 @@ def levels_label(tags) -> str:
     return f"{metres:.1f} m" if 0 < metres < 1000 else ""
 
 
+# ------------------------------------------------------- setting-out table
+# A parcel drawn without its corner coordinates is a picture. What a Thai
+# reviewer reads off a ผังบริเวณ — and what anyone setting the boundary out
+# on the ground works from — is a table: each corner by number, its easting
+# and northing, and the bearing and distance to the next one. This is
+# computed from the geometry, never stored, for the same reason the grid is:
+# every writer has the polygon and none of them should disagree about it.
+CORNER_LABELS = "ABCDEFGHJKLMNPQRSTUVWXYZ"      # no I or O: they read as 1/0
+
+
+def corner_label(parcel_index: int, corner_index: int) -> str:
+    """A1, A2 ... B1, B2 — parcel by letter, corner by number."""
+    letter = CORNER_LABELS[parcel_index % len(CORNER_LABELS)]
+    return f"{letter}{corner_index + 1}"
+
+
+def polygon_corners(geom):
+    """The exterior vertices of a polygon, without the repeated closing one.
+
+    Shapely closes a ring by repeating the first coordinate; tabling that
+    would list one corner twice and give the last leg a zero length.
+    """
+    ring = list(getattr(geom, "exterior", geom).coords)
+    if len(ring) > 1 and ring[0] == ring[-1]:
+        ring = ring[:-1]
+    return ring
+
+
+def azimuth_dms(x1, y1, x2, y2) -> str:
+    """Grid bearing from (x1,y1) to (x2,y2) as D°M'S", clockwise from north.
+
+    North-based and clockwise because that is what a survey table states
+    and what a total station is set to; the maths here is atan2(dE, dN),
+    not the atan2(dy, dx) a plotting library wants.
+    """
+    deg = math.degrees(math.atan2(x2 - x1, y2 - y1)) % 360.0
+    d = int(deg)
+    m_full = (deg - d) * 60
+    m = int(m_full)
+    s = int(round((m_full - m) * 60))
+    if s == 60:                     # rounding up carries, or 12°59'60" prints
+        s, m = 0, m + 1
+    if m == 60:
+        m, d = 0, (d + 1) % 360
+    return f"{d:03d}°{m:02d}'{s:02d}\""
+
+
+def corner_table(geom, parcel_index: int = 0, name: str = ""):
+    """[{parcel, corner, easting, northing, bearing, distance_m}] for one
+    polygon, each row giving the leg **to the next** corner and closing back
+    to the first."""
+    corners = polygon_corners(geom)
+    rows = []
+    for i, (x, y) in enumerate(corners):
+        nx, ny = corners[(i + 1) % len(corners)]
+        rows.append({
+            "parcel": name or f"parcel {parcel_index + 1}",
+            "corner": corner_label(parcel_index, i),
+            "easting": round(x, 3), "northing": round(y, 3),
+            "bearing": azimuth_dms(x, y, nx, ny),
+            "distance_m": round(math.hypot(nx - x, ny - y), 3)})
+    return rows
+
+
+def write_corner_csv(path, rows) -> int:
+    """The setting-out table beside the drawing."""
+    import csv
+
+    fields = ["parcel", "corner", "easting", "northing", "bearing",
+              "distance_m"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows({k: r[k] for k in fields} for r in rows)
+    return len(rows)
+
+
 def repaired_polygon(exterior, holes=()):
     """The polygon a writer should draw *and* stage.
 

@@ -155,6 +155,11 @@ def main(argv=None) -> int:
     ap.add_argument("--no-contours", action="store_true")
     ap.add_argument("--no-spots", action="store_true",
                     help="Leave the staged spot heights off the drawing")
+    ap.add_argument("--corners", action="store_true",
+                    help="Mark and label the boundary corners of supplied "
+                         "parcels and write corner_coordinates.csv beside "
+                         "the drawing: easting, northing, and the bearing "
+                         "and distance to the next corner.")
     ap.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
                     help="Draw the UTM coordinate grid (same rule as "
                          "topo2cad.py --grid)")
@@ -462,6 +467,29 @@ def main(argv=None) -> int:
         print("  no requested extent staged for this project (an import "
               "carries features, not a site) — crop line, dimensions, grid, "
               "north arrow and site marker skipped")
+
+    # Boundary corners of any supplied parcel: the table a reviewer reads
+    # off a site plan and a setting-out crew works from. Only user_gis rows
+    # — an OSM building outline is not a surveyed boundary and tabling its
+    # corners to the millimetre would say it was.
+    if a.corners:
+        parcels = []
+        for row in conn.execute(
+                "SELECT display_name, geom_wkb FROM staging_buildings"
+                " WHERE project_id = ? AND source LIKE 'user_gis:%'"
+                " ORDER BY feature_id", (pid,)):
+            geom = wkb.loads(row["geom_wkb"])
+            for part in stage_db.polygon_parts(geom):
+                parcels.append((part, row["display_name"] or ""))
+        rows = blocks.add_corner_marks(doc, msp, parcels)
+        if rows:
+            corner_path = Path(out).with_name("corner_coordinates.csv")
+            stage_db.write_corner_csv(corner_path, rows)
+            print(f"  {len(rows)} boundary corner(s) on "
+                  f"{len(parcels)} parcel(s) -> {corner_path}")
+        else:
+            print("  --corners: this project holds no supplied parcel "
+                  "(import one with gis2cad.py)")
 
     if a.sheet:
         import datetime
