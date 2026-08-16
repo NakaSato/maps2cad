@@ -223,13 +223,19 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         "cad_sheet": cad_sheet, "cad_scale": cad_scale, "basemap": basemap,
         "title": one("title", "Detailed Site Map"),
         "codes": one("codes", "on") == "on",
-        "all_poi": one("all_poi") == "on",
-        "poster": one("poster") == "on",
-        "map_arrows": one("map_arrows") == "on",
-        # Checked by default, so an unticked box means black
-        "plot_colour": one("plot_colour", "on") == "on",
-        "poster_arrows": one("poster_arrows") == "on",
-        "mono": one("mono") == "on",
+        # Everything that *adds* to a run is on here, with no checkbox to
+        # forget: the poster, direction arrows wherever they are allowed,
+        # every mapped landmark rather than the curated civic set, and
+        # colour plot previews. The two switches that *remove* something
+        # are not defaulted on — --mono drops the layer colours, and
+        # --final drops the DRAFT marking from an unsigned sheet, which is
+        # a decision rather than a setting.
+        "all_poi": True,
+        "poster": True,
+        "poster_arrows": True,
+        "map_arrows": True,
+        "plot_colour": True,
+        "mono": False,
         "final": one("final") == "on",
         "gov": {k: one(k) for k, _ in GOV_FIELDS},
     }
@@ -742,15 +748,11 @@ that resolves the B### codes.</p>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
     <label class="check"><input type="checkbox" name="codes" checked> Show B### codes on unnamed buildings</label>
     <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
-    <label class="check"><input type="checkbox" name="all_poi"> Every amenity, not only civic landmarks</label>
-    <label class="check"><input type="checkbox" name="mono"> Monochrome CAD (แผนที่สังเขป)</label>
-    <label class="check"><input type="checkbox" name="poster"> B&amp;W poster (PNG + PDF)</label>
-    <label class="check"><input type="checkbox" name="poster_arrows"> Poster: one-way arrows</label>
-    <label class="check" id="map_arrows_row"><input type="checkbox"
-      id="map_arrows" name="map_arrows"> Site map: one-way arrows</label>
-    <label class="check"><input type="checkbox" name="plot_colour" checked>
-      Colour plot preview (layer colours)</label>
   </div>
+  <p class="note" style="margin-top:10px">Every run also gets the B&amp;W
+  poster, one-way direction arrows, every mapped landmark and colour plot
+  previews — nothing to remember to tick. Monochrome CAD stays on the
+  command line, since it drops the layer colours.</p>
   <p class="note" id="gov_note" style="display:none;margin-top:10px">
   The government sheet renders what its spec lists: one-way arrows and the
   background map are left off it, and apply to the CAD export and the
@@ -789,12 +791,6 @@ for sites OpenStreetMap has nothing mapped at.</p>
 function toggleGov(){{
   var gov = document.getElementById('profile').value === 'government';
   document.getElementById('gov').style.display = gov ? 'block' : 'none';
-  // Disabled rather than hidden: the option still reads as existing, and
-  // the sheet's own generator refuses it too, so nothing depends on this.
-  var arrows = document.getElementById('map_arrows');
-  arrows.disabled = gov;
-  if (gov) {{ arrows.checked = false; }}
-  document.getElementById('map_arrows_row').style.opacity = gov ? 0.45 : 1;
   document.getElementById('gov_note').style.display = gov ? 'block' : 'none';
 }}
 document.addEventListener('DOMContentLoaded', toggleGov);
