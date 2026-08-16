@@ -48,6 +48,7 @@ DXF2PDF = BASE / "dxf2pdf.py"
 DB2DXF = BASE / "db2dxf.py"
 GIS2CAD = BASE / "gis2cad.py"
 OSM2CAD = BASE / "osm2cad.py"
+POSTER = BASE / "mapposter.py"
 STAGE_DB = BASE / "stage_db.py"
 # Staging database every CAD run is written into; browsable and editable
 # from /projects. Overridable with --db.
@@ -223,6 +224,8 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         "title": one("title", "Detailed Site Map"),
         "codes": one("codes", "on") == "on",
         "all_poi": one("all_poi") == "on",
+        "poster": one("poster") == "on",
+        "poster_arrows": one("poster_arrows") == "on",
         "mono": one("mono") == "on",
         "final": one("final") == "on",
         "gov": {k: one(k) for k, _ in GOV_FIELDS},
@@ -324,6 +327,24 @@ def run_generator(p: dict) -> dict:
         except BadRequest as e:      # preview is a convenience, not the export
             logs.append(f"NOTE: plot preview unavailable — {e}")
 
+    if p.get("poster"):
+        # Its own deliverable, not a variant of the others: a B&W print map
+        # for a wall or a submission cover, from the same coordinate.
+        dem = ensure_dem(p["lat"], p["lon"])
+        png = str(run / "poster.png")
+        cmd = script_cmd(POSTER) + [
+            "--lat", repr(p["lat"]), "--lon", repr(p["lon"]),
+            "--width", repr(p["width"]), "--height", repr(p["height"]),
+            "--dem", str(dem), "--out", png, "--title", p["title"]]
+        if p.get("poster_arrows"):
+            cmd.append("--arrows")
+        if p.get("basemap"):
+            cmd += ["--basemap", p["basemap"]]
+        logs.append(run_step(cmd, "Poster"))
+        record["poster"] = png
+        if (run / "poster.pdf").is_file():
+            record["poster_pdf"] = str(run / "poster.pdf")
+
     record["log"] = "\n".join(logs)
     save_job(record)
     with JOBS_LOCK:
@@ -341,7 +362,10 @@ KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          "tif": "basemap.tif",
          # Every OSM tag of every drawn feature. The entities carry these as
          # XDATA too, but that needs AutoCAD to read; this opens anywhere.
-         "attrs": "attributes.csv"}
+         "attrs": "attributes.csv",
+         # mapposter writes the pair; the PNG previews in a browser, the PDF
+         # is what goes to a printer.
+         "poster": "poster.png", "poster_pdf": "poster.pdf"}
 
 
 def save_job(rec: dict) -> None:
@@ -697,7 +721,7 @@ that resolves the B### codes.</p>
         <option value="fit"{" selected" if v.get('cad_scale', 'fit') == 'fit' else ""}>Fit the extent (recommended)</option>
         {opts_scale(["500", "1000", "1250", "2000", "2500", "5000"], str(v.get('cad_scale', '')))}
       </select></div>
-    <div><label for="basemap">Background map (CAD)</label>
+    <div><label for="basemap">Background map</label>
       <select id="basemap" name="basemap">{basemap_opts}</select></div>
   </div>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
@@ -705,6 +729,8 @@ that resolves the B### codes.</p>
     <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
     <label class="check"><input type="checkbox" name="all_poi"> Every amenity, not only civic landmarks</label>
     <label class="check"><input type="checkbox" name="mono"> Monochrome CAD (แผนที่สังเขป)</label>
+    <label class="check"><input type="checkbox" name="poster"> B&amp;W poster (PNG + PDF)</label>
+    <label class="check"><input type="checkbox" name="poster_arrows"> Poster: one-way arrows</label>
   </div>
   <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
     <legend>Title block</legend>
@@ -795,6 +821,8 @@ def result_page(rec: dict) -> bytes:
         file_card("png", "300 DPI", "Site map PNG"),
         file_card("csv", "Inventory", "Buildings CSV"),
         file_card("attrs", "Attributes", "OSM tags table"),
+        file_card("poster", "B&W poster", "Poster PNG"),
+        file_card("poster_pdf", "Vector", "Poster PDF"),
         # Download only — a browser has no GeoTIFF viewer. Keep it beside
         # the DXF: AutoCAD resolves the reference relative to the drawing,
         # so taking one without the other loses the map.
