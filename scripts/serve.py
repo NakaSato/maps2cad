@@ -225,6 +225,7 @@ def parse_form(form: dict[str, list[str]]) -> dict:
         "codes": one("codes", "on") == "on",
         "all_poi": one("all_poi") == "on",
         "poster": one("poster") == "on",
+        "map_arrows": one("map_arrows") == "on",
         "poster_arrows": one("poster_arrows") == "on",
         "mono": one("mono") == "on",
         "final": one("final") == "on",
@@ -274,6 +275,13 @@ def run_generator(p: dict) -> dict:
             "--title", p["title"]]
         if not p["codes"]:
             cmd.append("--no-building-codes")
+        # The generator refuses these on the government profile, so the
+        # form must not send them there — the sheet renders its spec.
+        if p["profile"] != "government":
+            if p.get("map_arrows"):
+                cmd.append("--arrows")
+            if p.get("basemap"):
+                cmd += ["--basemap", p["basemap"]]
         if p["profile"] == "government":
             if p["final"]:
                 cmd.append("--final")
@@ -731,7 +739,13 @@ that resolves the B### codes.</p>
     <label class="check"><input type="checkbox" name="mono"> Monochrome CAD (แผนที่สังเขป)</label>
     <label class="check"><input type="checkbox" name="poster"> B&amp;W poster (PNG + PDF)</label>
     <label class="check"><input type="checkbox" name="poster_arrows"> Poster: one-way arrows</label>
+    <label class="check" id="map_arrows_row"><input type="checkbox"
+      id="map_arrows" name="map_arrows"> Site map: one-way arrows</label>
   </div>
+  <p class="note" id="gov_note" style="display:none;margin-top:10px">
+  The government sheet renders what its spec lists: one-way arrows and the
+  background map are left off it, and apply to the CAD export and the
+  poster only.</p>
   <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
     <legend>Title block</legend>
     <div class="grid g2">{gov_inputs}</div>
@@ -763,8 +777,18 @@ for sites OpenStreetMap has nothing mapped at.</p>
 <div class="wide">{history_html(8)}</div>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
 <script>
-function toggleGov(){{document.getElementById('gov').style.display =
-  document.getElementById('profile').value === 'government' ? 'block' : 'none';}}
+function toggleGov(){{
+  var gov = document.getElementById('profile').value === 'government';
+  document.getElementById('gov').style.display = gov ? 'block' : 'none';
+  // Disabled rather than hidden: the option still reads as existing, and
+  // the sheet's own generator refuses it too, so nothing depends on this.
+  var arrows = document.getElementById('map_arrows');
+  arrows.disabled = gov;
+  if (gov) {{ arrows.checked = false; }}
+  document.getElementById('map_arrows_row').style.opacity = gov ? 0.45 : 1;
+  document.getElementById('gov_note').style.display = gov ? 'block' : 'none';
+}}
+document.addEventListener('DOMContentLoaded', toggleGov);
 </script>""")
 
 
