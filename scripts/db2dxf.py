@@ -51,6 +51,8 @@ LAYER_STYLE = {
     "C-SITE-PARK": (140, 13),    # parking areas
     "C-ANNO-GRID": (253, 9),     # UTM coordinate grid
     "C-ANNO-DIMS": (2, 18),      # extent dimensions
+    "C-ROAD-PLAZ": (8, 18),      # pedestrian areas and plazas
+    "C-UTIL-LAMP": (51, 13),     # street lighting
     "C-RAIL-TRAK": (250, 18),
     "C-BNDY-BARR": (9, 13),      # walls and fences
     "C-ANNO-SYMB": (6, 18),      # landmark point symbols
@@ -305,6 +307,23 @@ def main(argv=None) -> int:
                 dxfattribs={"layer": row["cad_layer"]}), row["feature_id"])
             n_x += 1
 
+    # Flow direction on waterways: derived, not staged — an open run on
+    # the water layer has a direction, a closed one is a pond.
+    n_f = 0
+    for row in conn.execute("SELECT kind, geom_wkb, cad_layer FROM"
+                            " staging_context WHERE project_id = ?"
+                            " ORDER BY feature_id", (pid,)):
+        if row["kind"] != "water":
+            continue
+        for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
+            coords = list(line.coords)
+            if len(coords) >= 2 and coords[0] != coords[-1]:
+                for ax, ay, rot in stage_db.arrow_positions(coords):
+                    blocks.add_oneway_arrow(doc, msp, ax, ay,
+                                            stage_db.FLOW_ARROW_M, rot,
+                                            row["cad_layer"])
+                    n_f += 1
+
     # Landmark point symbols. The areas came through staging_buildings above
     # already, carrying their own C-SITE-POI cad_layer.
     n_p = 0
@@ -498,8 +517,9 @@ def main(argv=None) -> int:
     print(f"  {n_b} building outlines, {n_r} road centrelines "
           f"(+{n_e} edges, {n_a} one-way arrows), {n_c} contours, "
           f"{n_x} context lines, {n_p} POI symbols, {n_t} MTEXT")
-    if n_s or n_h:
-        print(f"  {n_s} spot heights, {n_h} hatched area(s)")
+    if n_s or n_h or n_f:
+        print(f"  {n_s} spot heights, {n_h} hatched area(s), "
+              f"{n_f} flow arrows")
     if n_at:
         print(f"  {n_at} source tags re-attached as XDATA and written to "
               f"{out.with_name('attributes.csv').name}")

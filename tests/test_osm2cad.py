@@ -659,3 +659,63 @@ def test_context_features_carry_their_own_name(tmp_path):
         rows = list(csv_mod.DictReader(f))
     parking = [r for r in rows if r["feature_type"] == "parking"]
     assert parking and {r["display_name"] for r in parking} == {"ลานจอดรถ"}
+
+
+PLAZA = """<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <bounds minlat="15.8300" minlon="104.3900"
+          maxlat="15.8380" maxlon="104.3990"/>
+  <node id="1" lat="15.8320" lon="104.3920"/>
+  <node id="2" lat="15.8330" lon="104.3920"/>
+  <node id="3" lat="15.8330" lon="104.3940"/>
+  <node id="4" lat="15.8320" lon="104.3940"/>
+  <node id="5" lat="15.8310" lon="104.3910"/>
+  <node id="6" lat="15.8370" lon="104.3980"/>
+  <node id="7" lat="15.8345" lon="104.3955">
+    <tag k="highway" v="street_lamp"/></node>
+  <way id="100"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
+    <nd ref="1"/><tag k="highway" v="pedestrian"/><tag k="area" v="yes"/>
+    <tag k="name" v="ลานคนเมือง"/></way>
+  <way id="200"><nd ref="5"/><nd ref="6"/><tag k="waterway" v="canal"/>
+    <tag k="name" v="คลองทดสอบ"/></way>
+</osm>
+"""
+
+
+def test_a_plaza_is_an_area_not_a_footway_around_its_edge(tmp_path):
+    """highway=pedestrian + area=yes is ground you walk on. Drawn as a
+    path it traces the outline as if it were a 2 m footway."""
+    elements, _ = read(write(tmp_path, PLAZA, "p.osm"))
+    f = classify_elements(elements)
+    assert [p[2] for p in f["plazas"]] == ["way/100"]
+    assert f["roads"] == []
+
+
+def test_plaza_lamp_and_flow_arrows_reach_the_drawing(tmp_path):
+    ezdxf = pytest.importorskip("ezdxf")
+    out = tmp_path / "plaza.dxf"
+    assert osm2cad.main(["--input", str(write(tmp_path, PLAZA, "p.osm")),
+                         "--out", str(out)]) == 0
+    msp = ezdxf.readfile(out).modelspace()
+    assert [e.dxftype() for e in msp
+            if e.dxf.layer == "C-ROAD-PLAZ"] == ["LWPOLYLINE"]
+    assert [e.dxf.name for e in msp if e.dxftype() == "INSERT"
+            and e.dxf.layer == "C-UTIL-LAMP"] == ["LAMP_SYMB"]
+    # the canal carries flow arrows, pointing the way it was digitised
+    flow = [e for e in msp if e.dxftype() == "INSERT"
+            and e.dxf.layer == "C-HYDR-WATR"]
+    assert flow and all(e.dxf.name == "ONEWAY_ARROW" for e in flow)
+
+
+def test_a_pond_gets_no_flow_arrows(tmp_path):
+    """A closed run is a pond; water in a pond does not go anywhere."""
+    ezdxf = pytest.importorskip("ezdxf")
+    pond = PLAZA.replace('<way id="200"><nd ref="5"/><nd ref="6"/>',
+                         '<way id="200"><nd ref="1"/><nd ref="2"/>'
+                         '<nd ref="3"/><nd ref="4"/><nd ref="1"/>')
+    out = tmp_path / "pond.dxf"
+    assert osm2cad.main(["--input", str(write(tmp_path, pond, "q.osm")),
+                         "--out", str(out)]) == 0
+    msp = ezdxf.readfile(out).modelspace()
+    assert not [e for e in msp if e.dxftype() == "INSERT"
+                and e.dxf.layer == "C-HYDR-WATR"]

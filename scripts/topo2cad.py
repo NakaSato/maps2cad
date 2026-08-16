@@ -205,6 +205,7 @@ def fetch_osm(s, w, n, e):
       way["man_made"="pipeline"]({s},{w},{n},{e});
       node["power"~"^(tower|pole|portal|transformer|substation)$"]({s},{w},{n},{e});
       node["natural"="tree"]({s},{w},{n},{e});
+      node["highway"="street_lamp"]({s},{w},{n},{e});
       way["amenity"]({s},{w},{n},{e});
       way["tourism"]({s},{w},{n},{e});
       way["historic"]({s},{w},{n},{e});
@@ -478,14 +479,17 @@ def classify_elements(elements, curated=True):
     buildings, roads, pois, site_pois = [], [], [], []
     water, green, rails, barriers = [], [], [], []
     power, pipelines, points, zoning = [], [], [], []
-    parking = []
+    parking, plazas = [], []
 
     def kind_of(tags):
         return poi_kind(tags, curated=curated)
 
     for el in elements:
         tags = el.get("tags", {})
-        if el["type"] == "node" and tags.get("barrier"):
+        if el["type"] == "node" and tags.get("highway") == "street_lamp":
+            points.append(("lamp", el["lon"], el["lat"],
+                           f"node/{el['id']}", "street_lamp"))
+        elif el["type"] == "node" and tags.get("barrier"):
             # A gate is an access point; a site plan shows where you get in
             points.append(("gate", el["lon"], el["lat"],
                            f"node/{el['id']}", tags["barrier"]))
@@ -508,8 +512,15 @@ def classify_elements(elements, curated=True):
                 # (exterior, holes) — a way has one ring by definition
                 buildings.append((names_by_lang(tags), (pts, []), fid))
             elif "highway" in tags:
-                roads.append((names_by_lang(tags), tags.get("ref"), pts,
-                              tags["highway"], fid, oneway_dir(tags)))
+                # An area you walk on rather than a line you walk along:
+                # drawing a plaza as a path traces its outline as if it
+                # were a 2 m footway around the edge.
+                if (str(tags.get("area", "")).lower() == "yes"
+                        and len(pts) >= 4 and pts[0] == pts[-1]):
+                    plazas.append((names_by_lang(tags), pts, fid))
+                else:
+                    roads.append((names_by_lang(tags), tags.get("ref"), pts,
+                                  tags["highway"], fid, oneway_dir(tags)))
             elif "waterway" in tags or tags.get("natural") == "water":
                 water.append((names_by_lang(tags), pts, fid))
             elif tags.get("amenity") == "parking" and len(pts) >= 3:
@@ -569,7 +580,7 @@ def classify_elements(elements, curated=True):
             "green": green, "rails": rails, "barriers": barriers,
             "pois": pois, "site_pois": site_pois,
             "power": power, "pipelines": pipelines, "points": points,
-            "zoning": zoning, "parking": parking}
+            "zoning": zoning, "parking": parking, "plazas": plazas}
 
 
 # Carriageway width in metres per highway class, used to draw each road as
@@ -747,6 +758,11 @@ LAYERS = {
     # Real DIMENSION entities on the extent, so the drawing states its own
     # size instead of leaving a reviewer to measure it.
     "dims": "C-ANNO-DIMS",
+    # A plaza or a covered walkway is an area you walk on, not a line you
+    # walk along; drawn closed so it reads as surface on the plan.
+    "plaza": "C-ROAD-PLAZ",
+    # Street lighting rides with the other utilities.
+    "lamp": "C-UTIL-LAMP",
     # Parking: drawn whatever the POI filter says, because a site plan
     # needs the parking whether or not a car park counts as a landmark.
     "parking": "C-SITE-PARK",
@@ -1123,12 +1139,13 @@ def main():
     power, pipelines = features["power"], features["pipelines"]
     point_marks = features["points"]
     zoning, parking = features["zoning"], features["parking"]
+    plazas = features["plazas"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, {len(water)} water, "
           f"{len(green)} green, {len(rails)} rail, {len(barriers)} barriers, "
           f"{len(pois)} POI points, {len(site_pois)} POI areas, "
           f"{len(power)} power, {len(pipelines)} pipeline, "
           f"{len(point_marks)} pylon/tree/gate, {len(zoning)} land-use, "
-          f"{len(parking)} parking")
+          f"{len(parking)} parking, {len(plazas)} plaza")
 
     if not a.no_ml:
         # Always supplement, not only when OSM is nearly empty. The old
@@ -1161,6 +1178,7 @@ def main():
                            ("tree", 3, 13), ("addr", 8, 13),
                            ("spot", 8, 18), ("zoning", 32, 13),
                            ("grid", 253, 9), ("dims", 2, 18),
+                           ("plaza", 8, 18), ("lamp", 51, 13),
                            ("parking", 140, 13),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
@@ -1506,11 +1524,28 @@ def main():
     draw_lines(barriers, "barrier", LAYERS["barrier"])
     draw_lines(zoning, "zoning", LAYERS["zoning"], label=True)
     draw_lines(parking, "parking", LAYERS["parking"], label=True)
+    draw_lines(plazas, "plaza", LAYERS["plaza"], label=True)
     draw_lines(power, "power", LAYERS["power"])
     draw_lines(pipelines, "pipeline", LAYERS["pipeline"])
 
     # Context names dedupe within their own kind, matching the view's
     # PARTITION BY project_id, kind, display_name.
+    # Flow direction on canals and rivers: the same spacing rule the road
+    # arrows use, on the direction OSM digitised the way in.
+    n_flow = 0
+    for rec in staged_context:
+        if rec["kind"] != "water":
+            continue
+        for run in rec["runs"]:
+            if len(run) >= 2 and run[0] != run[-1]:      # a line, not a pond
+                for ax, ay, rot in _anchor_rules.arrow_positions(run):
+                    _blocks.add_oneway_arrow(
+                        doc, msp, ax, ay, _anchor_rules.FLOW_ARROW_M, rot,
+                        LAYERS["water"])
+                    n_flow += 1
+    if n_flow:
+        print(f"Flow arrows: {n_flow} on waterways")
+
     label_longest(
         [r for r in staged_context if r["labelled"]],
         lambda r: (r["kind"], r["display_name"]) if r["display_name"] else None,
@@ -1555,14 +1590,15 @@ def main():
     for kind, plon, plat, fid, ptype in sorted(point_marks,
                                                key=lambda m: m[3]):
         px, py = to_utm.transform(plon, plat)
-        layer = LAYERS[{"tree": "tree", "gate": "barrier"}.get(kind,
-                                                            "power")]
+        layer = LAYERS[{"tree": "tree", "gate": "barrier",
+                        "lamp": "lamp"}.get(kind, "power")]
         attach(_blocks.add_symbol(doc, msp, px, py,
                                   _blocks.symbol_size(layer), layer), fid)
         record(fid, kind, layer, "")
         staged_pois.append({"feature_id": fid,
                             "poi_key": {"tree": "natural",
-                                        "gate": "barrier"}.get(kind, "power"),
+                                        "gate": "barrier",
+                                        "lamp": "highway"}.get(kind, "power"),
                             "poi_type": ptype, "name_th": "", "name_en": "",
                             "display_name": "", "cad_layer": layer,
                             "x": px, "y": py,

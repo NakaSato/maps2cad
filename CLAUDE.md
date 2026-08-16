@@ -292,6 +292,18 @@ where a deliverable specifies one; the automatic ~10 levels is for a first
 look, and an interval that would draw hundreds of lines warns rather than
 refuses.
 
+**A plaza is an area, and water has a direction.** `highway=pedestrian`
+with `area=yes` and a closed ring leaves the road bucket for `C-ROAD-PLAZ`
+and draws closed: as a path it traced the outline as though the square were
+a 2 m footway around its own edge. Waterways get flow arrows from
+`arrow_positions()` — the same spacing rule the one-way arrows use — in the
+direction the way was digitised, which is the only direction information a
+canal carries and the convention `waterway=*` already relies on. A *closed*
+run gets none: that is a pond, and water in a pond does not go anywhere.
+Neither is staged beyond what already was — the arrows are derived in all
+three writers from `staging_context`, so a re-issue draws them without a
+column to carry them.
+
 **Parking and gates are drawn regardless of the landmark filter.**
 `amenity=parking` areas go to `C-SITE-PARK` before the POI branch sees
 them, because a site plan needs the parking whether or not a car park

@@ -121,6 +121,21 @@ def ensure_gate_symbol(doc) -> str:
     return GATE_SYMBOL
 
 
+LAMP_SYMBOL = "LAMP_SYMB"
+
+
+def ensure_lamp_symbol(doc) -> str:
+    """A street lamp: the post with its head, drawn as a circle on a short
+    stem so it reads differently from a tree at plan scale."""
+    if LAMP_SYMBOL in doc.blocks:
+        return LAMP_SYMBOL
+    blk = doc.blocks.new(name=LAMP_SYMBOL)
+    blk.add_circle((0, 0), radius=0.55, dxfattribs={"layer": "0"})
+    blk.add_line((0, -0.55), (0, -1.4), dxfattribs={"layer": "0"})
+    blk.add_line((-0.5, -1.4), (0.5, -1.4), dxfattribs={"layer": "0"})
+    return LAMP_SYMBOL
+
+
 # Which symbol belongs on which layer. Both CAD routes go through
 # add_symbol(), so a tree drawn during extraction and the same tree redrawn
 # from the staging layer cannot come out as different marks — db2dxf.py
@@ -129,6 +144,7 @@ SYMBOL_FOR_LAYER = {
     "C-LAND-TREE": ensure_tree_symbol,
     "C-UTIL-POWR": ensure_pylon_symbol,
     "C-BNDY-BARR": ensure_gate_symbol,
+    "C-UTIL-LAMP": ensure_lamp_symbol,
 }
 
 
@@ -137,7 +153,7 @@ SYMBOL_FOR_LAYER = {
 # was staged on, and a tree that came back the size of a pylon would be a
 # difference nobody staged.
 SIZE_FOR_LAYER = {"C-LAND-TREE": 1.5, "C-UTIL-POWR": 2.0,
-                  "C-BNDY-BARR": 2.0}
+                  "C-BNDY-BARR": 2.0, "C-UTIL-LAMP": 1.5}
 DEFAULT_SYMBOL_SIZE = 2.0
 
 

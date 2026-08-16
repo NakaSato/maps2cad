@@ -768,6 +768,13 @@ ONEWAY_ARROW_MIN_M = 3.0
 ONEWAY_ARROW_MAX_M = 10.0
 
 
+# Water flows the way the OSM way is digitised — that is the convention
+# waterway=* relies on, and it is the only direction information a canal
+# carries. Drawn with the same arrow at a fixed size, because a canal has
+# no carriageway width to scale from.
+FLOW_ARROW_M = 5.0
+
+
 def oneway_arrow_size(carriageway_m) -> float:
     """Arrow length for a carriageway width, clamped so a 14 m motorway
     does not get a 14 m arrow and a 3 m alley does not get an invisible one."""

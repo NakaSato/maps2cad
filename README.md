@@ -477,14 +477,16 @@ DXF drops straight into an engineering drawing set.
 | `C-ROAD-CNTR` | Road centrelines, CENTER linetype |
 | `C-ROAD-EDGE` | Both edges of pavement, offset by carriageway class |
 | `C-ROAD-PATH` | Footways, cycleways, steps — one line, no kerbs |
+| `C-ROAD-PLAZ` | Pedestrian areas and plazas, drawn closed as surface |
 | `C-ROAD-ARRW` | One-way direction arrows, from the OSM `oneway` tag |
 | `C-ROAD-BRDG` / `C-ROAD-TUNL` | Bridges; tunnels, HIDDEN — under the ground the plan describes |
 | `C-ROAD-ROWY` | Empty, PHANTOM — for a drafter to draw the legal right-of-way |
 | `C-TOPO-MAJR` / `C-TOPO-MINR` | Contours as 3D polylines at true elevation; every 5th is an index contour, labelled |
-| `C-HYDR-WATR` / `C-LAND-VEGT` | Canals, ponds; parks, farmland, cemeteries |
+| `C-HYDR-WATR` / `C-LAND-VEGT` | Canals with flow arrows, ponds; parks, farmland, cemeteries |
 | `C-RAIL-TRAK` / `C-BNDY-BARR` | Railways; walls, fences, and gates as access-point symbols |
 | `C-ANNO-SYMB` / `C-SITE-POI` | Landmark point symbols; landmark grounds with no building tag |
 | `C-UTIL-POWR` / `C-UTIL-PIPE` | Power lines with their pylons and poles; pipelines |
+| `C-UTIL-LAMP` | Street lamps |
 | `C-LAND-TREE` | Individual trees (`natural=tree`), drawn as their own symbol |
 | `C-ANNO-ADDR` | House numbers (`addr:housenumber`) and storeys (`3F`), under the building label |
 | `C-LAND-ZONE` | Built-up land use — residential, commercial, industrial |

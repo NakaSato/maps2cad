@@ -383,7 +383,7 @@ def intersects_box(pts, box, margin=0.0005):
 # NCS layers here (a 1.5 m path drawn with two kerb lines reads as a road).
 TYPE_CHOICES = ("building", "road", "path", "water", "green", "rail",
                 "barrier", "landmark", "power", "tree", "landuse",
-                "parking")
+                "parking", "plaza")
 
 
 def select_types(features, types):
@@ -419,8 +419,12 @@ def select_types(features, types):
         keep["zoning"] = []
     if "parking" not in types:
         keep["parking"] = []
+    if "plaza" not in types:
+        keep["plazas"] = []
     if "barrier" not in types:
         keep["points"] = [m for m in keep["points"] if m[0] != "gate"]
+    if "power" not in types:
+        keep["points"] = [m for m in keep["points"] if m[0] != "lamp"]
     return keep
 
 
@@ -663,12 +667,14 @@ def main(argv=None) -> int:
     power, pipelines = features["power"], features["pipelines"]
     point_marks = features["points"]
     zoning, parking = features["zoning"], features["parking"]
+    plazas = features["plazas"]
     print(f"OSM: {len(buildings)} buildings, {len(roads)} roads, "
           f"{len(water)} water, {len(green)} green, {len(rails)} rail, "
           f"{len(barriers)} barriers, {len(pois)} POI points, "
           f"{len(site_pois)} POI areas, {len(power)} power, "
           f"{len(pipelines)} pipeline, {len(point_marks)} pylon/tree, "
-          f"{len(zoning)} land-use, {len(parking)} parking")
+          f"{len(zoning)} land-use, {len(parking)} parking, "
+          f"{len(plazas)} plaza")
 
     # The output path is resolved before drawing, not after: a background
     # map is written beside the .dxf, and the DXF stores a path to it.
@@ -701,6 +707,7 @@ def main(argv=None) -> int:
                            ("tree", 3, 13), ("addr", 8, 13),
                            ("zoning", 32, 13), ("parking", 140, 13),
                            ("grid", 253, 9), ("dims", 2, 18),
+                           ("plaza", 8, 18), ("lamp", 51, 13),
                            # Created empty: this route has no DEM to sample,
                            # but db2dxf.py defines the layer either way and
                            # the two layer tables have to agree.
@@ -966,8 +973,20 @@ def main(argv=None) -> int:
     draw_lines(barriers, "barrier", t2c.LAYERS["barrier"])
     draw_lines(zoning, "zoning", t2c.LAYERS["zoning"], label=True)
     draw_lines(parking, "parking", t2c.LAYERS["parking"], label=True)
+    draw_lines(plazas, "plaza", t2c.LAYERS["plaza"], label=True)
     draw_lines(power, "power", t2c.LAYERS["power"])
     draw_lines(pipelines, "pipeline", t2c.LAYERS["pipeline"])
+
+    # Flow direction on waterways, by the same rule the other routes use
+    for rec in staged_context:
+        if rec["kind"] != "water":
+            continue
+        for run in rec["runs"]:
+            if len(run) >= 2 and run[0] != run[-1]:
+                for ax, ay, rot in _anchor_rules.arrow_positions(run):
+                    blocks.add_oneway_arrow(doc, msp, ax, ay,
+                                            _anchor_rules.FLOW_ARROW_M, rot,
+                                            t2c.LAYERS["water"])
 
     label_longest(
         [r for r in staged_context if r["labelled"]],
@@ -1013,8 +1032,8 @@ def main(argv=None) -> int:
     for kind, plon, plat, fid, ptype in sorted(point_marks,
                                                key=lambda m: m[3]):
         px, py = to_utm.transform(plon, plat)
-        base = t2c.LAYERS[{"tree": "tree",
-                           "gate": "barrier"}.get(kind, "power")]
+        base = t2c.LAYERS[{"tree": "tree", "gate": "barrier",
+                           "lamp": "lamp"}.get(kind, "power")]
         layer = layer_for(base, fid)
         attach(blocks.add_symbol(doc, msp, px, py,
                                  blocks.symbol_size(base), layer), fid)
@@ -1022,7 +1041,8 @@ def main(argv=None) -> int:
                       "cad_layer": layer, "display_name": ""})
         staged_pois.append({"feature_id": fid,
                             "poi_key": {"tree": "natural",
-                                        "gate": "barrier"}.get(kind, "power"),
+                                        "gate": "barrier",
+                                        "lamp": "highway"}.get(kind, "power"),
                             "poi_type": ptype, "name_th": "", "name_en": "",
                             "display_name": "", "cad_layer": base,
                             "x": px, "y": py,
