@@ -277,6 +277,10 @@ still wins), `/project/<id>` shows the same source table, and the DXF you
 download after an import is the **combined** drawing — the uploaded file's
 own drawing is offered beside it as `import.dxf`.
 
+The sheet's title block credits every source that supplied a line, not a
+fixed OpenStreetMap notice — and both CAD routes derive it the same way, so
+a re-issue comes back with the same block.
+
 The source names the *file*, not just the converter: a project can hold two
 surveys and three extracts, and "user_gis" for all of them would not be a
 provenance record. A combined drawing without one is not combined, it is

@@ -1158,6 +1158,70 @@ def provenance(conn, project_id) -> list[dict]:
                                        r["feature_class"]))
 
 
+# What each staged source is called on a printed sheet. The title block
+# credits the data, and a sheet carrying a survey boundary, Microsoft
+# footprints and Overture places while crediting only OpenStreetMap is
+# wrong in both directions: it credits a source that did not supply the
+# line, and it fails to credit the ones that did.
+SOURCE_CREDITS = {
+    "openstreetmap": "OpenStreetMap contributors (ODbL)",
+    "microsoft_ml": "Microsoft ML footprints (ODbL)",
+    "overture": "Overture Maps (ODbL/CDLA)",
+    "copernicus_dem": "Copernicus DEM (ESA)",
+}
+# Characters that fit one line of the title block's smallest text at the
+# narrowest sheet. An honest credit that overruns the frame is not on the
+# sheet at all, so the lines are wrapped rather than trusted to fit.
+CREDIT_WIDTH = 46
+
+
+def credit_lines(sources, max_files: int = 2,
+                 width: int = CREDIT_WIDTH) -> list[str]:
+    """Attribution lines for a title block, from staged source names.
+
+    Sources are recorded per file (`user_gis:boundary.geojson`), so the
+    prefix decides the credit and the file names are listed after it — up
+    to `max_files`, because a title block is 55 mm wide and an honest line
+    that overruns the frame is not on the sheet at all.
+    """
+    order = list(SOURCE_CREDITS)
+    known, files, osm_files = [], [], []
+    for source in sorted(set(s for s in sources if s),
+                         key=lambda s: (order.index(s.partition(":")[0])
+                                        if s.partition(":")[0] in order
+                                        else len(order), s)):
+        head, _, rest = source.partition(":")
+        credit = SOURCE_CREDITS.get(head)
+        if head == "user_gis":
+            files.append(rest or "supplied file")
+        elif credit:
+            if rest:
+                osm_files.append(rest)
+            if credit not in known:
+                known.append(credit)
+        else:                       # a source added later, named honestly
+            known.append(head)
+    import textwrap
+
+    lines = []
+    if known:
+        lines += textwrap.wrap("Data © " + "; ".join(known), width,
+                               subsequent_indent="   ")
+    if osm_files:
+        shown = osm_files[:max_files]
+        more = len(osm_files) - len(shown)
+        lines += textwrap.wrap("OSM extract: " + ", ".join(shown)
+                               + (f" +{more} more" if more else ""), width,
+                               subsequent_indent="   ")
+    if files:
+        shown = files[:max_files]
+        more = len(files) - len(shown)
+        lines += textwrap.wrap("Supplied survey data: " + ", ".join(shown)
+                               + (f" +{more} more" if more else ""), width,
+                               subsequent_indent="   ")
+    return lines
+
+
 def write_provenance_csv(path, rows) -> int:
     """The source table beside the drawing: what came from where."""
     import csv

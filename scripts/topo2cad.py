@@ -1917,7 +1917,15 @@ def main():
             a.scale, _, _ = sheet_mod.fitting_scale(ext_w, ext_h, a.sheet)
         else:
             a.scale = int(a.scale)
+        # The same credit line db2dxf.py derives from the staging layer,
+        # built here from what was actually drawn — a re-issue of this
+        # drawing must not come back with a different title block.
+        drawn_sources = {"openstreetmap", "copernicus_dem"}
+        drawn_sources.update(r["source"] for r in inventory)
+        drawn_sources.update(p.get("source", "openstreetmap")
+                             for p in staged_pois)
         sheet_mod.add_sheet(doc, {
+            "source": _anchor_rules.credit_lines(drawn_sources),
             "project": a.project or Path(a.out).stem,
             "lat": a.lat, "lon": a.lon, "centre": (cx, cy),
             "srid": utm_epsg,

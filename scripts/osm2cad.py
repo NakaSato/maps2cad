@@ -1171,6 +1171,9 @@ def main(argv=None) -> int:
         scale = (sheet_mod.fitting_scale(ext_w, ext_h, a.sheet)[0]
                  if str(a.scale).lower() == "fit" else int(a.scale))
         sheet_mod.add_sheet(doc, {
+            # Names the export the drawing was made from: "OpenStreetMap"
+            # alone does not tell a reviewer which extract, or when.
+            "source": _anchor_rules.credit_lines([source_label]),
             "project": project, "lat": lat, "lon": lon, "centre": (cx, cy),
             "srid": epsg, "extent": (ext_w, ext_h),
             "date": time.strftime("%Y-%m-%d"),

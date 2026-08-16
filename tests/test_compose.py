@@ -115,3 +115,43 @@ def test_provenance_csv_and_text_agree(tmp_path):
         assert row["source"] in report
     assert "(nothing staged)" in stage_db.format_provenance([])
     conn.close()
+
+
+def test_credits_name_every_source_that_supplied_a_line():
+    """A sheet carrying a survey boundary, ML footprints and Overture places
+    while crediting OpenStreetMap alone is wrong twice: it credits a source
+    that did not draw the line, and omits the ones that did."""
+    lines = stage_db.credit_lines(
+        ["openstreetmap", "microsoft_ml", "overture", "copernicus_dem",
+         "user_gis:boundary.geojson", "openstreetmap:soi.osm"])
+    joined = " ".join(lines)
+    for expected in ("OpenStreetMap", "Microsoft", "Overture", "Copernicus",
+                     "boundary.geojson", "soi.osm"):
+        assert expected in joined
+    assert lines[0].startswith("Data ©")
+
+
+def test_credit_lines_wrap_to_the_title_block():
+    """An honest credit that overruns the frame is not on the sheet."""
+    lines = stage_db.credit_lines(
+        ["openstreetmap", "microsoft_ml", "overture", "copernicus_dem"])
+    assert len(lines) > 1
+    assert all(len(line) <= stage_db.CREDIT_WIDTH for line in lines)
+
+
+def test_one_source_gives_one_line():
+    assert stage_db.credit_lines(["openstreetmap"]) == [
+        "Data © OpenStreetMap contributors (ODbL)"]
+    assert stage_db.credit_lines([]) == []
+
+
+def test_many_supplied_files_are_summarised_not_listed():
+    lines = stage_db.credit_lines(
+        [f"user_gis:plot{i}.geojson" for i in range(5)])
+    assert "+3 more" in " ".join(lines)
+
+
+def test_an_unknown_source_still_names_itself():
+    """A source added later must appear in the credit even before anyone
+    writes its official wording — silence would be the wrong default."""
+    assert "cadastre" in " ".join(stage_db.credit_lines(["cadastre:dol.shp"]))

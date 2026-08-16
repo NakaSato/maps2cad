@@ -501,10 +501,16 @@ def main(argv=None) -> int:
                 proj["width_m"], proj["height_m"], a.sheet)
         else:
             a.scale = int(a.scale)
+        # Credit every source that actually supplied a line. A composed
+        # drawing carrying a survey boundary and Microsoft footprints while
+        # the title block credits OpenStreetMap alone is wrong twice over.
+        credits = stage_db.credit_lines(
+            [r["source"] for r in stage_db.provenance(conn, pid)])
         sheet_mod.add_sheet(doc, {
             "project": proj["name"], "lat": proj["lat"], "lon": proj["lon"],
             "centre": (cx, cy), "srid": proj["srid"],
             "extent": (proj["width_m"], proj["height_m"]),
+            "source": credits,
             "date": datetime.date.today().isoformat(),
         }, size=a.sheet, scale=a.scale)
         print(f"  sheet: {a.sheet} paper space at 1:{a.scale:,}")

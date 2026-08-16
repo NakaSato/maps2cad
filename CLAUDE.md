@@ -471,6 +471,19 @@ same provenance table the CLI prints, through the existing lazy
 Verified live: `far.geojson` alone stages in EPSG:32648, and merged into a
 zone 47 project through the browser it stages in 32647.
 
+*The title block credits what actually drew the lines.* Every sheet used
+to read "Data © OpenStreetMap contributors (ODbL)" whatever the drawing
+held — wrong twice on a composed sheet, crediting a source that supplied
+none of the geometry and omitting the ones that did.
+`stage_db.credit_lines()` turns staged source names into the attribution,
+`db2dxf.py` derives it from `provenance()` and `topo2cad.py` from the
+sources it staged, so a re-issue cannot come back with a different title
+block (verified line-for-line at Lopburi). `osm2cad.py` names the export.
+The lines are wrapped to `CREDIT_WIDTH` and `sheet.py` drops any that would
+fall through the bottom of the frame: an honest credit that overruns the
+frame is not on the sheet at all. An unrecognised source still prints its
+own name — silence is the wrong default for attribution.
+
 *Provenance names the file.* `stage_db.provenance()` reports one row per
 (source, feature class) and the run writes `sources.csv` beside the
 drawing. Getting there closed a real hole: `stage_roads()` never wrote the

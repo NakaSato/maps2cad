@@ -333,9 +333,20 @@ def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
 
     _line(psp, bx, y + 2, pw - margin, y + 2, LAYERS["frame"], 25)
     y -= 4
-    _text(psp, info.get("source", "Data © OpenStreetMap contributors (ODbL)"),
-          tx, y, 1.6, tl)
-    y -= 3
+    # Attribution. `source` may be one string or several lines, because a
+    # composed drawing credits every source that supplied a line — see
+    # stage_db.credit_lines(). Lines that would fall through the bottom of
+    # the frame are dropped rather than drawn outside it, and the field
+    # survey note keeps its place: it is the last thing a reader should see.
+    credits = info.get("source") or "Data © OpenStreetMap contributors (ODbL)"
+    if isinstance(credits, str):
+        credits = [credits]
+    for line in credits:
+        if y - 3 < margin + 3:      # keep room for the note below
+            break
+        _text(psp, line, tx, y, 1.6, tl)
+        y -= 2.6
+    y -= 0.4
     _text(psp, "Verify against field survey before construction.",
           tx, y, 1.6, tl)
     return layout
