@@ -195,3 +195,12 @@ def test_project_srid_is_none_without_a_staging_database(tmp_path,
                                                          monkeypatch):
     monkeypatch.setattr(serve, "STAGING_DB", tmp_path / "absent.sqlite")
     assert serve.project_srid("anything") is None
+
+
+def test_the_import_only_drawing_has_its_own_name():
+    """An import merged into a site yields two drawings, and site.dxf has
+    to be the combined one: a user who imports a survey into their site and
+    downloads "the DXF" means the site, not their two boundary lines."""
+    assert serve.KINDS["dxf"] == "site.dxf"
+    assert serve.KINDS["import_dxf"] == "import.dxf"
+    assert serve.KINDS["import_dxf"] != serve.KINDS["dxf"]

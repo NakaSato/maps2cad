@@ -395,7 +395,12 @@ KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          "attrs": "attributes.csv",
          # mapposter writes the pair; the PNG previews in a browser, the PDF
          # is what goes to a printer.
-         "poster": "poster.png", "poster_pdf": "poster.pdf"}
+         "poster": "poster.png", "poster_pdf": "poster.pdf",
+         # An import merged into a site produces two drawings: what the
+         # upload itself holds, and the project it joined. "site.dxf" is
+         # always the second, because a user who imports a survey into
+         # their site and downloads "the drawing" means the site.
+         "import_dxf": "import.dxf"}
 
 
 def save_job(rec: dict) -> None:
@@ -859,6 +864,9 @@ def result_page(rec: dict) -> bytes:
         file_card("png", "300 DPI", "Site map PNG"),
         file_card("csv", "Inventory", "Buildings CSV"),
         file_card("attrs", "Attributes", "OSM tags table"),
+        # Beside the combined drawing, never instead of it. Download-only:
+        # the plot preview belongs to the drawing that gets issued.
+        plain_card("import_dxf", "This import", "Imported file only"),
         file_card("poster", "B&W poster", "Poster PNG"),
         file_card("poster_pdf", "Vector", "Poster PDF"),
         # Download only — a browser has no GeoTIFF viewer. Keep it beside
@@ -1912,6 +1920,28 @@ drawing.</p>
                     cmd += ["--mono"]
                 log = run_step(cmd, "GIS import")
 
+            # The import drew only what was uploaded. If that merged into a
+            # project holding anything else — an OSM extraction, an earlier
+            # import — then the drawing a user means by "the DXF" is the
+            # combined one, and handing them two survey lines labelled
+            # site.dxf is a misleading deliverable. So re-issue from the
+            # staging layer, exactly as compose.py finishes a run.
+            import_only = run / KINDS["import_dxf"]
+            try:
+                Path(dxf).replace(import_only)
+                log += "\n" + run_step(
+                    script_cmd(DB2DXF) + ["--db", str(STAGING_DB),
+                                          "--project", project,
+                                          "--out", dxf],
+                    "Combined drawing from the staging layer")
+            except (BadRequest, OSError) as e:
+                # The import itself succeeded; keep it rather than lose the
+                # run to a re-issue problem.
+                if import_only.is_file() and not Path(dxf).is_file():
+                    import_only.replace(Path(dxf))
+                    import_only = None
+                log += f"\nNOTE: combined drawing unavailable — {e}"
+
             plot = str(run / "site_preview.pdf")
             try:
                 log += "\n" + run_step(
@@ -1929,7 +1959,8 @@ drawing.</p>
         rec = {"id": jid, "dir": str(run), "dxf": dxf, "log": log,
                "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
                "project": project,
-               **{k: str(run / KINDS[k]) for k in ("tif", "attrs")
+               **{k: str(run / KINDS[k]) for k in ("tif", "attrs",
+                                                   "import_dxf")
                   if (run / KINDS[k]).is_file()},
                "params": {"lat": 0.0, "lon": 0.0, "width": 0.0, "height": 0.0,
                           "export": kind, "profile": "standard",

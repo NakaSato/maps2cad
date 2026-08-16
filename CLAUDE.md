@@ -453,6 +453,15 @@ that looks like nothing until the drawing opens. The extent is written back
 from the request (`set_extent()`) because an import carries features, not an
 extent, and the crop line, dimensions and grid come from the project row.
 
+*An import hands back the drawing it joined, not the file it drew.*
+`/import` writes the upload's own drawing as `import.dxf` and then re-issues
+`site.dxf` from the staging layer, exactly as `compose.py` finishes a run.
+Before this, importing a survey into an existing site downloaded two
+boundary lines named `site.dxf` — the drawing was right in the database and
+misleading in the hand. Both are offered, `site.dxf` first, and the plot
+preview follows the combined one. A re-issue failure keeps the import
+rather than losing the run.
+
 *The web has the same two rules.* `/import` passes the target project's
 srid as `--epsg` unless the form states one — an EPSG typed in is someone
 saying what their file is in, and it wins — and `/project/<id>` shows the
