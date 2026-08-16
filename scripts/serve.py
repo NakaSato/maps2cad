@@ -1178,6 +1178,11 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
         " AND (road_name IS NOT NULL OR road_ref IS NOT NULL)"
         " GROUP BY road_name, road_ref, highway_type"
         " ORDER BY length_m DESC", (pid,)).fetchall()
+    # What this drawing is made of. A project can hold an OSM extraction,
+    # Microsoft footprints, Overture places, DEM levels and any number of
+    # imported files at once, and the only honest answer to "where did this
+    # line come from" is the source column of the row it was drawn from.
+    sources = stage_db_module().provenance(conn, pid)
     conn.close()
 
     rows = []
@@ -1202,6 +1207,16 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
         f"<td class='num'>{r['length_m']:,.0f} m</td>"
         f"<td class='num'>{r['segments']}</td></tr>" for r in roads)
 
+    grouped: dict[str, list] = {}
+    for row in sources:
+        grouped.setdefault(row["source"], []).append(row)
+    source_rows = "".join(
+        f"<tr><td>{html.escape(src)}</td>"
+        f"<td class='num'>{sum(r['count'] for r in rs):,}</td>"
+        f"<td>{html.escape(', '.join(f'{r["count"]} {r["feature_class"]}' for r in rs))}</td></tr>"
+        for src, rs in sorted(grouped.items(),
+                              key=lambda kv: -sum(r["count"] for r in kv[1])))
+
     banner = f'<div class="ok">{html.escape(note)}</div>' if note else ""
     return page(f"{proj['name']}", f"""
 <p class="eyebrow">Project {pid} · EPSG:{proj['srid']}</p>
@@ -1213,6 +1228,11 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
   <div><dt>Buildings</dt><dd>{total_all}</dd></div>
   <div><dt>Named</dt><dd>{total_all - unnamed_all} verified</dd></div>
 </dl>
+
+<h2>Sources</h2>
+<div class="wide"><table class="hist"><thead><tr><th>Source</th>
+<th>Features</th><th>What</th></tr></thead>
+<tbody>{source_rows or '<tr><td>Nothing staged</td></tr>'}</tbody></table></div>
 
 <h2>Roads</h2>
 <div class="wide"><table class="hist"><thead><tr><th>Name</th><th>Route no.</th>
@@ -1297,6 +1317,17 @@ OSM_TYPE_LABELS = {
     "green": "พื้นที่สีเขียว / Parks", "rail": "ทางรถไฟ / Railways",
     "barrier": "รั้ว / Barriers", "landmark": "สถานที่สำคัญ / Landmarks",
 }
+
+
+def project_srid(name: str):
+    """The projected CRS a staged project is already in, or None."""
+    conn = db_conn()
+    if conn is None:
+        return None
+    row = conn.execute("SELECT srid FROM projects WHERE name = ?",
+                       (name,)).fetchone()
+    conn.close()
+    return str(row["srid"]) if row else None
 
 
 def import_page(note: str = "", error: str = "") -> bytes:
@@ -1819,6 +1850,15 @@ drawing.</p>
                 or Path(paths[0]).stem
             dxf = str(run / "site.dxf")
             epsg = parse_epsg(fields.get("epsg", ""))
+            # Merging into a project that already exists means adopting its
+            # CRS. Each converter otherwise derives a UTM zone from its own
+            # data, so a survey file whose centroid falls the other side of
+            # 102 degrees East would stage in zone 48 inside a zone 47
+            # project — a kilometre-scale error that looks like nothing
+            # until the drawing opens. An EPSG typed into the form still
+            # wins: that is someone stating what their file is in.
+            if not epsg:
+                epsg = project_srid(project)
             if kind == "osm":
                 cmd = script_cmd(OSM2CAD)
                 for p in paths:

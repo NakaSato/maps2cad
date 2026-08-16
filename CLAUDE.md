@@ -453,6 +453,15 @@ that looks like nothing until the drawing opens. The extent is written back
 from the request (`set_extent()`) because an import carries features, not an
 extent, and the crop line, dimensions and grid come from the project row.
 
+*The web has the same two rules.* `/import` passes the target project's
+srid as `--epsg` unless the form states one — an EPSG typed in is someone
+saying what their file is in, and it wins — and `/project/<id>` shows the
+same provenance table the CLI prints, through the existing lazy
+`stage_db_module()` loader rather than a module-level import, because
+`serve.py` staying stdlib-only is what lets it run anywhere Python does.
+Verified live: `far.geojson` alone stages in EPSG:32648, and merged into a
+zone 47 project through the browser it stages in 32647.
+
 *Provenance names the file.* `stage_db.provenance()` reports one row per
 (source, feature class) and the run writes `sources.csv` beside the
 drawing. Getting there closed a real hole: `stage_roads()` never wrote the

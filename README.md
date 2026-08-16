@@ -271,6 +271,10 @@ Sources in site.dxf:
   user_gis:boundary.geojson         2   1 building, 1 road
 ```
 
+The web app follows the same two rules: uploading a file into an existing
+project stages it in **that project's CRS** (an EPSG typed into the form
+still wins), and `/project/<id>` shows the same source table.
+
 The source names the *file*, not just the converter: a project can hold two
 surveys and three extracts, and "user_gis" for all of them would not be a
 provenance record. A combined drawing without one is not combined, it is

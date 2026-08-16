@@ -161,3 +161,37 @@ def test_row_attributes_drops_empty_and_nan_cells():
                "n": 2.5})
     assert gis2cad.row_attributes(row, list(row)) == {"PLOT_NO": "12/3",
                                                       "n": "2.5"}
+
+
+def test_an_import_adopts_the_projects_crs(tmp_path, monkeypatch):
+    """Merging into an existing project means adopting its CRS.
+
+    gis2cad derives a UTM zone from the file's own data, so a survey whose
+    centroid falls the other side of 102°E would stage in zone 48 inside a
+    zone 47 drawing — hundreds of kilometres of offset that looks like
+    nothing until the DXF opens.
+    """
+    import importlib.util as iu
+
+    spec = iu.spec_from_file_location(
+        "stage_db", Path(serve.__file__).parent / "stage_db.py")
+    stage_db = iu.module_from_spec(spec)
+    spec.loader.exec_module(stage_db)
+
+    db = tmp_path / "staging.sqlite"
+    conn = stage_db.connect(db)
+    stage_db.create_project(conn, "site-a", 13.7455, 100.5325, 300, 200,
+                            32647)
+    conn.close()
+    monkeypatch.setattr(serve, "STAGING_DB", db)
+
+    assert serve.project_srid("site-a") == "32647"
+    # An unknown project has no CRS to inherit, and the converter derives
+    # its own — which is right for a first import.
+    assert serve.project_srid("not-staged") is None
+
+
+def test_project_srid_is_none_without_a_staging_database(tmp_path,
+                                                         monkeypatch):
+    monkeypatch.setattr(serve, "STAGING_DB", tmp_path / "absent.sqlite")
+    assert serve.project_srid("anything") is None
