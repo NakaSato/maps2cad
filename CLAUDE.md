@@ -27,6 +27,8 @@ uv run scripts/mapposter.py --lat 14.8165 --lon 100.5116 --radius 150 \
   --dem dem/dem_n14_e100.tif --out output/poster.png   # needs a DEM tile
 uv run scripts/generate_detailed_site_map.py --lat 14.8165 --lon 100.5116 \
   --width 500 --height 250 --outdir output/runs --png   # no DEM needed
+uv run scripts/overture.py --lat 13.7455 --lon 100.5325 --width 500 \
+  --height 400        # named places from Overture; --overture draws them
 uv run scripts/serve.py                                # web UI on :8765
 ```
 
@@ -497,6 +499,68 @@ Building labels fall back to the `B###` inventory code when OSM has no name.
 This matters: at the Yasothon site 0 of 239 footprints carry an OSM name (238
 come from Microsoft ML), so a names-only rule yields a completely unlabelled
 drawing. `--names-only` opts into the stricter behaviour.
+
+**`gisqa.py` uses the ML layer as a check on OSM, not as a fix.** The two
+sources are independent — people tracing versus a model predicting — so
+disagreement localises where the data is worth checking before a drawing
+goes out. It reports and never repairs, for the same reason `underlay.py`
+refuses to auto-trace: a corrected outline carries metres of error and
+looks as authoritative in a DXF as a surveyed one. Two things it got wrong
+first and must keep right: an OSM building is compared against the
+**union** of every ML footprint under it, because a mall is one OSM polygon
+and five ML pieces of roof and scoring against the largest piece flagged
+every large building at Pathum Wan; and `poor_overlap` is worded as "worth
+an eye" because ML traces roofs while OSM is drawn at the wall, a
+systematic difference in a dense city rather than an error. Regularising
+the ML geometry was considered and dropped after measuring it — median 4
+vertices and 0.999 rectangularity at Yasothon, so Microsoft has already
+done it.
+
+**A second source of names is drawn on its own layer, or it is not worth
+having.** `overture.py` reads Overture Maps' places theme — a conflation of
+Meta, Microsoft, Esri, PinMeTo and OSM, each place scored — through DuckDB
+over its public S3 parquet, and `topo2cad.py --overture` draws them on
+`C-ANNO-OVTR` with their labels on `C-ANNO-OVTR-TH` / `C-ANNO-OVTR-EN`.
+Four rules hold this together:
+
+*Separable.* The names never touch `C-ANNO-TEXT*`, and the label layers are
+in the same family as the symbol layer, so freezing `C-ANNO-OVTR*` returns
+the drawing to what OSM says and never leaves a label pointing at nothing.
+That split lives in the `cad_labels` view as a CASE on `staging_pois
+.cad_layer`, so the re-issue route splits the same way — proved IDENTICAL
+by `dxfdiff` with 13 Thai and 16 Latin Overture labels in both drawings.
+XDATA rides under the appid `OVERTURE`, never `OSM`: filing a Meta record
+as OpenStreetMap in the CAD attribute browser would be the same lie
+`gis2cad.py`'s `GIS` id exists to avoid, and every place carries its
+`source` dataset and `confidence` so nobody mistakes it for survey.
+
+*Curated, or it is a mall directory.* 500 × 400 m at Siam Square holds
+3,103 places raw and 1,797 above the 0.5 fetch floor; at confidence 0.9 the
+survivors are still 22 japanese_restaurant, 20 clothing_store, 13
+jewelry_store. `keep_place()` curates the same way `POI_SUBMISSION` does on
+the OSM side and for the same reason — an officer locates a parcel by วัด,
+โรงเรียน, โรงพยาบาล — leaving 29. It matches **substrings**, because
+Overture adds taxonomy leaves between releases and an exact list silently
+drops `buddhist_temple` the day it appears; the retail words are rejected
+*first*, or `school_supply_store` reads as a school. `shopping_center` and
+`department_store` are the two deliberate exceptions: a mall is how a Thai
+address describes where a parcel is, even though its tenants are not.
+
+*Cached per extent, not per floor.* The query costs about a minute, so
+`cache_key()` deliberately excludes `min_confidence` and the cache holds
+everything above `FETCH_FLOOR` — a drafter trying 0.9 then 0.8 pays it
+once. The release is discovered from the bucket listing rather than pinned,
+so a new Overture release is picked up instead of quietly serving stale
+data. Overture's **buildings** theme was measured at 268 s for the same box
+against ~6 MB Microsoft quadkey tiles, so it is not used; Google Open
+Buildings was rejected outright at 1,016 MB for the tile covering Bangkok.
+
+*OSM wins a tie.* `drop_known()` drops a place whose name matches an OSM
+feature within 25 m — name *and* proximity, because two branches of one
+chain are two places while the same shop mapped twice is one. `dxfaudit.py`
+counts only `C-ANNO-SYMB` as landmark symbols, which is correct rather than
+an oversight: it audits the drawing against its OSM source, and a place
+from another source is not OSM's to account for.
 
 **Two ways to reach a DXF, and they must agree.** `topo2cad.py` draws during
 extraction; `db2dxf.py` draws from the SQLite staging layer (`stage_db.py`)

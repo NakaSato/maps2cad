@@ -331,18 +331,28 @@ CREATE VIEW cad_labels AS
     UNION ALL
     -- Landmark points. label_x/label_y is already clear of the symbol, so
     -- these rows need only the same language stacking as everything else.
+    -- A place from a third-party source keeps its name inside its own layer
+    -- family (C-ANNO-OVTR-TH/-EN): freezing that source has to take the
+    -- names with the symbols, or the drawing keeps a label pointing at
+    -- nothing. The language split survives inside it.
     SELECT project_id, 'poi', name_th,
-           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT-TH', 0.0
+           label_x, label_y, 0.0, 4.0,
+           CASE WHEN cad_layer = 'C-ANNO-OVTR' THEN 'C-ANNO-OVTR-TH'
+                ELSE 'C-ANNO-TEXT-TH' END, 0.0
       FROM staging_pois WHERE name_th IS NOT NULL AND name_th <> ''
     UNION ALL
     SELECT project_id, 'poi', name_en,
-           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT-EN',
+           label_x, label_y, 0.0, 4.0,
+           CASE WHEN cad_layer = 'C-ANNO-OVTR' THEN 'C-ANNO-OVTR-EN'
+                ELSE 'C-ANNO-TEXT-EN' END,
            CASE WHEN name_th IS NOT NULL AND name_th <> ''
                 THEN 4.0 * 1.3 ELSE 0.0 END
       FROM staging_pois WHERE name_en IS NOT NULL AND name_en <> ''
     UNION ALL
     SELECT project_id, 'poi', display_name,
-           label_x, label_y, 0.0, 4.0, 'C-ANNO-TEXT', 0.0
+           label_x, label_y, 0.0, 4.0,
+           CASE WHEN cad_layer = 'C-ANNO-OVTR' THEN 'C-ANNO-OVTR'
+                ELSE 'C-ANNO-TEXT' END, 0.0
       FROM staging_pois
      WHERE display_name <> ''
        AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''

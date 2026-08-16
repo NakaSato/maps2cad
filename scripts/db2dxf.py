@@ -65,6 +65,12 @@ LAYER_STYLE = {
     "C-ANNO-ADDR": (8, 13),      # house numbers
     "C-TOPO-SPOT": (8, 18),      # spot heights sampled from the DEM
     "C-SITE-POI": (5, 25),       # landmark grounds with no building tag
+    # Named places from a third-party source (Overture), with their own
+    # annotation layers so a drafter can freeze C-ANNO-OVTR* and be back to
+    # what OpenStreetMap says. Must match LAYERS in topo2cad.py.
+    "C-ANNO-OVTR": (214, 13),
+    "C-ANNO-OVTR-TH": (214, 18),
+    "C-ANNO-OVTR-EN": (214, 18),
     "C-ANNO-EXTN": (7, 35),      # crop rectangle on the requested extent
     "C-ANNO-NORT": (7, 35),
     "C-ANNO-GPSP": (1, 35),
@@ -93,6 +99,9 @@ ANNO_TEXT_STYLE = {
     "C-ANNO-ADDR": "EN_STYLE",
     "C-TOPO-SPOT": "EN_STYLE",
     "C-ANNO-GRID": "EN_STYLE",
+    "C-ANNO-OVTR": "EN_STYLE",
+    "C-ANNO-OVTR-TH": "TH_STYLE",
+    "C-ANNO-OVTR-EN": "EN_STYLE",
 }
 
 

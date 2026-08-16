@@ -111,6 +111,22 @@ def parse_args():
                         "lands on C-MISC-OTHR / C-MISC-SYMB rather than "
                         "being dropped. The run reports what that added, by "
                         "tag, so you can see what the default skips.")
+    p.add_argument("--overture", action="store_true",
+                   help="Supplement the landmarks with named places from "
+                        "Overture Maps (Meta, Microsoft, Esri and others "
+                        "conflated). They land on C-ANNO-OVTR with their "
+                        "source and confidence as XDATA, kept off the OSM "
+                        "layers so a drafter can see which names came from "
+                        "a commercial feed and freeze them in one click.")
+    p.add_argument("--overture-confidence", type=float, default=None,
+                   metavar="F",
+                   help="Drop Overture places below this confidence "
+                        "(default 0.9). Overture scores each place; below "
+                        "0.9 a dense extent returns hundreds of shop units.")
+    p.add_argument("--all-places", action="store_true",
+                   help="Keep every Overture category, not only the civic "
+                        "landmarks: at Siam Square that is 1,797 places "
+                        "instead of 29, mostly restaurants and boutiques.")
     p.add_argument("--grid", nargs="?", const="auto", metavar="SPACING",
                    help="Draw a UTM coordinate grid: crosses at every "
                         "SPACING metres with the easting and northing "
@@ -854,6 +870,15 @@ LAYERS = {
     # campuses, temple precincts, car parks. Kept off C-BLDG-OUTL so a
     # 3,000 m2 car park does not read as a structure.
     "site_poi": "C-SITE-POI",
+    # Named places from Overture Maps — a conflation of Meta, Microsoft,
+    # Esri and others rather than OpenStreetMap. They keep their own layer,
+    # labels included, because a name nobody in this project can trace to a
+    # survey or to OSM must be visibly separable: freeze C-ANNO-OVTR* and
+    # the drawing is back to what OSM says. The language split is kept
+    # within it for the same reason it exists everywhere else.
+    "overture": "C-ANNO-OVTR",
+    "overture_th": "C-ANNO-OVTR-TH",
+    "overture_en": "C-ANNO-OVTR-EN",
     "north": "C-ANNO-NORT",
     "site": "C-ANNO-GPSP",
     # The requested extent, drawn as a closed rectangle. Features are not
@@ -893,6 +918,12 @@ ANNO_STYLE = {
     # An elevation is a number; it belongs with the neutral annotation
     "C-TOPO-SPOT": (8, "EN_STYLE"),
     "C-ANNO-GRID": (253, "EN_STYLE"),
+    # Overture place names keep the language split inside their own layer
+    # family, so freezing C-ANNO-OVTR* takes the symbols and the names with
+    # it and never leaves a label pointing at nothing.
+    "C-ANNO-OVTR": (214, "EN_STYLE"),
+    "C-ANNO-OVTR-TH": (214, "TH_STYLE"),
+    "C-ANNO-OVTR-EN": (214, "EN_STYLE"),
 }
 
 # Vertical gap between the English and Thai label of the same feature, as a
@@ -1278,6 +1309,8 @@ def main():
                            ("plaza", 8, 18), ("lamp", 51, 13),
                            ("other", 9, 9), ("other_point", 9, 9),
                            ("parking", 140, 13),
+                           ("overture", 214, 13), ("overture_th", 214, 18),
+                           ("overture_en", 214, 18),
                            ("extent", 7, 35),
                            ("north", 7, 35), ("site", 1, 35)]:
         layer = doc.layers.add(LAYERS[key], color=color)
@@ -1344,20 +1377,26 @@ def main():
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
         return m
 
-    def mtext_bilingual(th, en, x, y, height, rotation=0.0, fallback=None):
+    def mtext_bilingual(th, en, x, y, height, rotation=0.0, fallback=None,
+                        family=("anno_th", "anno_en")):
         """Write the Thai and English labels of one feature onto their own
         layers, English stacked above Thai when both exist. Falls back to
         `fallback` (a B### code) on the neutral layer when neither name is
-        known. Returns the number of MTEXT entities written."""
+        known. Returns the number of MTEXT entities written.
+
+        `family` names the pair of LAYERS keys to write onto: Overture
+        places use their own so a drafter freezing the third-party source
+        loses the names with the symbols rather than either alone.
+        """
         n = 0
         if th:
-            mtext(th, x, y, height, rotation, LAYERS["anno_th"])
+            mtext(th, x, y, height, rotation, LAYERS[family[0]])
             n += 1
         if en:
             ex, ey = ((x, y) if not th else
                       offset_along_normal(x, y, rotation,
                                           height * LANG_OFFSET))
-            mtext(en, ex, ey, height, rotation, LAYERS["anno_en"])
+            mtext(en, ex, ey, height, rotation, LAYERS[family[1]])
             n += 1
         if not n and fallback:
             mtext(fallback, x, y, height, rotation)
@@ -1745,6 +1784,65 @@ def main():
                             "display_name": th or en or "",
                             "x": px, "y": py,
                             "latitude": plat, "longitude": plon})
+
+    # Overture places: a second opinion on what is here, kept visibly
+    # separate. OSM is one community's view of a site; Overture conflates
+    # Meta, Microsoft, Esri and others and scores each place, so it finds
+    # names OSM never had — and carries names no one here can trace to a
+    # survey. That is why the source and the confidence ride on every one of
+    # them as XDATA and why they never touch the OSM annotation layers.
+    if a.overture:
+        import overture as _overture
+
+        try:
+            places, from_cache = _overture.fetch_places((s, w, n, e))
+        except _overture.OvertureError as exc:
+            print(f"WARNING: Overture unavailable: {exc}", file=sys.stderr)
+            places, from_cache = [], False
+        raw = len(places)
+        floor = (a.overture_confidence if a.overture_confidence is not None
+                 else _overture.DEFAULT_MIN_CONFIDENCE)
+        places = _overture.filter_places(places, floor, not a.all_places)
+        # Anything OSM already names is OSM's — the drawing must not carry
+        # one shop twice under two sources, and where they agree the OSM
+        # name is the one a Thai reviewer and a local mapper both wrote.
+        known = ([(r["osm_name"], r["longitude"], r["latitude"])
+                  for r in inventory if r["osm_name"]]
+                 + [(p["display_name"], p["longitude"], p["latitude"])
+                    for p in staged_pois if p["display_name"]])
+        kept = _overture.drop_known(places, known)
+        print(f"Overture: {len(kept)} place(s) added "
+              f"({raw} in the extent, {raw - len(places)} outside the "
+              f"landmark filter or under confidence {floor}, "
+              f"{len(places) - len(kept)} already named in OSM)"
+              + (" [cached]" if from_cache else ""))
+        if kept and not a.no_attributes:
+            doc.appids.add(_overture.XDATA_APPID)
+        for place in sorted(kept, key=lambda p: p["id"]):
+            fid = f"overture/{place['id']}"
+            px, py = to_utm.transform(place["lon"], place["lat"])
+            layer = LAYERS["overture"]
+            entity = _blocks.add_symbol(doc, msp, px, py,
+                                        _blocks.symbol_size(layer), layer)
+            tags = _overture.place_tags(place)
+            tag_index[fid] = tags
+            if not a.no_attributes and entity is not None:
+                entity.set_xdata(_overture.XDATA_APPID,
+                                 _anchor_rules.xdata_tags(fid, tags))
+            th, en = _anchor_rules.split_by_script(place["name"])
+            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0,
+                            family=("overture_th", "overture_en"))
+            drawn.append({"feature_id": fid, "feature_type": "overture_place",
+                          "cad_layer": layer, "display_name": place["name"],
+                          "appid": _overture.XDATA_APPID})
+            staged_pois.append({"feature_id": fid, "source": "overture",
+                                "poi_key": "place",
+                                "poi_type": place["category"],
+                                "name_th": th or "", "name_en": en or "",
+                                "display_name": place["name"],
+                                "cad_layer": layer, "x": px, "y": py,
+                                "latitude": place["lat"],
+                                "longitude": place["lon"]})
 
     # North arrow at top-right corner (drawing is true-north-up in UTM).
     # Sized from the nominal extent rather than the projected bbox corners,

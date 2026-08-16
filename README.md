@@ -392,6 +392,66 @@ Covers UTM zone selection, extent geometry, road classification, label fitting
 and collision rules, inventory determinism, and CSV validation. The network test
 is opt-in so the suite doesn't hit Overpass on every run.
 
+## Checking the data quality before you draw
+
+OpenStreetMap is traced by people; Microsoft's footprints are predicted from
+imagery. Two independent sources see the same ground, so where they disagree
+something is worth a look:
+
+```bash
+uv run scripts/gisqa.py --lat 15.83384548 --lon 104.39445555 \
+  --width 500 --height 400 --out output/gis_quality.csv
+```
+
+It flags OSM buildings the ML layer sees nothing at, outlines the two
+sources disagree about, near-duplicate footprints (`building` and
+`building:part` on one structure), slivers and self-intersecting rings — and
+counts how much of your drawing is modelled rather than surveyed. It
+**reports, it does not repair**: an auto-corrected outline carries metres of
+boundary error and looks exactly as authoritative in a DXF as a surveyed
+one.
+
+Read `poor_overlap` as "worth an eye", not "wrong": ML traces roofs and OSM
+outlines are drawn at the wall, so in a dense city with overhangs the two
+differ systematically. At Pathum Wan that is 23 of 56 buildings; on rural
+ground at Yasothon the two sources agree everywhere.
+
+## A second source of names: Overture Maps
+
+OpenStreetMap is one community's view of a site. [Overture
+Maps](https://overturemaps.org) publishes a conflation of several — Meta,
+Microsoft, Esri, PinMeTo and OSM itself — and scores each place, so it
+carries names OSM never had:
+
+```bash
+uv run scripts/overture.py --lat 13.7455 --lon 100.5325 \
+  --width 500 --height 400            # look first
+uv run scripts/topo2cad.py --lat 13.7455 --lon 100.5325 \
+  --width 500 --height 400 --dem dem/dem_n13_e100.tif --overture
+```
+
+They land on `C-ANNO-OVTR` with their labels on `C-ANNO-OVTR-TH` /
+`C-ANNO-OVTR-EN`, deliberately away from the OSM annotation layers: a name
+nobody here can trace to a survey or to OSM has to be separable in one
+click, and each entity carries its dataset and confidence as XDATA under the
+application id `OVERTURE` (select it in AutoCAD and `LIST`). Anything OSM
+already names at the same spot is dropped — the drawing must not carry one
+place twice under two sources.
+
+**Curated, or it is a mall directory.** The 500 × 400 m box at Siam Square
+holds 1,797 places above the fetch floor; at confidence 0.9 and the landmark
+filter that is 29 — museums, schools, a hospital, the government convention
+bureau — where the rest is 22 japanese\_restaurant, 20 clothing\_store and
+13 jewelry\_store. `--overture-confidence` moves the floor and
+`--all-places` keeps every category.
+
+The query reads Overture's public S3 parquet through DuckDB and takes about
+a minute, so each extent is cached under `cache/overture/` — keyed on the
+extent and release but **not** on the confidence floor, so trying 0.9 then
+0.8 costs one query, not two. Overture's buildings theme was measured at 4½
+minutes for the same box and is not used: Microsoft's quadkey tiles already
+supply footprints.
+
 ## Checking a drawing before you issue it
 
 Two different questions, two tools:
@@ -501,6 +561,7 @@ DXF drops straight into an engineering drawing set.
 | `C-MISC-OTHR` / `C-MISC-SYMB` | `--all-features`: everything no other rule claimed |
 | `C-ANNO-TEXT` | Language-neutral text: B### codes, contour elevations, the GPS tag |
 | `C-ANNO-TEXT-TH` / `C-ANNO-TEXT-EN` | Thai and Latin labels — freeze one to plot a single-language sheet |
+| `C-ANNO-OVTR` (`-TH` / `-EN`) | `--overture`: named places from Overture Maps, with their labels — freeze `C-ANNO-OVTR*` and the drawing is back to what OSM says |
 | `C-ANNO-EXTN` | The requested extent, DASHED. A crop line, not a clip: linework runs ~55 m past it and footprints are never cut |
 | `C-ANNO-NORT` / `C-ANNO-GPSP` | North arrow block; circle and label at the input coordinate |
 | `C-PROP-LINE` / `C-PROP-SETB` | Empty, ready for parcel boundaries and setbacks (OSM has no source for either) |
