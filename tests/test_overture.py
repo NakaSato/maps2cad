@@ -218,3 +218,26 @@ def test_overture_places_label_on_their_own_layer_family():
         "SELECT text, cad_layer FROM cad_labels WHERE project_id = ?", (pid,))}
     assert layers["Bacc"] == "C-ANNO-OVTR-EN"
     assert layers["โรงเรียนวัดปทุมวนาราม"] == "C-ANNO-TEXT-TH"
+
+
+def test_a_slow_fetch_costs_the_places_not_the_drawing(tmp_path,
+                                                       monkeypatch):
+    """--overture is on by default in the web app, so an unbounded S3 read
+    would let a supplement stall the whole run. The clock is real: with the
+    budget set to 1 s a live query aborts and reports the timeout."""
+    import subprocess
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="overture", timeout=k["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", slow)
+    monkeypatch.delenv(overture.CHILD_ENV, raising=False)
+    with pytest.raises(overture.OvertureError, match="gave up"):
+        overture._fetch_via_uv((13.0, 100.0, 13.01, 100.01), "2026-07-22.0",
+                               tmp_path, tmp_path / "x.json")
+
+
+def test_the_fetch_budget_is_generous_not_tight():
+    """Measured at 18-55 s for a site extent; a bound under that would drop
+    places on a healthy fetch, which is worse than waiting."""
+    assert overture.FETCH_TIMEOUT >= 120

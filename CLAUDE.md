@@ -659,6 +659,15 @@ data. Overture's **buildings** theme was measured at 268 s for the same box
 against ~6 MB Microsoft quadkey tiles, so it is not used; Google Open
 Buildings was rejected outright at 1,016 MB for the tile covering Bangkok.
 
+*A supplement may cost its own places, never the drawing.* DuckDB has no
+query timeout, so `FETCH_TIMEOUT` (150 s) is enforced with a
+`threading.Timer` calling `con.interrupt()`, and the subprocess path gets
+twice that to cover a first-run install. Verified both ways: a 1 s budget
+aborts a live S3 query and reports the timeout, a healthy fetch takes 18 s.
+This matters because `--overture` is on by default in the web app and the
+free Render plan has no persistent disk, so every cold run pays the fetch
+again — an unbounded read there would stall the whole generation.
+
 *It runs where there is no `uv`.* The container image ships the union of
 every script's dependencies and no uv at all (`script_cmd()` falls back to
 `sys.executable`), so `duckdb` is in `requirements.txt` — without it the

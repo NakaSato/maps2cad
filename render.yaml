@@ -15,7 +15,10 @@
 #     background map re-fetches its tiles after every spin-down. Tile
 #     servers are shared infrastructure and OpenStreetMap's usage policy
 #     asks for caching, so on the free plan use --basemap sparingly, or
-#     move to a plan with a disk.
+#     move to a plan with a disk. The same applies to Overture places,
+#     which are on by default: the per-extent cache under /data is lost on
+#     every restart, so each cold run pays the ~20-60 s fetch again. It is
+#     bounded (overture.FETCH_TIMEOUT) so it can only cost the places.
 #   * memory is 512 MB. A CAD run peaks around 165 MB, so this fits, but
 #     there is not much headroom for concurrent generations.
 #

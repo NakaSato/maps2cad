@@ -44,6 +44,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -65,6 +66,12 @@ DEFAULT_MIN_CONFIDENCE = 0.9
 # calls a place a weak signal, and the file would be several times the size
 # for rows no drawing should carry.
 FETCH_FLOOR = 0.5
+# How long the query may take before the run gives up on it. This is a
+# supplement drawn on its own layer, and --overture is on by default in the
+# web app: a slow S3 read must cost a drawing its Overture places, never
+# the drawing. Measured at 18-55 s for a site extent, so this is generous
+# rather than tight.
+FETCH_TIMEOUT = 150
 CACHE_DIR = Path(os.environ.get("MAPS2CAD_DATA")
                  or Path(__file__).resolve().parent.parent) / "cache" / "overture"
 
@@ -194,6 +201,11 @@ def fetch_places(box, release=None, cache_dir=None, refresh=False):
 
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
+    # DuckDB has no query timeout, so the clock is kept here: interrupt()
+    # is safe from another thread and raises inside execute().
+    timer = threading.Timer(FETCH_TIMEOUT, con.interrupt)
+    timer.daemon = True
+    timer.start()
     query = f"""
         SELECT id,
                names.primary          AS name,
@@ -212,7 +224,11 @@ def fetch_places(box, release=None, cache_dir=None, refresh=False):
     try:
         rows = con.execute(query).fetchall()
     except Exception as exc:
-        raise OvertureError(f"Overture query failed: {exc}")
+        raise OvertureError(
+            f"Overture query timed out after {FETCH_TIMEOUT}s"
+            if not timer.is_alive() else f"Overture query failed: {exc}")
+    finally:
+        timer.cancel()
     places = [{"id": r[0], "name": r[1], "category": r[2] or "",
                "source": r[3] or "", "confidence": float(r[4] or 0),
                "lon": float(r[5]), "lat": float(r[6])} for r in rows]
@@ -240,8 +256,16 @@ def _fetch_via_uv(box, release, cache_dir, path):
                     "--cache-dir", str(cache_dir)]
     if release:
         cmd += ["--release", release]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          env={**os.environ, CHILD_ENV: "1"})
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              env={**os.environ, CHILD_ENV: "1"},
+                              # The child runs the same bounded query, plus
+                              # whatever `uv` spends installing duckdb the
+                              # first time; the margin is for that.
+                              timeout=FETCH_TIMEOUT * 2)
+    except subprocess.TimeoutExpired:
+        raise OvertureError(
+            f"the Overture fetch gave up after {FETCH_TIMEOUT * 2}s")
     if proc.returncode != 0 or not path.is_file():
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         raise OvertureError("the Overture fetch subprocess failed: "
