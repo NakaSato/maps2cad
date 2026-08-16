@@ -659,6 +659,18 @@ data. Overture's **buildings** theme was measured at 268 s for the same box
 against ~6 MB Microsoft quadkey tiles, so it is not used; Google Open
 Buildings was rejected outright at 1,016 MB for the tile covering Bangkok.
 
+*It runs where there is no `uv`.* The container image ships the union of
+every script's dependencies and no uv at all (`script_cmd()` falls back to
+`sys.executable`), so `duckdb` is in `requirements.txt` — without it the
+deploy warns "Overture unavailable" on every run and draws no places — and
+the fetch subprocess uses the same fallback rather than insisting on uv.
+That fallback needs its guard: a child that still cannot import duckdb must
+fail with one error, not spawn a child of its own, which is what
+`CHILD_ENV` is for and what stands between a clear message and a fork bomb.
+`compose.py` builds its commands with `serve.script_cmd()` for the same
+reason: a conductor hardcoding `uv run` works on a laptop and fails on the
+deploy.
+
 *It fetches without joining the dependency set.* `topo2cad.py` deliberately
 does not declare `duckdb` — a 20 MB parquet engine has no business in every
 run for one opt-in flag — so when the import is missing `fetch_places()`

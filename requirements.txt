@@ -19,6 +19,12 @@ osmnx==2.1.1
 geopandas>=1.0
 matplotlib>=3.9
 
+# overture.py. It is the one script serve.py reaches only indirectly —
+# topo2cad.py imports it for --overture, which the web form has on by
+# default — so a missing duckdb here means every deploy silently warns
+# "Overture unavailable" and draws no places.
+duckdb
+
 # Shared
 shapely>=2.0
 pyproj>=3.6

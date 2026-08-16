@@ -46,7 +46,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import stage_db                                          # noqa: E402
-from serve import BadRequest, import_kind                # noqa: E402
+from serve import BadRequest, import_kind, script_cmd     # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TOPO2CAD = HERE / "topo2cad.py"
@@ -71,7 +71,14 @@ def run_step(cmd, what: str) -> None:
 
 
 def uv_run(script: Path) -> list:
-    return ["uv", "run", str(script)]
+    """`uv run` where uv is installed, plain python where it is not.
+
+    Imported from serve.py rather than restated: the container image ships
+    the union of every script's dependencies and no uv at all, and a
+    conductor that insisted on uv would work on a laptop and fail on the
+    deploy.
+    """
+    return script_cmd(script)
 
 
 def step_name(index: int, path: Path) -> str:

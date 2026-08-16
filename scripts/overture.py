@@ -53,6 +53,10 @@ from xml.etree import ElementTree as ET
 # be a lie, which is the same reason gis2cad.py has its own.
 XDATA_APPID = "OVERTURE"
 
+# Set on the fetch subprocess. Its only job is to stop that child spawning
+# a child of its own when duckdb is missing there too.
+CHILD_ENV = "MAPS2CAD_OVERTURE_FETCH"
+
 S3_BUCKET = "overturemaps-us-west-2"
 S3_LIST = (f"https://{S3_BUCKET}.s3.us-west-2.amazonaws.com/"
            "?list-type=2&prefix=release/&delimiter=/")
@@ -169,6 +173,16 @@ def fetch_places(box, release=None, cache_dir=None, refresh=False):
     try:
         import duckdb
     except ImportError:
+        # A child that still cannot import duckdb must fail, not spawn
+        # another child. Under `uv run` the child gets the dependency and
+        # this never trips; under a plain interpreter without duckdb it is
+        # the difference between one clear error and a fork bomb.
+        if os.environ.get(CHILD_ENV):
+            raise OvertureError(
+                "duckdb is needed to read Overture's parquet and this "
+                "interpreter does not have it — add duckdb to the "
+                "environment (it is in requirements.txt) or run through "
+                "`uv run`")
         # topo2cad.py imports this module but does not declare duckdb: a
         # 20 MB parquet engine has no business in the dependency set of
         # every run when one opt-in flag uses it. So the fetch runs as its
@@ -213,18 +227,21 @@ def _fetch_via_uv(box, release, cache_dir, path):
     import shutil
     import subprocess
 
+    # `uv run` where uv exists, plain python where it does not — the same
+    # fallback serve.py's script_cmd() makes, and for the same reason: the
+    # container has no uv and installs the union of dependencies instead.
+    # Without this the deploy could never fetch a new extent, only serve
+    # cached ones, and would say so as a warning nobody reads.
     uv = shutil.which("uv")
-    if not uv:
-        raise OvertureError(
-            "duckdb is needed to read Overture's parquet, and `uv` is not on "
-            "PATH to install it — run `uv run scripts/overture.py` for this "
-            "extent first, or pip install duckdb")
+    runner = [uv, "run"] if uv else [sys.executable]
     s, w, n, e = box
-    cmd = [uv, "run", str(Path(__file__).resolve()),
-           "--bbox", f"{s},{w},{n},{e}", "--cache-dir", str(cache_dir)]
+    cmd = runner + [str(Path(__file__).resolve()),
+                    "--bbox", f"{s},{w},{n},{e}",
+                    "--cache-dir", str(cache_dir)]
     if release:
         cmd += ["--release", release]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          env={**os.environ, CHILD_ENV: "1"})
     if proc.returncode != 0 or not path.is_file():
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         raise OvertureError("the Overture fetch subprocess failed: "

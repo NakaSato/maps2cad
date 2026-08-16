@@ -150,10 +150,14 @@ def test_fetch_places_serves_the_cache_without_duckdb(tmp_path):
     assert cached and places[0]["name"] == "วัดโพธิ์"
 
 
-def test_a_missing_duckdb_and_no_uv_says_what_to_run(tmp_path, monkeypatch):
+def test_the_fetch_child_never_spawns_a_child_of_its_own(tmp_path,
+                                                         monkeypatch):
     """topo2cad.py does not declare duckdb — a 20 MB parquet engine has no
-    business in every run — so the fetch re-runs this file under uv. When
-    that is not available either, say so instead of failing on an import."""
+    business in every run — so the fetch re-runs this file, under `uv run`
+    where uv exists and a plain interpreter where it does not (the
+    container has no uv). A child that still cannot import duckdb has to
+    fail with one clear error; re-entering the fallback there would be a
+    fork bomb."""
     import builtins
 
     real_import = builtins.__import__
@@ -163,14 +167,36 @@ def test_a_missing_duckdb_and_no_uv_says_what_to_run(tmp_path, monkeypatch):
             raise ImportError("no duckdb")
         return real_import(name, *args, **kwargs)
 
-    import shutil
-
     monkeypatch.setattr(builtins, "__import__", no_duckdb)
-    monkeypatch.setattr(shutil, "which", lambda _n: None)
+    monkeypatch.setenv(overture.CHILD_ENV, "1")
+    called = []
+    monkeypatch.setattr(overture, "_fetch_via_uv",
+                        lambda *a, **k: called.append(a))
     with pytest.raises(overture.OvertureError) as excinfo:
         overture.fetch_places((13.0, 100.0, 13.01, 100.01),
                               release="2026-07-22.0", cache_dir=tmp_path)
     assert "duckdb" in str(excinfo.value)
+    assert not called, "the child re-entered the subprocess fallback"
+
+
+def test_the_parent_does_spawn_the_fetch(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_duckdb(name, *args, **kwargs):
+        if name == "duckdb":
+            raise ImportError("no duckdb")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_duckdb)
+    monkeypatch.delenv(overture.CHILD_ENV, raising=False)
+    monkeypatch.setattr(overture, "_fetch_via_uv",
+                        lambda *a, **k: [{"name": "x"}])
+    places, cached = overture.fetch_places(
+        (13.0, 100.0, 13.01, 100.01), release="2026-07-22.0",
+        cache_dir=tmp_path)
+    assert places == [{"name": "x"}] and cached is False
 
 
 def test_overture_places_label_on_their_own_layer_family():
