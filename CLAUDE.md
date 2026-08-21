@@ -167,6 +167,23 @@ drawing against the very snapshot it was made from proves only that the
 file matches itself — the same trap as `dxfdiff` reporting IDENTICAL while
 both routes drop the same feature. An audit re-queries.
 
+`generate_detailed_site_map.py` has none of that cache — osmnx keeps its
+own — but it had no *retry* either: one endpoint, no rotation, so a single
+"Connection refused" from `overpass-api.de` lost a whole run while the same
+coordinate drew fine a minute later. `fetch_features()` now walks
+`OVERPASS_URLS`, restated locally rather than imported from `topo2cad.py`
+so the two stacks keep their disjoint dependency sets. Three rules hold it
+together. Only a **transport** failure moves to the next mirror
+(`osm_error_kind()`): an empty result is an answer and a bad request is a
+fault here, and retrying either one somewhere else just fails slower. It is
+**one ordered pass**, no repeats, so the worst case stays bounded by
+osmnx's request timeout per endpoint instead of multiplying it. And the
+order is measured, not alphabetical — `overpass.kumi.systems` does not
+resolve from every network and hangs to the full timeout rather than
+refusing, and osmnx sleeps a default 60 s whenever it cannot parse a
+mirror's `/status`, so a fallback costs real time and the cheap ones go
+first.
+
 **ML footprints supplement OSM everywhere, not only where OSM is empty.**
 `topo2cad.py` used to fetch them only when OSM returned fewer than 20
 buildings; at Pathum Wan that drew 274 OSM buildings while 69 further ML

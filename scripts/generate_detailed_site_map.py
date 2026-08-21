@@ -96,6 +96,28 @@ FEATURE_TAGS = {
     "waterway": True,
 }
 
+# osmnx sends every query to a single endpoint and never retries, so one
+# refusal from a busy server loses the whole run — which is exactly how a
+# "Connection refused" from overpass-api.de came back as a failed site map
+# while the same coordinate drew fine a minute later. Rotate mirrors
+# instead. The list is restated here rather than imported from
+# topo2cad.py: these two OSM stacks keep their dependency sets disjoint on
+# purpose, and importing that module would pull the CAD side in behind it.
+# One ordered pass, no repeats, so the worst case stays bounded by
+# osmnx's own request timeout per endpoint rather than multiplying it.
+# Ordered by what actually answers: kumi.systems is last because it does not
+# resolve from every network (it hangs to the full request timeout rather
+# than refusing), and a fallback that costs three minutes before the next
+# one is tried is worse than no fallback. osmnx also sleeps a default 60 s
+# when it cannot parse a mirror's /status, so a fallback is not free — the
+# order is what keeps the common case cheap.
+OVERPASS_URLS = [
+    "https://overpass-api.de/api",
+    "https://lz4.overpass-api.de/api",
+    "https://maps.mail.ru/osm/tools/overpass/api",
+    "https://overpass.kumi.systems/api",
+]
+
 INVENTORY_FIELDS = ["feature_id", "code", "osm_name", "display_name",
                     "building_type", "latitude", "longitude"]
 
@@ -305,33 +327,58 @@ def build_extent(lat: float, lon: float, width: float, height: float):
 # ----------------------------------------------------------------------------
 # OpenStreetMap retrieval (spec 6.1, 6.2)
 # ----------------------------------------------------------------------------
+def osm_error_kind(exc) -> tuple[str, str]:
+    """Classify an osmnx failure as ('empty' | 'transport' | 'other', name).
+
+    Only a *transport* failure is worth another endpoint: the server never
+    answered, so a mirror can still answer the same query. An empty result
+    is an answer, and anything else is a fault in the request itself —
+    retrying either one somewhere else just fails slower.
+    """
+    import requests
+
+    name = type(exc).__name__
+    if name == "InsufficientResponseError":
+        return "empty", name
+    if isinstance(exc, (requests.exceptions.RequestException, OSError,
+                        TimeoutError)) or name in (
+            "ResponseStatusCodeError", "URLError", "gaierror"):
+        return "transport", name
+    return "other", name
+
+
 def fetch_features(rect_wgs):
     import osmnx as ox
     ox.settings.use_cache = True
     ox.settings.log_console = False
 
-    try:
-        gdf = ox.features_from_polygon(rect_wgs, FEATURE_TAGS)
-    except Exception as e:  # noqa: BLE001 - classify below
-        import requests
-
-        name = type(e).__name__
-        if name == "InsufficientResponseError":
+    last = None
+    for url in OVERPASS_URLS:
+        ox.settings.overpass_url = url
+        try:
+            gdf = ox.features_from_polygon(rect_wgs, FEATURE_TAGS)
+        except Exception as e:  # noqa: BLE001 - classified above
+            kind, name = osm_error_kind(e)
+            if kind == "empty":
+                raise SiteMapError(
+                    "OpenStreetMap returned no features for this area. "
+                    "Verify the coordinate and try a larger width/height.")
+            if kind == "other":
+                raise SiteMapError(
+                    f"OpenStreetMap request failed ({name}): {e}")
+            last = (name, e)
+            print(f"  Overpass endpoint unavailable ({url}): {name}: {e}")
+            continue
+        if gdf.empty:
             raise SiteMapError(
-                "OpenStreetMap returned no features for this area. "
-                "Verify the coordinate and try a larger width/height.")
-        if isinstance(e, (requests.exceptions.RequestException, OSError,
-                          TimeoutError)) or name in (
-                "ResponseStatusCodeError", "URLError", "gaierror"):
-            raise SiteMapError(
-                f"Could not reach the OpenStreetMap Overpass service "
-                f"({name}: {e}). Check network access and retry.")
-        raise SiteMapError(f"OpenStreetMap request failed ({name}): {e}")
-    if gdf.empty:
-        raise SiteMapError(
-            "The map result is empty: no roads, buildings or water features "
-            "were found inside the requested extent.")
-    return gdf
+                "The map result is empty: no roads, buildings or water "
+                "features were found inside the requested extent.")
+        return gdf
+    name, e = last
+    raise SiteMapError(
+        f"Could not reach the OpenStreetMap Overpass service — tried "
+        f"{len(OVERPASS_URLS)} endpoints, last error {name}: {e}. "
+        f"Check network access and retry.")
 
 
 def feature_id_of(idx) -> str:
