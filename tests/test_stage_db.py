@@ -1526,3 +1526,41 @@ def test_every_rule_is_still_reachable_through_stage_db():
     # and it is the same object, not a copy that can drift
     assert stage_db.interior_point is cad_rules.interior_point
     assert stage_db.carriageway_edges is cad_rules.carriageway_edges
+
+
+def test_an_area_that_crosses_the_extent_is_still_an_area():
+    """clip_runs opens a ring that reaches the sheet edge, and testing the
+    *clipped* run for closure said "not an area" about every area big
+    enough to reach it — which is most of them. The pond at Lopburi came
+    back as two open runs and nothing filled it, so --hatch drew nothing on
+    a site with a pond in it. The source ring is what decides."""
+    from shapely.geometry import LineString, MultiLineString
+
+    conn = connect(":memory:")
+    pid = create_project(conn, "clip", 14.8165, 100.5116, 800, 600, 32647)
+    stage_db.stage_context(conn, pid, [
+        # two open runs, as clipping leaves a pond that crosses the edge
+        {"feature_id": "way/1", "kind": "water", "cad_layer": "C-HYDR-WATR",
+         "display_name": "บึง", "labelled": True, "is_area": True,
+         "runs": [[(0, 0), (50, 0), (50, 30)], [(0, 40), (10, 45)]]},
+        # a river: same kind, open in the source, must never be filled
+        {"feature_id": "way/2", "kind": "water", "cad_layer": "C-HYDR-WATR",
+         "display_name": "แม่น้ำ", "labelled": True, "is_area": False,
+         "width_m": 30.0, "runs": [[(0, 100), (200, 120)]]},
+    ])
+    rows = {r["feature_id"]: r["is_area"] for r in conn.execute(
+        "SELECT feature_id, is_area FROM staging_context")}
+    assert rows == {"way/1": 1, "way/2": 0}
+
+
+def test_a_watercourse_width_is_staged_not_re_derived():
+    """db2dxf offsets the same banks without re-reading the OSM tags, which
+    it has no access to."""
+    conn = connect(":memory:")
+    pid = create_project(conn, "w", 14.8, 100.5, 800, 600, 32647)
+    stage_db.stage_context(conn, pid, [
+        {"feature_id": "way/9", "kind": "water", "cad_layer": "C-HYDR-WATR",
+         "display_name": "", "labelled": False, "width_m": 30.0,
+         "is_area": False, "runs": [[(0, 0), (100, 0)]]}])
+    row = conn.execute("SELECT width_m FROM staging_context").fetchone()
+    assert row["width_m"] == pytest.approx(30.0)

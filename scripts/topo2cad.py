@@ -1061,6 +1061,12 @@ def main():
             width_m = (_anchor_rules.waterway_width(tag_index.get(fid) or {},
                                                     kind)
                        if kind == "water" else 0.0)
+            # Whether the *source* was an area, before clipping. A pond or
+            # a park that crosses the extent comes back from clip_runs as
+            # open runs, and testing the clipped run for closure said "not
+            # an area" about every area big enough to reach the edge —
+            # which is most of them. It is still a pond.
+            is_area = len(pts) >= 4 and pts[0] == pts[-1]
             runs = []
             for run in clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
@@ -1079,7 +1085,7 @@ def main():
                     "feature_id": fid, "kind": kind, "cad_layer": layer,
                     "name_th": th or "", "name_en": en or "",
                     "display_name": name or "", "labelled": bool(label),
-                    "width_m": width_m, "runs": runs})
+                    "width_m": width_m, "is_area": is_area, "runs": runs})
 
     draw_lines(water, "water", LAYERS["water"], label=True)
     draw_lines(green, "green", LAYERS["green"], label=True)
@@ -1093,8 +1099,13 @@ def main():
         for rec in staged_context:
             if rec["kind"] not in _anchor_rules.HATCH_PATTERNS:
                 continue
+            if not rec.get("is_area"):
+                continue        # an open canal centreline has no area
             for run in rec["runs"]:
-                if len(run) >= 4 and run[0] == run[-1]:
+                if len(run) >= 3:
+                    # A run clipped at the extent is filled closed: the
+                    # fill stops at the crop line, which is where the
+                    # drawing stops.
                     _anchor_rules.hatch_area(msp, run, rec["kind"],
                                              rec["cad_layer"])
                     n_hatch += 1

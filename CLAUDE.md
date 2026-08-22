@@ -536,7 +536,19 @@ two fills a reader has to compare side by side to tell apart are worse than
 no fill at all. Linear kinds (rail, barrier, power, pipeline) have no entry
 and are not filled — hatching a fence fills a fence — and `hatch_area()`
 now *returns* on an unknown kind rather than raising, since it is called
-for every closed run.
+for every area.
+
+**Whether something is an area is decided by the source, not by the clip.**
+`clip_runs()` opens a ring that reaches the sheet edge, and both writers
+used to test the *clipped* run for closure — which said "not an area" about
+every area big enough to reach the edge, and at a real extent that is most
+of them. The pond at Lopburi came back as two open runs, so `--hatch` drew
+nothing on a site with a pond in it. `staging_context.is_area` (a
+`MIGRATIONS` entry) records that the source ring was closed, and the fill
+now stops at the crop line, which is where the drawing stops. It is what
+keeps a river out of it too: same `kind`, open in the source, never filled.
+`osm2cad.py` gained `--hatch` in the same commit — it had no way to ask for
+a fill at all.
 
 **A plaza is an area, and water has a direction.** `highway=pedestrian`
 with `area=yes` and a closed ring leaves the road bucket for `C-ROAD-PLAZ`

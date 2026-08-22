@@ -552,6 +552,10 @@ def parse_args(argv=None):
     p.add_argument("--names-only", action="store_true",
                    help="Label only buildings that carry an OSM name, instead "
                         "of falling back to the B### inventory code.")
+    p.add_argument("--hatch", action="store_true",
+                   help="Fill water, planting, land use, parking and plazas "
+                        "with their pattern. Off by default: a hatch at "
+                        "1:5000 on a dense site is a lot of ink.")
     p.add_argument("--mono", action="store_true",
                    help="Monochrome: every layer on ACI 7.")
     p.add_argument("--sheet", choices=["A4", "A3", "A2", "A1", "A0"],
@@ -1023,6 +1027,7 @@ def main(argv=None) -> int:
             width_m = (_anchor_rules.waterway_width(tags_for(tag_index, fid),
                                                     kind)
                        if kind == "water" else 0.0)
+            is_area = len(pts) >= 4 and pts[0] == pts[-1]
             runs = []
             for run in t2c.clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
@@ -1048,7 +1053,7 @@ def main(argv=None) -> int:
                     "source": source_label,
                     "name_th": th or "", "name_en": en or "",
                     "display_name": (th or en) or "", "labelled": bool(label),
-                    "width_m": width_m,
+                    "width_m": width_m, "is_area": is_area,
                     "runs": runs})
 
     draw_lines(water, "water", t2c.LAYERS["water"], label=True)
@@ -1061,6 +1066,20 @@ def main(argv=None) -> int:
     draw_lines(other_lines, "other", t2c.LAYERS["other"], label=True)
     draw_lines(power, "power", t2c.LAYERS["power"])
     draw_lines(pipelines, "pipeline", t2c.LAYERS["pipeline"])
+
+    if a.hatch:
+        n_hatch = 0
+        for rec in staged_context:
+            if rec["kind"] not in _anchor_rules.HATCH_PATTERNS:
+                continue
+            if not rec.get("is_area"):
+                continue
+            for run in rec["runs"]:
+                if len(run) >= 3:
+                    _anchor_rules.hatch_area(msp, run, rec["kind"],
+                                             rec["cad_layer"])
+                    n_hatch += 1
+        print(f"Hatched: {n_hatch} area(s)")
 
     # Flow direction on waterways, by the same rule the other routes use
     for rec in staged_context:

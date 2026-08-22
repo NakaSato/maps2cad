@@ -359,13 +359,16 @@ def main(argv=None) -> int:
     n_h = 0
     if a.hatch:
         for row in conn.execute(
-                "SELECT kind, geom_wkb, cad_layer FROM staging_context"
+                "SELECT kind, geom_wkb, cad_layer, is_area"
+                " FROM staging_context"
                 " WHERE project_id = ? ORDER BY feature_id", (pid,)):
             if row["kind"] not in stage_db.HATCH_PATTERNS:
                 continue
+            if not row["is_area"]:
+                continue        # an open canal centreline has no area
             for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
                 coords = list(line.coords)
-                if len(coords) >= 4 and coords[0] == coords[-1]:
+                if len(coords) >= 3:
                     stage_db.hatch_area(msp, coords, row["kind"],
                                         row["cad_layer"])
                     n_h += 1
