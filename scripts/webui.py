@@ -147,6 +147,7 @@ vertical-align:top}
 .hist td.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .hist td.dl{white-space:nowrap}
+.hist td.proj{font-size:12.5px;overflow-wrap:anywhere;max-width:26ch}
 /* The CAD file is the deliverable; make it obvious which link hands it over */
 .hist a.dl-dxf{font-weight:600;color:var(--survey)}
 .hist td.dl a{display:inline-block;font-family:ui-monospace,SFMono-Regular,
@@ -374,12 +375,20 @@ def page(title: str, body: str) -> bytes:
 """.encode()
 
 
-def history_table(rows: list[dict]) -> str:
+def history_table(rows: list[dict], projects: dict | None = None) -> str:
+    """One row per run, with the project it staged beside its files.
+
+    A CAD run leaves two things behind — the files in its own folder and a
+    staged project that can be renamed and re-issued — and they used to be
+    listed on two pages with no link between them.
+    """
+    projects = projects or {}
     if not rows:
         return ('<p class="note">No maps generated yet — your runs will be '
                 "listed here.</p>")
     out = ['<table class="hist"><thead><tr><th>When</th><th>Location</th>'
-           '<th>Area</th><th>Export</th><th>Files</th></tr></thead><tbody>']
+           '<th>Area</th><th>Export</th><th>Files</th><th>Project</th>'
+           '</tr></thead><tbody>']
     for r in rows:
         p = r["params"]
         # DXF downloads rather than previews: it has no browser viewer, so
@@ -391,12 +400,18 @@ def history_table(rows: list[dict]) -> str:
              f'<a href="/view/{r["id"]}/{k}" target="_blank" rel="noopener" '
              f'title="Preview {k.upper()}">{k.upper()}</a>')
             for k in ("dxf", "plot", "pdf", "png", "csv") if r.get(k))
+        name = r.get("project") or ""
+        pid = projects.get(name)
+        project = (f'<a href="/project/{pid}" title="Correct names and '
+                   f're-issue">{html.escape(name)}</a>' if pid
+                   else html.escape(name) or "—")
         out.append(
             f'<tr><td>{html.escape(r["when"])}</td>'
             f'<td class="num">{p["lat"]:.6f}, {p["lon"]:.6f}</td>'
             f'<td class="num">{p["width"]:.0f} × {p["height"]:.0f} m</td>'
             f'<td>{html.escape(p.get("export", "map"))}</td>'
-            f'<td class="dl">{links or "—"}</td></tr>')
+            f'<td class="dl">{links or "—"}</td>'
+            f'<td class="proj">{project}</td></tr>')
     out.append("</tbody></table>")
     return "".join(out)
 
@@ -785,7 +800,8 @@ happens once per square.</p>
 </script>""")
 
 
-def result_page(rec: dict, kinds, zone: str, drive: bool) -> bytes:
+def result_page(rec: dict, kinds, zone: str, drive: bool,
+                project_id=None) -> bytes:
     p = rec["params"]
     jid = rec["id"]
 
@@ -878,6 +894,7 @@ def result_page(rec: dict, kinds, zone: str, drive: bool) -> bytes:
 </dl>
 {preview}
 <div class="files">{''.join(links)}</div>
+{f'<h2>Staged as <a href="/project/{project_id}">{html.escape(rec.get("project") or "")}</a></h2><p class="note">Correct a building name there and re-issue the drawing in under a second — no re-fetch from OpenStreetMap.</p>' if project_id else ''}
 <pre class="log">{html.escape(rec['log'])}</pre>
 <a class="back" href="/">← Generate another</a>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
@@ -980,6 +997,12 @@ def project_page(d, note: str, q: str, page_no: int, only: str,
         for src, rs in sorted(grouped.items(),
                               key=lambda kv: -sum(r["count"] for r in kv[1])))
 
+    runs_rows = history_table(d.get("runs") or [])
+    if not (d.get("runs") or []):
+        runs_rows = ('<p class="note">No run on this machine wrote into this '
+                     "project — it was staged by an import or by the command "
+                     "line.</p>")
+
     banner = f'<div class="ok">{html.escape(note)}</div>' if note else ""
     return page(f"{proj['name']}", f"""
 <p class="eyebrow">Project {pid} · EPSG:{proj['srid']}</p>
@@ -1030,6 +1053,9 @@ applies to this page only.</p>
   <button type="submit">Save names on this page</button>
 </form>
 {pager(pid, q, only, page_no, pages)}
+
+<h2>Runs that made this <a href="/history">All runs →</a></h2>
+{runs_rows}
 
 <h2>Re-issue drawing</h2>
 <form method="post" action="/project/{pid}/redraw">

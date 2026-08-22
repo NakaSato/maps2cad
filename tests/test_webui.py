@@ -164,3 +164,27 @@ def test_the_form_still_opens_the_fold_for_a_government_run():
     to go looking for it."""
     assert '<details class="adv" id="adv" open>' in render_form(
         {"profile": "government"})
+
+
+# ------------------------------------------------- runs and their projects
+def _run(jid="a1", project="site-a", when="2026-08-22 03:00"):
+    return {"id": jid, "when": when, "project": project,
+            "params": {"lat": 14.8165, "lon": 100.5116, "width": 200.0,
+                       "height": 150.0, "export": "cad"},
+            "dxf": "/tmp/site.dxf"}
+
+
+def test_a_run_links_to_the_project_it_staged():
+    """The files and the staged project are one site. Listing them on two
+    pages with nothing between them is how yesterday's run gets lost."""
+    html = webui.history_table([_run()], {"site-a": 7})
+    assert 'href="/project/7"' in html and "site-a" in html
+
+
+def test_a_run_with_no_staged_project_still_renders():
+    """A site-map-only run stages nothing, and an imported project was
+    never produced by a run on this machine."""
+    html = webui.history_table([_run(project="")], {})
+    assert "<td class=\"proj\">—</td>" in html
+    html = webui.history_table([_run(project="gone")], {})
+    assert "gone" in html and "href=\"/project/" not in html

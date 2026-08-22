@@ -742,8 +742,11 @@ def job_zip(rec: dict) -> tuple[bytes, str]:
 
 def save_job(rec: dict) -> None:
     """Persist a run so history survives a restart."""
+    # The staged project name rides along: without it a restart leaves every
+    # run in history with no way back to the project it wrote into, which is
+    # the whole path to correcting a name and re-issuing.
     meta = {"id": rec["id"], "params": rec["params"], "when": rec["when"],
-            "log": rec.get("log", ""),
+            "log": rec.get("log", ""), "project": rec.get("project", ""),
             "files": [k for k in KINDS if rec.get(k)]}
     try:
         (Path(rec["dir"]) / "meta.json").write_text(
@@ -765,7 +768,7 @@ def load_jobs() -> int:
         folder = meta_file.parent
         rec = {"id": meta["id"], "params": meta["params"],
                "when": meta["when"], "log": meta.get("log", ""),
-               "dir": str(folder)}
+               "project": meta.get("project", ""), "dir": str(folder)}
         for kind in meta.get("files", []):
             target = folder / KINDS[kind]
             if target.is_file():
@@ -783,7 +786,7 @@ def history(limit: int | None = None) -> list[dict]:
 
 
 def history_html(limit: int | None = None) -> str:
-    return webui.history_table(history(limit))
+    return webui.history_table(history(limit), project_ids())
 
 
 # --------------------------------------------------------------------- pages
@@ -800,7 +803,8 @@ def result_page(rec: dict) -> bytes:
     p = rec["params"]
     return webui.result_page(rec, KINDS,
                              utm_zone_label(p["lat"], p["lon"]),
-                             gdrive.configured())
+                             gdrive.configured(),
+                             project_ids().get(rec.get("project") or ""))
 
 
 def run_page(jid: str, state: dict) -> bytes:
@@ -1049,11 +1053,15 @@ def project_page(pid: int, note: str = "", q: str = "", page_no: int = 1,
     sources = stage_db_module().provenance(conn, pid)
     conn.close()
 
+    # The runs that wrote into this project. A staged project and the files
+    # it came from are one site; listing them apart is how yesterday's run
+    # gets lost.
+    runs = [r for r in history() if r.get("project") == proj["name"]]
     return webui.project_page(
         {"pid": pid, "proj": proj, "buildings": buildings,
          "roads": roads, "sources": sources, "total_all": total_all,
          "unnamed_all": unnamed_all, "matched": matched,
-         "pages": pages},
+         "pages": pages, "runs": runs},
         note, q, page_no, only, PER_PAGE)
 
 
@@ -1067,6 +1075,26 @@ OSM_TYPE_LABELS = {
     "green": "พื้นที่สีเขียว / Parks", "rail": "ทางรถไฟ / Railways",
     "barrier": "รั้ว / Barriers", "landmark": "สถานที่สำคัญ / Landmarks",
 }
+
+
+def project_ids() -> dict[str, int]:
+    """Staged project name -> id, for linking a run to what it staged.
+
+    A CAD run records the project name it wrote into; the browser needs the
+    id to link to it. Without this the two halves of one site sit on
+    separate pages with nothing joining them, which is exactly how someone
+    loses the run they did yesterday.
+    """
+    conn = db_conn()
+    if conn is None:
+        return {}
+    try:
+        return {r["name"]: r["id"]
+                for r in conn.execute("SELECT id, name FROM projects")}
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
 
 
 def project_srid(name: str):

@@ -1070,6 +1070,15 @@ f-strings where a literal brace must be doubled. To drop the CDN: save
 `vue.global.js` beside `webui.py`, serve it, and point `VUE_SRC` at it —
 nothing else changes.
 
+**A run and the project it staged are one site, and each names the other.**
+A CAD run leaves files in its own folder *and* a staged project that can be
+renamed and re-issued; those used to be two pages with nothing joining
+them. History carries a project column (`project_ids()` maps name to id),
+the project page lists the runs that wrote into it, and the result page
+offers the re-issue path directly. The name is persisted in `meta.json` and
+restored by `load_jobs()` — it was only ever held in memory, so every
+restart severed the link and left history pointing nowhere.
+
 ## Conventions
 
 - Generated output goes to `output/` (gitignored). DEM `.tif` tiles, `ms_cache/`,
