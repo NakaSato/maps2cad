@@ -1,1 +1,16 @@
 feature_id,issue,detail,area_m2,iou
+way/25701334,poor_overlap,outlines disagree; check against imagery,9895.6,0.14
+way/33070807,poor_overlap,outlines disagree; check against imagery,5426.4,0.03
+way/157770871,poor_overlap,outlines disagree; check against imagery,558.8,0.30
+way/157770889,no_ml_support,"no ML footprint here — demolished, or mis-mapped",1244.8,0.00
+way/157770905,poor_overlap,outlines disagree; check against imagery,1737.7,0.11
+way/157770918,poor_overlap,outlines disagree; check against imagery,457.0,0.31
+way/163950600,poor_overlap,outlines disagree; check against imagery,5721.0,0.47
+way/655137689,poor_overlap,outlines disagree; check against imagery,4393.8,0.44
+way/680890152,poor_overlap,outlines disagree; check against imagery,258.2,0.02
+way/686092689,poor_overlap,outlines disagree; check against imagery,611.4,0.42
+way/852674737,poor_overlap,outlines disagree; check against imagery,3903.2,0.14
+way/854661162,poor_overlap,outlines disagree; check against imagery,30.2,0.00
+way/854661163,poor_overlap,outlines disagree; check against imagery,33.3,0.01
+way/991842814,poor_overlap,outlines disagree; check against imagery,438.9,0.07
+way/1076374377,poor_overlap,outlines disagree; check against imagery,1334.7,0.18

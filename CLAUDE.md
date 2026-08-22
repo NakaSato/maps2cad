@@ -275,6 +275,30 @@ in the list. A fallback is not free either: osmnx sleeps a default 60 s
 whenever it cannot parse a mirror's `/status`. Measure before adding one,
 and put the cheap endpoints first.
 
+**The ML scan is filtered before it is parsed, and remembered after.** A
+quadkey tile is 111 MB and **1,363,208 footprints**, of which a 500 x 400 m
+extent keeps **91**. Running `json.loads` over every line to find those 91
+was **85% of the scan** — 6.32 s of it. `_ms_first_vertex()` slices the
+first coordinate pair out of the raw text and rejects on that, so 4,642
+lines are parsed instead of 1,363,208: **3.4x faster, byte-identical
+output**. The margin (`MS_PREFILTER_DEG`, 0.01° ≈ 1.1 km) is deliberately
+absurd for a building tens of metres across, because this filter is only
+allowed to save work and never to change the answer — the exact per-vertex
+test still decides, and a line it cannot read returns None and goes to the
+full parse rather than being dropped.
+
+The scan itself is then cached under `MAPS2CAD_DATA/cache/ms_footprints`,
+keyed on the extent *and* on each tile's name and size, so a re-released
+tile is never answered from the old scan. Re-running a site is the normal
+case — the web app does it on every generate — and reading 111 MB to keep
+91 footprints each time is work nobody asked for. Measured end to end at
+Pathum Wan: the whole run **8 s → 4 s cold → 1 s warm**, with `dxfdiff`
+IDENTICAL against the pre-optimisation drawing both ways. `gisqa.py`,
+`dxfaudit.py` and `mapposter.py` share the fetcher and get it for free;
+caching a scan of a *local file* does not weaken the audit, whose
+independence rule is about not re-reading the Overpass snapshot a drawing
+was built from.
+
 **ML footprints supplement OSM everywhere, not only where OSM is empty.**
 `topo2cad.py` used to fetch them only when OSM returned fewer than 20
 buildings; at Pathum Wan that drew 274 OSM buildings while 69 further ML

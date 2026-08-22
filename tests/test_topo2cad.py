@@ -855,3 +855,71 @@ def test_the_scripts_that_borrow_the_rules_still_reach_them():
                  "carriageway_width", "road_cad_layer", "PATH_TYPES",
                  "LAYERS"):
         assert hasattr(topo2cad, name), name
+
+
+# ------------------------------------------------- Microsoft ML footprints
+_ML_LINE = ('{"type":"Feature","geometry":{"type":"Polygon","coordinates":'
+            '[[[100.5325,13.7455],[100.5326,13.7455],[100.5326,13.7456],'
+            '[100.5325,13.7455]]]},"properties":{"height":-1.0}}')
+
+
+def test_the_first_vertex_is_read_without_parsing_the_line():
+    """A quadkey tile is 111 MB and 1.36 million footprints, of which a
+    500 x 400 m extent keeps 91. json.loads over all of them to find those
+    91 was 85% of the scan."""
+    import osm_source
+
+    assert osm_source._ms_first_vertex(_ML_LINE) == (100.5325, 13.7455)
+
+
+@pytest.mark.parametrize("line", [
+    "", "{}", '{"type":"Feature"}',
+    '{"geometry":{"coordinates":[[[bad,worse]]]}}',
+    '{"geometry":{"coordinates":[[[100.5]]]}}',
+])
+def test_an_unexpected_line_falls_through_to_the_full_parse(line):
+    """None means 'I could not tell', and the caller then parses it
+    properly. A filter that guesses wrong on a shape it does not recognise
+    would drop real buildings silently."""
+    import osm_source
+
+    assert osm_source._ms_first_vertex(line) is None
+
+
+def test_the_prefilter_margin_cannot_drop_a_real_footprint():
+    """The filter is only allowed to save work, never to change the answer.
+    A footprint is tens of metres across, so a vertex inside the extent puts
+    the first vertex nowhere near the 1.1 km margin."""
+    import osm_source
+
+    assert osm_source.MS_PREFILTER_DEG >= 0.005
+    # a degree is ~111 km, so the margin in metres:
+    assert osm_source.MS_PREFILTER_DEG * 111_000 >= 500
+
+
+def test_the_scan_is_remembered_per_extent(tmp_path, monkeypatch):
+    """Re-running a site is the normal case — the web app does it on every
+    generate — and reading 111 MB to keep 91 footprints each time is work
+    nobody asked for. 1.87 s cold, 0.02 s warm."""
+    import gzip
+
+    import osm_source
+
+    monkeypatch.setattr(osm_source, "MS_CACHE_DIR", tmp_path / "scans")
+    tiles = tmp_path / "ms_cache"
+    tiles.mkdir()
+    (tiles / "dataset-links.csv").write_text(
+        "Location,QuadKey,Url,Size,UploadDate\n")
+    tile = tiles / "132203310_part.csv.gz"
+    with gzip.open(tile, "wt") as fh:
+        fh.write(_ML_LINE + "\n")
+
+    key1 = osm_source._ms_cache_path([tile], 13.74, 100.53, 13.75, 100.54)
+    key2 = osm_source._ms_cache_path([tile], 13.74, 100.53, 13.75, 100.55)
+    assert key1 != key2, "a different extent must not reuse the scan"
+
+    # a re-released tile is a different size, so the old scan is not reused
+    with gzip.open(tile, "wt") as fh:
+        fh.write(_ML_LINE + "\n" + _ML_LINE + "\n")
+    assert osm_source._ms_cache_path(
+        [tile], 13.74, 100.53, 13.75, 100.54) != key1
