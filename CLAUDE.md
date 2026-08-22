@@ -232,6 +232,21 @@ list is unchanged — a total outage costs nothing for ground already
 fetched. A **first** fetch of a new extent during an outage cannot be
 rescued by any cache, and that is the failure to expect.
 
+**`MAPS2CAD_OVERPASS` points both stacks at an instance you control.** The
+public mirrors decline an address that has asked for too much, and no
+number of *public* mirrors fixes that, because the refusal is about the
+caller rather than the servers. One variable covers both exports: the CAD
+stack posts to `.../api/interpreter` and osmnx is handed `.../api` and
+appends the rest, so either shape is accepted and each stack normalises it
+(`normalise_overpass()`, restated in both, like every other rule these two
+share). Comma- or whitespace-separated for a primary and a standby. Named
+endpoints go **first and the public mirrors stay behind them** — a private
+instance that is down should fall back, not fail; verified by pointing it
+at a dead host and watching the run complete. Read only from the
+environment, never from a request, for the reason `serve.py` takes basemap
+providers by name. Unset, everything behaves exactly as before, and a test
+asserts that.
+
 **"Connection refused" is not an outage.** A public HTTPS host that is down
 times out or answers 5xx; one that answers `ECONNREFUSED` immediately is
 refusing *this caller*. Overpass does that to an address that has asked for

@@ -43,6 +43,21 @@ services:
         value: /data       # ephemeral on free — see the note above
       - key: PYTHONUNBUFFERED
         value: "1"
+      # An Overpass instance you control, for both exports. The public
+      # mirrors decline an address that has asked for too much, and a
+      # cloud host shares its outbound address with everyone else on it:
+      # this deploy has had overpass-api.de and lz4 answer "connection
+      # refused" outright while kumi.systems returned 502 — the 502 being
+      # the proof that egress was fine and the refusal was about the
+      # caller. No number of public mirrors fixes that.
+      #
+      # Comma-separated for a primary and a standby. Either URL shape
+      # works ("https://host/api" or ".../api/interpreter"). Named
+      # endpoints are tried first and the public mirrors stay behind
+      # them, so one that is down falls back rather than failing.
+      # Unset, the app behaves exactly as before.
+      - key: MAPS2CAD_OVERPASS
+        sync: false
       # Google sign-in is optional. Set these in the Render dashboard, not
       # here — render.yaml is committed and these are credentials. With them
       # unset the app runs normally and the Drive button is not shown.

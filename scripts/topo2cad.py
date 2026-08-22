@@ -73,7 +73,9 @@ from cad_rules import LAYERS  # noqa: E402,F401
 from osm_source import (  # noqa: E402,F401
     BUILT_UP_LANDUSE, HEADERS, IMPLICIT_ONEWAY_JUNCTIONS,
     ML_OVERLAP_MAX, MS_LINKS_URL, ONEWAY_FORWARD, ONEWAY_REVERSE,
-    OSM_CACHE_DIR, OSM_CACHE_TTL, OVERPASS_URLS, PATH_TYPES, POI_KEYS,
+    OSM_CACHE_DIR, OSM_CACHE_TTL, OVERPASS_ENV, OVERPASS_URLS,
+    PATH_TYPES, POI_KEYS, PUBLIC_OVERPASS_URLS, normalise_overpass,
+    overpass_urls,
     POI_SUBMISSION, PRIMARY_TAGS, ROAD_WIDTH_M, THAI_RE, TRUNK_CLASSES,
     _cache_path, _clip_seg, _first_tag, _post_overpass,
     assign_inner_rings, bbox_around, best_name, carriageway_width,

@@ -44,11 +44,53 @@ import requests
 from cad_rules import LAYERS
 
 
-OVERPASS_URLS = [
+PUBLIC_OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
+
+# An Overpass instance the operator controls, from MAPS2CAD_OVERPASS. The
+# public mirrors decline an address that has asked for too much — a shared
+# cloud IP answers ECONNREFUSED while its network is fine — and no number
+# of public mirrors fixes that, because the refusal is about the caller.
+#
+# Comma- or whitespace-separated, so a primary and a standby can both be
+# named. They go *first* and the public mirrors stay behind them: a private
+# instance that is down should fall back, not fail.
+#
+# Only ever read from the environment, never from a request. serve.py takes
+# basemap providers by name for the same reason — a URL accepted from a
+# browser form would let anyone point this fetcher at any host.
+OVERPASS_ENV = "MAPS2CAD_OVERPASS"
+
+
+def normalise_overpass(url: str) -> str:
+    """One endpoint in the form this stack POSTs to.
+
+    The two stacks want different shapes — this one posts to
+    `.../api/interpreter`, generate_detailed_site_map.py hands osmnx
+    `.../api` and osmnx appends the rest. Someone setting one environment
+    variable should not have to know that, so either form is accepted here
+    and normalised.
+    """
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/interpreter"):
+        return url
+    return url + "/interpreter" if url.endswith("/api") else url + "/interpreter"
+
+
+def overpass_urls(env_value=None) -> list[str]:
+    """Operator endpoints first, then the public mirrors."""
+    raw = os.environ.get(OVERPASS_ENV, "") if env_value is None else env_value
+    mine = [normalise_overpass(u) for u in raw.replace(",", " ").split()]
+    mine = [u for u in mine if u]
+    return mine + [u for u in PUBLIC_OVERPASS_URLS if u not in mine]
+
+
+OVERPASS_URLS = overpass_urls()
 
 
 HEADERS = {"User-Agent": "topo2cad/1.0 (personal CAD export script)"}

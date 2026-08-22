@@ -112,11 +112,44 @@ FEATURE_TAGS = {
 # is not a fallback, so it is deliberately not in this list. A fallback is
 # not free either: osmnx sleeps a default 60 s whenever it cannot parse a
 # mirror's /status, so the cheap endpoints go first.
-OVERPASS_URLS = [
+PUBLIC_OVERPASS_URLS = [
     "https://overpass-api.de/api",
     "https://lz4.overpass-api.de/api",
     "https://overpass.kumi.systems/api",
 ]
+
+# An Overpass instance the operator controls, from MAPS2CAD_OVERPASS — the
+# same variable the CAD stack reads, so one setting covers both exports.
+# The public mirrors decline an address that has asked for too much, and no
+# number of public mirrors fixes that because the refusal is about the
+# caller. Named endpoints go first; the public ones stay behind them, so a
+# private instance that is down falls back rather than failing.
+#
+# The list and its parsing are restated here rather than imported from
+# osm_source.py, like every other rule these two stacks share: their
+# dependency sets stay disjoint. What differs is the shape — osmnx is given
+# `.../api` and appends `/interpreter` itself, while the CAD stack posts to
+# the full path — so either form is accepted and normalised to this one.
+OVERPASS_ENV = "MAPS2CAD_OVERPASS"
+
+
+def normalise_overpass(url: str) -> str:
+    """One endpoint in the form osmnx wants: no trailing /interpreter."""
+    url = (url or "").strip().rstrip("/")
+    if url.endswith("/interpreter"):
+        url = url[: -len("/interpreter")]
+    return url
+
+
+def overpass_urls(env_value=None) -> list[str]:
+    """Operator endpoints first, then the public mirrors."""
+    raw = os.environ.get(OVERPASS_ENV, "") if env_value is None else env_value
+    mine = [normalise_overpass(u) for u in raw.replace(",", " ").split()]
+    mine = [u for u in mine if u]
+    return mine + [u for u in PUBLIC_OVERPASS_URLS if u not in mine]
+
+
+OVERPASS_URLS = overpass_urls()
 
 INVENTORY_FIELDS = ["feature_id", "code", "osm_name", "display_name",
                     "building_type", "latitude", "longitude"]

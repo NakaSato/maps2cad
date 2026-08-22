@@ -757,17 +757,56 @@ def test_both_stacks_agree_on_the_overpass_endpoints():
     what a run fell into when the first two returned 504 and 500 within a
     minute of each other.
     """
-    import re
+    import generate_detailed_site_map as gen
 
-    scripts = Path(__file__).resolve().parent.parent / "scripts"
-    gen = (scripts / "generate_detailed_site_map.py").read_text(
-        encoding="utf-8")
-    theirs = [u.rstrip("/") for u in
-              re.findall(r'"(https://[^"]*overpass[^"]*)"', gen)]
+    # The *public* lists, not the resolved ones: an operator endpoint from
+    # MAPS2CAD_OVERPASS is allowed to differ from whatever else is set.
+    theirs = [u.rstrip("/") for u in gen.PUBLIC_OVERPASS_URLS]
     ours = [u.replace("/interpreter", "").rstrip("/")
-            for u in topo2cad.OVERPASS_URLS]
+            for u in topo2cad.PUBLIC_OVERPASS_URLS]
     assert ours == theirs, f"topo2cad {ours} vs site map {theirs}"
     assert not any("mail.ru" in u for u in ours), "the 19-minute mirror"
+
+
+def test_an_operator_endpoint_goes_first_and_the_mirrors_stay_behind():
+    """The public mirrors decline an address that has asked for too much —
+    a shared cloud IP answers ECONNREFUSED while its network is fine — and
+    no number of public mirrors fixes that, because the refusal is about the
+    caller. MAPS2CAD_OVERPASS names one you control.
+
+    First, not instead: a private instance that is down should fall back
+    rather than fail.
+    """
+    got = topo2cad.overpass_urls("https://overpass.example.co.th/api")
+    assert got[0] == "https://overpass.example.co.th/api/interpreter"
+    assert got[1:] == topo2cad.PUBLIC_OVERPASS_URLS
+
+
+def test_either_url_shape_is_accepted():
+    """One variable covers both stacks, and they want different shapes —
+    this one posts to .../api/interpreter, osmnx is handed .../api and
+    appends the rest. Nobody setting an environment variable should have to
+    know that."""
+    import generate_detailed_site_map as gen
+
+    for written in ("https://ov.example/api",
+                    "https://ov.example/api/",
+                    "https://ov.example/api/interpreter"):
+        assert topo2cad.overpass_urls(written)[0] == \
+            "https://ov.example/api/interpreter", written
+        assert gen.overpass_urls(written)[0] == "https://ov.example/api", \
+            written
+
+
+def test_several_endpoints_can_be_named():
+    got = topo2cad.overpass_urls("https://a.example/api, https://b.example/api")
+    assert got[:2] == ["https://a.example/api/interpreter",
+                       "https://b.example/api/interpreter"]
+
+
+def test_an_unset_variable_changes_nothing():
+    assert topo2cad.overpass_urls("") == topo2cad.PUBLIC_OVERPASS_URLS
+    assert topo2cad.overpass_urls("   ") == topo2cad.PUBLIC_OVERPASS_URLS
 
 
 def test_the_source_layer_does_not_import_the_drawing():
