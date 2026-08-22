@@ -178,11 +178,13 @@ together. Only a **transport** failure moves to the next mirror
 fault here, and retrying either one somewhere else just fails slower. It is
 **one ordered pass**, no repeats, so the worst case stays bounded by
 osmnx's request timeout per endpoint instead of multiplying it. And the
-order is measured, not alphabetical — `overpass.kumi.systems` does not
-resolve from every network and hangs to the full timeout rather than
-refusing, and osmnx sleeps a default 60 s whenever it cannot parse a
-mirror's `/status`, so a fallback costs real time and the cheap ones go
-first.
+order is measured, not assumed. The same query took 11 s on
+`lz4.overpass-api.de` and 114 s on `overpass.kumi.systems`, which then
+answered 500; a fourth mirror, `maps.mail.ru`, answered *correctly* after
+**1142 s** — nineteen minutes is not a fallback, so it is deliberately not
+in the list. A fallback is not free either: osmnx sleeps a default 60 s
+whenever it cannot parse a mirror's `/status`. Measure before adding one,
+and put the cheap endpoints first.
 
 **ML footprints supplement OSM everywhere, not only where OSM is empty.**
 `topo2cad.py` used to fetch them only when OSM returned fewer than 20
@@ -212,21 +214,24 @@ at 15.8338, 104.3945 the DXF carries 155 buildings while the site map PDF shows
 1. Expect the question "why does the PDF have fewer buildings than the CAD file"
 and answer with this, not with a bug hunt.
 
-**Default extent is 200 × 150 m** across the CLI tools and the web form,
-with A3 the default sheet — the combination plots at **1:1000**, which is a
-site-plan scale a reviewer expects. It was 1000 × 750, which fell to
-**1:5000 on A3** and read as a locality map: after the title block and
-margins `sheet.py` leaves a 290 × 273 mm A3 viewport, capping 1:2000 at
-580 × 546 m. The extent and the sheet are chosen independently, so check
-`fitting_scale()` for the combination you need rather than assuming any of
-these; a wider extent still works and simply lands on a smaller scale.
-`topo2cad.py` still accepts `--radius` for a square box.
+**Default extent is 1000 × 750 m** across the CLI tools and the web form,
+with A3 the default sheet. Know what that combination costs: 1000 m needs
+500 mm of paper at 1:2000 and, after the title block and margins,
+`sheet.py` leaves a 290 × 273 mm A3 viewport — which caps 1:2000 at
+580 × 546 m — so the default sheet lands on **1:5000** and reads as a
+locality map rather than a site plan. It was briefly 200 × 150 m for
+exactly that reason (1:1000 on A3, the scale a reviewer expects) and was
+changed back deliberately. A deliverable that needs a site-plan scale
+narrows the extent or plots larger than A3; the extent and the sheet are
+chosen independently, so check `fitting_scale()` for the combination you
+need rather than assuming any of these. `topo2cad.py` still accepts
+`--radius` for a square box.
 
-The older numbers are worth keeping in mind when reading history: a run
-before this default carries 1000 × 750 in its folder name and its staged
-project, and the ML supplement covers a proportionally larger area at that
-size — at a rural site 200 × 150 may hold no buildings at all where
-1000 × 750 held a village edge.
+Extent changes what the data looks like, not just the scale: the ML
+supplement covers a proportionally larger area at 1000 × 750, and at a
+rural site 200 × 150 may hold no buildings at all where 1000 × 750 holds a
+village edge. A run carries its extent in its folder name and its staged
+project, so history reads unambiguously either way.
 
 **The extent is drawn, on `C-ANNO-EXTN`, DASHED.** Both CAD routes close a rectangle
 on the requested extent, derived from the centre and the nominal width and

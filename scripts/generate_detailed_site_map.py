@@ -105,16 +105,15 @@ FEATURE_TAGS = {
 # purpose, and importing that module would pull the CAD side in behind it.
 # One ordered pass, no repeats, so the worst case stays bounded by
 # osmnx's own request timeout per endpoint rather than multiplying it.
-# Ordered by what actually answers: kumi.systems is last because it does not
-# resolve from every network (it hangs to the full request timeout rather
-# than refusing), and a fallback that costs three minutes before the next
-# one is tried is worse than no fallback. osmnx also sleeps a default 60 s
-# when it cannot parse a mirror's /status, so a fallback is not free — the
-# order is what keeps the common case cheap.
+# Ordered by measurement, not by reputation: the same query took 11 s on
+# lz4 and 114 s on kumi (which then answered 500), and a fourth mirror,
+# maps.mail.ru, answered correctly after 1142 s — nineteen minutes, which
+# is not a fallback, so it is deliberately not in this list. A fallback is
+# not free either: osmnx sleeps a default 60 s whenever it cannot parse a
+# mirror's /status, so the cheap endpoints go first.
 OVERPASS_URLS = [
     "https://overpass-api.de/api",
     "https://lz4.overpass-api.de/api",
-    "https://maps.mail.ru/osm/tools/overpass/api",
     "https://overpass.kumi.systems/api",
 ]
 
@@ -155,9 +154,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Longitude in decimal degrees (WGS 84, -180..180)")
     # 1000 x 750 m: wider than A3 holds at 1:2000, so the standard profile
     # reports the scale it actually achieved rather than a nominal one
-    p.add_argument("--width", type=float, default=200.0,
+    p.add_argument("--width", type=float, default=1000.0,
                    help="East-west coverage in metres, centred on the site")
-    p.add_argument("--height", type=float, default=150.0,
+    p.add_argument("--height", type=float, default=750.0,
                    help="North-south coverage in metres, centred on the site")
     p.add_argument("--output",
                    help="Output PDF path (must end in .pdf). Not needed when "

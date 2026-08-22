@@ -341,8 +341,8 @@ def main(argv=None) -> int:
                          "this is how topo2cad.py drives the fetch when its "
                          "own environment has no duckdb")
     ap.add_argument("--cache-dir", help=f"default: {CACHE_DIR}")
-    ap.add_argument("--width", type=float, default=200.0)
-    ap.add_argument("--height", type=float, default=150.0)
+    ap.add_argument("--width", type=float, default=1000.0)
+    ap.add_argument("--height", type=float, default=750.0)
     ap.add_argument("--min-confidence", type=float,
                     default=DEFAULT_MIN_CONFIDENCE,
                     help=f"drop places below this (default "

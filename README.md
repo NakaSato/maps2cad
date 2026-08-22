@@ -445,9 +445,9 @@ writes files, so don't expose it to an untrusted network.
 
 ### Choosing width × height
 
-The default is **200 × 150 m**, which plots at 1:1000 on A3 — a site plan.
-Widen it for context and the scale drops accordingly (1000 × 750 lands on
-1:5000, a locality map).
+The default is **1000 × 750 m**, which lands on 1:5000 on A3 — a locality
+map. Narrow it, or plot larger than A3, for a site-plan scale: 200 × 150 m
+plots at 1:1000 on A3.
 
 The printed scale follows from the extent and the sheet. On A3 the standard
 profile's map frame is 387 × 206 mm (so a 1.87:1 extent fills it) while the

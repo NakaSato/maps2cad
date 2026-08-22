@@ -183,11 +183,9 @@ def parse_form(form: dict[str, list[str]]) -> dict:
     lat = number(lat_s, "Latitude", -90, 90)
     lon = number(lon_s, "Longitude", -180, 180)
     # 1000 x 750 m — larger than A3 holds at 1:2000, so a sheet export
-    # lands on 1:5000 (A3), 1:2500 (A2) or 1:2000 (A1)
-    # 200 x 150 m: a site plan at 1:1000 on A3. The old 1000 x 750
-    # default plotted at 1:5000, which is a locality map.
-    width = number(one("width", "200"), "Width", 20, 20000)
-    height = number(one("height", "150"), "Height", 20, 20000)
+    # lands on 1:5000 (A3), 1:2500 (A2) or 1:2000 (A1).
+    width = number(one("width", "1000"), "Width", 20, 20000)
+    height = number(one("height", "750"), "Height", 20, 20000)
 
     export = one("export", "both")
     if export not in ("both", "cad", "map"):
@@ -761,10 +759,10 @@ that resolves the B### codes.</p>
     <div class="grid g2" style="gap:12px">
       <div><label for="width">Width (m)</label>
         <input type="number" id="width" name="width" step="any" min="20"
-               value="{val('width', 200)}"></div>
+               value="{val('width', 1000)}"></div>
       <div><label for="height">Height (m)</label>
         <input type="number" id="height" name="height" step="any" min="20"
-               value="{val('height', 150)}"></div>
+               value="{val('height', 750)}"></div>
     </div>
   </div>
   <div class="grid g3" style="margin-top:16px">

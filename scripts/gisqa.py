@@ -176,8 +176,8 @@ def main(argv=None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lat", type=float, required=True)
     ap.add_argument("--lon", type=float, required=True)
-    ap.add_argument("--width", type=float, default=200.0)
-    ap.add_argument("--height", type=float, default=150.0)
+    ap.add_argument("--width", type=float, default=1000.0)
+    ap.add_argument("--height", type=float, default=750.0)
     ap.add_argument("--out", default="gis_quality.csv",
                     help="CSV of findings (default: gis_quality.csv)")
     ap.add_argument("--dem-dir", default="dem",

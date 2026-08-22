@@ -168,13 +168,14 @@ def parse_args():
     a = p.parse_args()
     if not a.out and not a.outdir:
         p.error("give either --out <file.dxf> or --outdir <dir>")
-    # Default extent: 200 x 150 m, which plots at 1:1000 on A3 — a site
-    # plan scale a reviewer expects, where the old 1000 x 750 default fell
-    # to 1:5000 and read as a locality map. Widen it when you need context;
-    # sheet.py picks the scale and warns if the sheet cannot hold it.
+    # Default extent: 1000 x 750 m. Note this needs 500 mm of paper at
+    # 1:2000 against sheet.py's 290 mm A3 viewport, so on the default sheet
+    # it lands at 1:5000 — context rather than a site plan. Narrow it, or
+    # plot it larger than A3, when the deliverable wants 1:1000; sheet.py
+    # picks the scale and warns if the sheet cannot hold it.
     # An explicit --radius still wins, so square boxes keep working.
     if a.radius is None and a.width is None and a.height is None:
-        a.width, a.height = 200.0, 150.0
+        a.width, a.height = 1000.0, 750.0
     if a.radius is not None and a.width is None and a.height is None:
         pass          # radius-only run: bbox_around uses the radius
     if a.outdir:
