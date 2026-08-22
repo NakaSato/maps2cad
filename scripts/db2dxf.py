@@ -152,6 +152,11 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="output DXF (default: <project>.dxf)")
     ap.add_argument("--no-labels", action="store_true",
                     help="geometry only, leave C-ANNO-TEXT empty")
+    ap.add_argument("--names-only", action="store_true",
+                    help="label only what the source named; leave the B### "
+                         "codes off unnamed footprints (topo2cad.py takes "
+                         "the same flag, and a re-issue has to be given it "
+                         "again to match the drawing it re-issues)")
     ap.add_argument("--no-contours", action="store_true")
     ap.add_argument("--no-spots", action="store_true",
                     help="Leave the staged spot heights off the drawing")
@@ -351,12 +356,19 @@ def main(argv=None) -> int:
 
     # ---- annotation: one SELECT against the view ----------------------
     n_t = 0
+    n_skipped = 0
     if not a.no_labels:
         for row in conn.execute(
-                "SELECT text, label_x, label_y, label_rotation, text_height,"
-                " cad_layer, label_offset FROM cad_labels"
-                " WHERE project_id = ?", (pid,)):
+                "SELECT feature_class, text, label_x, label_y,"
+                " label_rotation, text_height, cad_layer, label_offset"
+                " FROM cad_labels WHERE project_id = ?", (pid,)):
             if row["text"] is None or row["label_x"] is None:
+                continue
+            # The inventory code is the one label that is a drawing choice
+            # rather than source data, so it is the one the view hands over
+            # tagged for a writer to drop.
+            if a.names_only and row["feature_class"] == "building_code":
+                n_skipped += 1
                 continue
             layer = row["cad_layer"]
             # The view stacks a feature's English label above its Thai one
@@ -539,6 +551,11 @@ def main(argv=None) -> int:
     if n_s or n_h or n_f:
         print(f"  {n_s} spot heights, {n_h} hatched area(s), "
               f"{n_f} flow arrows")
+    if n_skipped:
+        # Say it out loud: an unlabelled building layer is what --names-only
+        # is for, but it looks identical to a bug from the drawing alone.
+        print(f"  --names-only: {n_skipped} B### code(s) left off unnamed "
+              f"footprints")
     if n_at:
         print(f"  {n_at} source tags re-attached as XDATA and written to "
               f"{out.with_name('attributes.csv').name}")

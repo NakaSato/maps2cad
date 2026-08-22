@@ -154,18 +154,89 @@ def test_cad_labels_dedupes_divided_carriageway(db):
     assert [r["text"] for r in refs] == ["202"]
 
 
+def _unnamed(i):
+    """An ML footprint as topo2cad.py actually stages one: a code, and no
+    name of any kind. display_name holds a *name*, so it stays empty."""
+    from shapely.geometry import box
+
+    return {"feature_id": f"ms/{i:05d}", "source": "microsoft_ml",
+            "osm_name": "", "code": f"B{i:03d}", "display_name": "",
+            "building_type": None, "geom": box(i * 20, 0, i * 20 + 10, 8)}
+
+
 def test_cad_labels_covers_every_building(db):
+    """Every unnamed footprint gets a label — its B### code. Where OSM
+    names nothing (0 of 239 at Yasothon), a names-only rule would leave the
+    whole building layer mute, and the inventory CSV would be keyed on
+    codes that appear nowhere on the sheet."""
+    conn, pid = db
+    stage_buildings(conn, pid, [_unnamed(i) for i in range(5)])
+    rows = conn.execute(
+        "SELECT text, cad_layer, text_height FROM cad_labels"
+        " WHERE feature_class = 'building_code'").fetchall()
+    assert sorted(r["text"] for r in rows) == [f"B{i:03d}" for i in range(5)]
+    # Neutral layer: a code is neither Thai nor English, and at a rural
+    # site every building label is one — filing them as English would
+    # blank a Thai-only plot entirely.
+    assert {r["cad_layer"] for r in rows} == {"C-ANNO-TEXT"}
+    # Same height a name gets, so the two routes place it identically
+    assert {r["text_height"] for r in rows} == {3.5}
+
+
+def test_a_code_label_sits_where_the_name_label_would(db):
+    """The code rides on the building's own interior anchor, so a footprint
+    that later gains a name keeps its label in the same place."""
+    conn, pid = db
+    stage_buildings(conn, pid, [_unnamed(0)])
+    code = conn.execute("SELECT label_x, label_y, label_rotation,"
+                        " label_offset FROM cad_labels").fetchone()
+    anchor = conn.execute("SELECT label_x, label_y FROM staging_buildings"
+                          ).fetchone()
+    assert (code["label_x"], code["label_y"]) == (anchor["label_x"],
+                                                  anchor["label_y"])
+    assert code["label_offset"] == 0.0
+
+
+def test_a_name_wins_over_the_code(db):
+    """A named building is labelled by its name and never doubly by its
+    code — the two would print on top of each other at one anchor."""
+    conn, pid = db
+    rec = _unnamed(0) | {"osm_name": "\u0e42\u0e23\u0e07\u0e40\u0e23\u0e35\u0e22\u0e19",
+                         "display_name": "\u0e42\u0e23\u0e07\u0e40\u0e23\u0e35\u0e22\u0e19"}
+    stage_buildings(conn, pid, [rec])
+    classes = [r["feature_class"] for r in
+               conn.execute("SELECT feature_class FROM cad_labels")]
+    assert "building_code" not in classes
+    assert classes == ["building"]
+
+
+def test_a_verified_name_replaces_the_code_on_the_sheet(db):
+    """The revision path: a field crew reads B001 off the plot, sets the
+    name, and the re-issue draws the name where the code was."""
+    conn, pid = db
+    stage_buildings(conn, pid, [_unnamed(0)])
+    assert conn.execute("SELECT COUNT(*) FROM cad_labels WHERE"
+                        " feature_class = 'building_code'").fetchone()[0] == 1
+    record_verified(conn, pid, "ms/00000",
+                    "\u0e27\u0e31\u0e14\u0e1b\u0e48\u0e32")
+    apply_verified(conn, pid)
+    rows = conn.execute("SELECT feature_class, text, cad_layer"
+                        " FROM cad_labels").fetchall()
+    assert [r["feature_class"] for r in rows] == ["building"]
+    assert rows[0]["cad_layer"] == "C-ANNO-TEXT-TH"
+
+
+def test_a_landmark_area_gets_no_code(db):
+    """Landmark areas ride in staging_buildings with their own cad_layer
+    and no code; a car park labelled B007 would read as a structure."""
     from shapely.geometry import box
 
     conn, pid = db
     stage_buildings(conn, pid, [
-        {"feature_id": f"ms/{i:05d}", "source": "microsoft_ml",
-         "osm_name": "", "code": f"B{i:03d}", "display_name": f"B{i:03d}",
-         "building_type": None, "geom": box(i * 20, 0, i * 20 + 10, 8)}
-        for i in range(5)])
-    n = conn.execute("SELECT COUNT(*) FROM cad_labels WHERE feature_class ="
-                     " 'building'").fetchone()[0]
-    assert n == 5
+        {"feature_id": "way/1", "source": "openstreetmap", "osm_name": "",
+         "code": "", "display_name": "", "building_type": None,
+         "cad_layer": "C-SITE-POI", "geom": box(0, 0, 30, 20)}])
+    assert conn.execute("SELECT COUNT(*) FROM cad_labels").fetchone()[0] == 0
 
 
 def test_restaging_replaces_previous_run(db):

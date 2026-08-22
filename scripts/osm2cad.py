@@ -854,8 +854,12 @@ def main(argv=None) -> int:
             cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = sum(ux) / len(ux), sum(uy) / len(uy)
-        if name:
-            mtext_bilingual(th, en, cx, cy, 3.5)
+        # An unnamed footprint is labelled by its B### code, the handle
+        # building_inventory.csv is keyed on. cad_labels emits the same
+        # code at the same anchor, so a re-issue of this import agrees
+        # with it — the code has to reach both drawings or neither.
+        mtext_bilingual(th, en, cx, cy, 3.5,
+                        fallback=None if a.names_only else code)
         btags = tags_for(tag_index, fid)
         house = btags.get("addr:housenumber")
         if house:

@@ -1536,9 +1536,14 @@ def main():
         if not name:
             counter += 1
             code = f"B{counter:03d}"
-        # Labels come from OSM names and nothing else. A footprint with no
-        # name is not labelled and is drawn on its own layer instead, so
-        # the sheet says plainly which buildings are identified.
+        # An unnamed footprint still gets a label: its B### inventory code,
+        # which is the handle building_inventory.csv is keyed on and the one
+        # a field crew writes a verified name against. Without it the CSV
+        # numbers nothing a reader can find on the sheet, and where OSM
+        # names no buildings — 0 of 239 at Yasothon, 0 of 49 here — the
+        # whole building layer comes out mute. --names-only opts out.
+        # The footprint is still drawn on its own layer either way, so the
+        # sheet says plainly which buildings the source actually identified.
         b_layer = LAYERS["building" if name else "building_unnamed"]
         # Drawn from the repaired geometry, which is also what gets staged:
         # a self-intersecting ring becomes two polygons under buffer(0), and
@@ -1566,8 +1571,11 @@ def main():
             cx, cy = _anchor_rules.interior_point(shape)
         except Exception:
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
-        if name:
-            mtext_bilingual(th, en, cx, cy, 3.5)
+        # The code rides in on `fallback`, so it lands on the neutral
+        # layer at the same anchor and height cad_labels gives it — a
+        # re-issue has to put it in the same place.
+        mtext_bilingual(th, en, cx, cy, 3.5,
+                        fallback=None if a.names_only else code)
         # House number under the label, small and language-neutral — the
         # same row cad_labels emits, at the same offset, so a re-issue puts
         # it in the same place.

@@ -1495,6 +1495,12 @@ drawing.</p>
         form = self.read_form()
         sheet = (form.get("cad_sheet") or ["A3"])[0].strip()
         scale = (form.get("cad_scale") or ["fit"])[0].strip()
+        # An unticked box is absent from the body, so the positive sense
+        # lives on the checkbox and its absence is what suppresses the
+        # codes. A re-issue cannot inherit the choice from the run that
+        # staged the project — the flag is a drawing option and was never
+        # staged — so the form asks rather than guessing.
+        codes = "codes" in form
         if sheet not in ("A4", "A3", "A2", "A1", "A0", "none"):
             sheet = "A3"
         if scale != "fit" and not scale.isdigit():
@@ -1505,6 +1511,8 @@ drawing.</p>
         try:
             cmd = script_cmd(DB2DXF) + ["--db", str(STAGING_DB),
                                         "--project", str(pid), "--out", dxf]
+            if not codes:
+                cmd.append("--names-only")
             if sheet != "none":
                 cmd += ["--sheet", sheet, "--scale", scale]
             log = run_step(cmd, "Re-issue")

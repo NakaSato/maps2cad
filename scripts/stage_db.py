@@ -281,6 +281,18 @@ CREATE VIEW cad_labels AS
      WHERE display_name <> ''
        AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''
     UNION ALL
+    -- The B### inventory code, when the source gave the footprint no name
+    -- at all. Its own feature_class, because it is the one label a writer
+    -- is allowed to suppress (--names-only) and it must be suppressible
+    -- without touching the names. It stays on the neutral layer: at a
+    -- rural site every building label is a code, so filing them as
+    -- English would blank a Thai-only plot entirely.
+    SELECT project_id, 'building_code', code,
+           label_x, label_y, label_rotation, 3.5, 'C-ANNO-TEXT', 0.0
+      FROM staging_buildings
+     WHERE code IS NOT NULL AND code <> '' AND display_name = ''
+       AND COALESCE(name_th, '') = '' AND COALESCE(name_en, '') = ''
+    UNION ALL
     -- Context features are labelled once per unique name within their own
     -- kind, the way topo2cad.py dedupes per layer: one canal mapped as
     -- several ways still gets one name.
@@ -1058,10 +1070,14 @@ def stage_buildings(conn, project_id, records, to_wgs=None) -> int:
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("source", "openstreetmap"), r.get("building_type"),
             r.get("osm_name") or None, r.get("code") or None,
-            # display_name is what a writer draws; the B### code is a
-            # handle for field work and stays in its own column. Falling
-            # back to the code here put "B001" on the re-issue of a
-            # drawing whose extraction had drawn nothing.
+            # display_name holds a *name* and nothing else; the B###
+            # code stays in its own column. Folding the code in here
+            # instead is what a name editor then reads back as the
+            # building's name, and what apply_verified() would compare a
+            # field correction against. The code still reaches the drawing
+            # — cad_labels emits it as its own 'building_code' row, which
+            # is also what lets --names-only drop it without touching a
+            # single name.
             r.get("display_name") or "",
             *split_by_script(r.get("osm_name"), r.get("name_th"),
                              r.get("name_en")),

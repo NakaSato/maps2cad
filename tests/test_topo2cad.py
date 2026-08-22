@@ -681,3 +681,27 @@ def test_the_staging_writer_defines_exactly_those_layers():
     assert set(db2dxf.LAYER_STYLE) == names, (
         f"db2dxf only: {sorted(set(db2dxf.LAYER_STYLE) - names)}, "
         f"extraction only: {sorted(names - set(db2dxf.LAYER_STYLE))}")
+
+
+def test_both_routes_can_suppress_the_building_codes():
+    """--names-only is a drawing choice, and both writers have to honour it
+    or a re-issue silently disagrees with the drawing it re-issues.
+
+    The flag existed on topo2cad.py for a long time while nothing read it,
+    and the extraction route drew no codes at all — so the web form's
+    checkbox moved nothing, and building_inventory.csv was keyed on B###
+    codes that appeared nowhere on the sheet.
+    """
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    topo = (scripts / "topo2cad.py").read_text(encoding="utf-8")
+    db2 = (scripts / "db2dxf.py").read_text(encoding="utf-8")
+    stage = (scripts / "stage_db.py").read_text(encoding="utf-8")
+
+    for name, src in (("topo2cad.py", topo), ("db2dxf.py", db2)):
+        assert '"--names-only"' in src, f"{name} does not offer --names-only"
+        assert "names_only" in src, f"{name} never reads it"
+
+    # The two halves have to agree on the string, or the filter silently
+    # matches nothing and --names-only becomes a no-op again.
+    assert "'building_code'" in stage, "the view stopped emitting the class"
+    assert '"building_code"' in db2, "db2dxf stopped filtering on the class"

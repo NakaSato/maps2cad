@@ -707,7 +707,31 @@ the same way and no longer is — see below.
 Building labels fall back to the `B###` inventory code when OSM has no name.
 This matters: at the Yasothon site 0 of 239 footprints carry an OSM name (238
 come from Microsoft ML), so a names-only rule yields a completely unlabelled
-drawing. `--names-only` opts into the stricter behaviour.
+drawing. `--names-only` opts into the stricter behaviour, on **all three**
+writers — `topo2cad.py`, `osm2cad.py` and `db2dxf.py` — because the code is a
+drawing choice and a re-issue given the flag differently comes back DIFFER.
+
+The mechanism is split deliberately. `display_name` holds a *name* and
+nothing else; the code lives in `staging_buildings.code`, and `cad_labels`
+emits it as its own `building_code` row on the neutral `C-ANNO-TEXT` layer
+at the same anchor and height a name would get. That is what lets a writer
+drop the codes without touching a single name, what keeps
+`serve.py`'s name editor from reading `B001` back as the building's name,
+and what keeps `apply_verified()` comparing field corrections against real
+names. A verified name suppresses that feature's code automatically — the
+view's branch requires no name of any kind — so the revision path (read
+`B001` off the plot, `--set-name`, re-issue) draws the name where the code
+was.
+
+This regressed once and was invisible for a while: the flag was parsed and
+never read, the extraction routes drew no codes at all, and both routes
+agreed — `dxfdiff` reported IDENTICAL on a drawing whose 49 footprints were
+mute while `building_inventory.csv` keyed all 49 on codes that appeared
+nowhere on the sheet, and the web form's checkbox moved nothing. Both halves
+are test-covered now (`test_stage_db.py` for the view, a cross-writer
+structural test in `test_topo2cad.py` for the flag and the shared
+`building_code` string). The re-issue form asks for the choice rather than
+inheriting it, because the flag is a drawing option and was never staged.
 
 **`gisqa.py` uses the ML layer as a check on OSM, not as a fix.** The two
 sources are independent — people tracing versus a model predicting — so

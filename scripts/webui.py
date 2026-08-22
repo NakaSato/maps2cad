@@ -567,7 +567,7 @@ print-ready site map sheet and the inventory CSV that resolves the codes.</p>
           <select id="basemap" name="basemap">{basemap_opts}</select></div>
       </div>
       <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
-        <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
+        <label class="check"><input type="checkbox" name="codes" checked> Label unnamed buildings (B### code on the CAD sheet, type on the map)</label>
         <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
       </div>
       <p class="note">Every run also gets the B&amp;W poster, one-way
@@ -1081,6 +1081,12 @@ applies to this page only.</p>
         data-busy="Re-issuing…">Re-issue drawing</button>
     </div>
   </div>
+  <label class="check"><input type="checkbox" name="codes" checked>
+    Label unnamed buildings with their B### code</label>
+  <p class="note">The codes are the handle this page edits against and the
+  key of <code>building_inventory.csv</code>. Untick for a sheet that names
+  only what the source named — where nothing is named, that is a building
+  layer with no labels at all.</p>
   <div id="busy"><div class="load" data-estimate="15">
     <div class="load-head"><span class="load-title">Re-issuing…</span>
       <span class="load-time">0:15</span></div>
