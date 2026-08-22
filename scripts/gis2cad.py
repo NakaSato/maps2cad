@@ -334,7 +334,7 @@ def main(argv=None) -> int:
     print(f"Projected CRS: EPSG:{epsg} "
           f"(UTM {zone}{'N' if c.y >= 0 else 'S'}), units = metres")
 
-    doc = ezdxf.new("R2010", setup=True)
+    doc = ezdxf.new("R2010", setup=stage_db.DXF_SETUP)
     msp = doc.modelspace()
     for style, font in TEXT_STYLES.items():
         if style not in doc.styles:
@@ -414,11 +414,13 @@ def main(argv=None) -> int:
             for poly in parts(geom, "Polygon"):
                 layer = forced or LAYERS["polygon"]
                 corner_parcels.append((poly, label or ""))
-                attach(msp.add_lwpolyline(list(poly.exterior.coords),
+                attach(msp.add_lwpolyline(
+                    stage_db.ring_points(poly.exterior.coords),
                                           close=True,
                                           dxfattribs={"layer": layer}))
                 for ring in poly.interiors:
-                    msp.add_lwpolyline(list(ring.coords), close=True,
+                    msp.add_lwpolyline(stage_db.ring_points(ring.coords),
+                                       close=True,
                                        dxfattribs={"layer": layer})
                 counts["polygon"] += 1
                 record("polygon", layer)
@@ -479,6 +481,7 @@ def main(argv=None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.mono:
         apply_mono(doc)
+    stage_db.set_drawing_extents(doc)
     doc.saveas(out)
     if attrs:
         attr_path = out.with_name("attributes.csv")

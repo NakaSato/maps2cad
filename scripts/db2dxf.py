@@ -194,7 +194,7 @@ def main(argv=None) -> int:
     out = Path(a.out) if a.out else Path(f"{proj['name']}.dxf")
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    doc = ezdxf.new("R2010", setup=True)
+    doc = ezdxf.new("R2010", setup=stage_db.DXF_SETUP)
     msp = doc.modelspace()
     for style, font in TEXT_STYLES.items():
         if style not in doc.styles:
@@ -224,13 +224,14 @@ def main(argv=None) -> int:
         first = True
         for poly in parts(wkb.loads(row["geom_wkb"]), "Polygon"):
             entity = msp.add_lwpolyline(
-                list(poly.exterior.coords), close=True,
+                stage_db.ring_points(poly.exterior.coords), close=True,
                 dxfattribs={"layer": row["cad_layer"]})
             if first:
                 attach(entity, row["feature_id"])
                 first = False
             for ring in poly.interiors:      # courtyards stay open
-                msp.add_lwpolyline(list(ring.coords), close=True,
+                msp.add_lwpolyline(stage_db.ring_points(ring.coords),
+                                   close=True,
                                    dxfattribs={"layer": row["cad_layer"]})
             n_b += 1
 
@@ -530,6 +531,7 @@ def main(argv=None) -> int:
 
     if a.mono:
         apply_mono(doc)
+    stage_db.set_drawing_extents(doc)
     doc.saveas(out)
 
     # The attribute table travels with the re-issue too, or a corrected

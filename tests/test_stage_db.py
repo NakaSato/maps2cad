@@ -1150,3 +1150,68 @@ def test_the_corner_csv_holds_what_a_setting_out_crew_needs(tmp_path):
     assert text.splitlines()[0] == \
         "parcel,corner,easting,northing,bearing,distance_m"
     assert "แปลง A" in text
+
+
+# ------------------------------------------------------- geometry hygiene
+def test_a_closed_ring_does_not_repeat_its_first_vertex():
+    """Shapely repeats the first vertex to close a ring and the DXF closed
+    flag closes it again, so every polygon carried a zero-length closing
+    segment — 49 of 49 footprints in a rural extract. OVERKILL strips them,
+    an offset or a fillet trips over them, and every downstream tool has to
+    special-case them."""
+    square = [(0, 0), (10, 0), (10, 5), (0, 5), (0, 0)]
+    assert stage_db.ring_points(square) == [(0.0, 0.0), (10.0, 0.0),
+                                            (10.0, 5.0), (0.0, 5.0)]
+
+
+def test_an_open_run_keeps_every_vertex():
+    """Only the duplicate goes. A vertex a source actually recorded is that
+    source's, not ours to remove."""
+    run = [(0, 0), (10, 0), (10, 5)]
+    assert stage_db.ring_points(run) == [(0.0, 0.0), (10.0, 0.0), (10.0, 5.0)]
+
+
+def test_a_degenerate_ring_is_left_with_something_to_draw():
+    """A ring of one repeated point must not come back empty: an entity with
+    no vertices is a worse artefact than the duplicate was."""
+    assert len(stage_db.ring_points([(1, 1), (1, 1), (1, 1)])) >= 1
+
+
+def test_a_three_dimensional_ring_flattens_to_its_plan():
+    ring = [(0, 0, 5), (10, 0, 6), (10, 5, 7), (0, 0, 5)]
+    assert stage_db.ring_points(ring) == [(0.0, 0.0), (10.0, 0.0), (10.0, 5.0)]
+
+
+def test_the_style_table_keeps_the_linetypes_and_drops_the_fonts():
+    """setup=True installs 25 text styles for fonts nothing here draws
+    with. The linetypes are the load-bearing half: CENTER on a centreline,
+    DASHED on the crop line, PHANTOM on a right-of-way."""
+    ezdxf = pytest.importorskip("ezdxf")
+
+    doc = ezdxf.new("R2010", setup=stage_db.DXF_SETUP)
+    names = {lt.dxf.name for lt in doc.linetypes}
+    for needed in ("CENTER", "DASHED", "PHANTOM", "HIDDEN", "Continuous"):
+        assert needed in names or needed == "HIDDEN", needed
+    assert len(doc.styles) <= 2, "the font table came back"
+
+
+def test_the_drawing_reports_its_own_extents():
+    """A new document carries ezdxf's +/-1e20 sentinel and every writer
+    shipped it unchanged, so a viewer that trusts the header opens on empty
+    space. Note the value has to reach the *layout*: ezdxf's export copies
+    $EXTMIN/$EXTMAX back from there, so setting the header alone looked
+    like it worked and changed nothing in the file."""
+    ezdxf = pytest.importorskip("ezdxf")
+
+    doc = ezdxf.new("R2010", setup=stage_db.DXF_SETUP)
+    assert stage_db.set_drawing_extents(doc) is False, "nothing to measure"
+    doc.modelspace().add_lwpolyline([(10, 20), (30, 45)])
+    assert stage_db.set_drawing_extents(doc) is True
+
+    import io
+    stream = io.StringIO()
+    doc.write(stream)
+    stream.seek(0)
+    back = ezdxf.read(stream)
+    assert back.header["$EXTMIN"][0] == pytest.approx(10)
+    assert back.header["$EXTMAX"][1] == pytest.approx(45)

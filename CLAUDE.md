@@ -354,7 +354,7 @@ draw its labels anywhere but the POI convention (`POI_LABEL_DX` across, 4.0
 high, the offset `stage_pois` stores — getting this wrong put 195 labels up
 to 2.19 m from where the re-issue drew them); or size its symbol locally
 (`blocks.SIZE_FOR_LAYER` owns that, and a mismatch there is invisible to
-`dxfdiff`, which does not compare block scale). `osm2cad.py` needs no
+`dxfdiff` until it learned to compare an INSERT's scale). `osm2cad.py` needs no
 refetch for it: the file already holds everything.
 
 **A plaza is an area, and water has a direction.** `highway=pedestrian`
@@ -432,6 +432,30 @@ the arrow rule does: `db2dxf.py` fills the same rows and must not import the
 Overpass side to learn how. It is opt-in (`--hatch`) — a hatch at 1:5000 on
 a dense site is a lot of ink — and only closed runs are filled, since an
 open canal centreline has no area.
+
+**A closed ring is closed by the flag, not by a repeated vertex.**
+Shapely repeats the first vertex to close a ring and the DXF `closed` flag
+closes it again, so every polygon this repo drew carried a zero-length
+closing segment — 49 of 49 footprints in a rural extract, on all four
+writers. OVERKILL strips them, an offset or a fillet trips over them, and
+every downstream tool has to special-case them. `stage_db.ring_points()` is
+the shared rule: it drops *only* the duplicate, because a vertex a source
+actually recorded is that source's, not ours to remove, and it never returns
+an empty list — an entity with no vertices is a worse artefact than the
+duplicate was.
+
+Two smaller ones travel with it, and both had to change in all four writers
+at once because `dxfdiff` compares the style table. `DXF_SETUP` is
+`["linetypes"]` rather than `setup=True`: the linetypes are load-bearing
+(CENTER on a centreline, DASHED on the crop line, PHANTOM on a
+right-of-way) while the 25 text styles were for fonts nothing here draws
+with — the writers register `TH_STYLE`/`EN_STYLE` themselves, and dimension
+arrowheads are created on demand when a DIMENSION renders. And
+`set_drawing_extents()` writes real `$EXTMIN`/`$EXTMAX` in place of ezdxf's
+±1e20 sentinel, which every writer shipped unchanged. Note *where* it has to
+write: ezdxf's export runs `update_extents()` and copies the header back
+from the modelspace layout, so setting `doc.header` alone looks like it
+worked and changes nothing in the file.
 
 **A repaired polygon is what gets drawn *and* what gets staged.**
 `stage_db.repaired_polygon()` / `polygon_parts()` exist because OSM carries
@@ -513,6 +537,20 @@ does the same for a file with no attribute columns, tagging `@source=
 user_gis:<file>`; the `@` marks it as assigned here, the way `@id` already
 is, so a user column genuinely called `source` keeps its own name. Both
 routes' output is unchanged when `--no-attributes` is given.
+
+**`dxfdiff.py` compares the geometry itself.** For a long time it did not
+compare a single coordinate outside MTEXT: entity counts per layer, label
+positions, the style and layer tables. Counts say how many polylines sit on
+`C-BLDG-OUTL`, never whether they are the *same* polylines — the two routes
+could put a footprint fifty metres apart, or give it a different vertex
+list, and every check passed. `_shape()` now fingerprints each entity
+(rounded to the millimetre, compared as a multiset since draw order
+differs), **including an INSERT's scale and rotation**, which is what closes
+the tree-that-came-back-pylon-sized hole named above. An entity type nothing
+draws yet still gets compared on what every entity has, so adding one does
+not quietly opt it out. Verified: all three route pairs stay IDENTICAL with
+coordinates compared — which nothing had ever actually established — while a
+0.5 m nudge to one footprint and a resized spot-height circle now exit 1.
 
 **`dxfdiff.py` compares XDATA, not just geometry.** It did not, so the appid
 convention above — the whole reason `staging_tags` carries the column — had

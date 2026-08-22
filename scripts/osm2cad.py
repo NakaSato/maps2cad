@@ -707,7 +707,7 @@ def main(argv=None) -> int:
                                         else f"{len(names)} files"))
 
     # ---- DXF ------------------------------------------------------------
-    doc = ezdxf.new("R2010", setup=True)
+    doc = ezdxf.new("R2010", setup=_anchor_rules.DXF_SETUP)
     msp = doc.modelspace()
     t2c.add_text_styles(doc)
     for key, color, lw in [("contour_plain", 8, 13),
@@ -836,13 +836,15 @@ def main(argv=None) -> int:
         shape = _anchor_rules.repaired_polygon(upts, uholes)
         first = True
         for part in _anchor_rules.polygon_parts(shape):
-            entity = msp.add_lwpolyline(list(part.exterior.coords), close=True,
+            entity = msp.add_lwpolyline(
+                _anchor_rules.ring_points(part.exterior.coords), close=True,
                                         dxfattribs={"layer": poly_layer})
             if first:
                 attach(entity, fid)
                 first = False
             for ring in part.interiors:         # courtyards stay open
-                msp.add_lwpolyline(list(ring.coords), close=True,
+                msp.add_lwpolyline(_anchor_rules.ring_points(ring.coords),
+                                   close=True,
                                    dxfattribs={"layer": poly_layer})
         code = ""
         if not name:
@@ -1040,13 +1042,15 @@ def main(argv=None) -> int:
         shape = _anchor_rules.repaired_polygon(upts)
         first = True
         for part in _anchor_rules.polygon_parts(shape):
-            entity = msp.add_lwpolyline(list(part.exterior.coords), close=True,
+            entity = msp.add_lwpolyline(
+                _anchor_rules.ring_points(part.exterior.coords), close=True,
                                         dxfattribs={"layer": poi_layer})
             if first:
                 attach(entity, fid)
                 first = False
             for ring in part.interiors:
-                msp.add_lwpolyline(list(ring.coords), close=True,
+                msp.add_lwpolyline(_anchor_rules.ring_points(ring.coords),
+                                   close=True,
                                    dxfattribs={"layer": poi_layer})
         try:
             cx, cy = _anchor_rules.interior_point(shape)
@@ -1196,6 +1200,7 @@ def main(argv=None) -> int:
     if a.mono:
         t2c.apply_mono(doc)
         print("Monochrome: all layers set to ACI 7")
+    _anchor_rules.set_drawing_extents(doc)
     doc.saveas(out)
     print(f"Saved: {out}")
 

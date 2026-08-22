@@ -948,6 +948,66 @@ ATTR_FIELDS = ["feature_id", "feature_type", "cad_layer", "display_name",
                "key", "value"]
 
 
+# What ezdxf should set up in a new document. `setup=True` also installs 25
+# text styles for fonts nothing here draws with — the writers register
+# TH_STYLE and EN_STYLE themselves — and a drafter opening the file sees a
+# style table mostly full of entries the drawing never used. The linetypes
+# are the part that is load-bearing: CENTER on a centreline, DASHED on the
+# crop line, PHANTOM on a right-of-way. Dimension arrowheads are created on
+# demand when a DIMENSION renders, so they do not need it either.
+DXF_SETUP = ["linetypes"]
+
+
+def set_drawing_extents(doc) -> bool:
+    """Write $EXTMIN/$EXTMAX from what the drawing actually holds.
+
+    A new document carries the ezdxf defaults, +/-1e20, which every writer
+    here shipped unchanged. AutoCAD recalculates on its own ZOOM EXTENTS,
+    but a viewer that trusts the header opens on empty space and the file
+    reports no bounds at all to anything reading it without a CAD engine.
+
+    Returns False when the drawing has no geometry to measure, leaving the
+    header alone rather than writing a degenerate box.
+    """
+    from ezdxf import bbox
+
+    msp = doc.modelspace()
+    extents = bbox.extents(msp, fast=True)
+    if not extents.has_data:
+        return False
+    # The header is not where this lives. ezdxf's update_extents() runs on
+    # every export and copies $EXTMIN/$EXTMAX back from the modelspace
+    # layout, so writing the header alone is overwritten on the way out —
+    # which is why setting it looked like it worked and changed nothing in
+    # the file.
+    msp.dxf.extmin = extents.extmin
+    msp.dxf.extmax = extents.extmax
+    doc.header["$EXTMIN"] = tuple(extents.extmin)
+    doc.header["$EXTMAX"] = tuple(extents.extmax)
+    return True
+
+
+def ring_points(coords):
+    """A closed ring's vertices for `add_lwpolyline(..., close=True)`.
+
+    Shapely repeats the first vertex to close a ring; the DXF closed flag
+    closes it again. Both together give every polygon a zero-length
+    closing segment — 49 of 49 footprints in a rural extract — which
+    AutoCAD's OVERKILL strips, an offset or a fillet trips over, and every
+    downstream tool has to special-case. The flag is the DXF way to say
+    closed, so the repeated vertex is what goes.
+
+    Only the duplicate is dropped: a ring is not otherwise cleaned here,
+    because a vertex a source actually recorded is that source's, not
+    ours to remove.
+    """
+    pts = [(float(x), float(y)) for x, y, *_ in
+           ((c[0], c[1]) if len(c) < 3 else c for c in coords)]
+    while len(pts) > 2 and pts[0] == pts[-1]:
+        pts.pop()
+    return pts
+
+
 def clip_bytes(text, limit: int = 255) -> str:
     raw = str(text).encode("utf-8")
     if len(raw) <= limit:

@@ -1465,7 +1465,7 @@ def main():
               f"{len(ms) - added} already mapped in OSM")
 
     # ---- DXF -------------------------------------------------------------
-    doc = ezdxf.new("R2010", setup=True)
+    doc = ezdxf.new("R2010", setup=_anchor_rules.DXF_SETUP)
     msp = doc.modelspace()
     # (layer, color, lineweight 1/100 mm) — roads/buildings heavy, context thin
     add_text_styles(doc)
@@ -1686,7 +1686,8 @@ def main():
         first = True
         for part in _anchor_rules.polygon_parts(shape):
             entity = msp.add_lwpolyline(
-                list(part.exterior.coords), close=True,
+                _anchor_rules.ring_points(part.exterior.coords),
+                close=True,
                 dxfattribs={"layer": b_layer})
             if first:
                 attach(entity, fid)
@@ -1694,7 +1695,8 @@ def main():
             # Courtyards stay open: each inner ring is its own closed
             # polyline on the same layer, which is how a CAD island reads.
             for ring in part.interiors:
-                msp.add_lwpolyline(list(ring.coords), close=True,
+                msp.add_lwpolyline(_anchor_rules.ring_points(ring.coords),
+                                   close=True,
                                    dxfattribs={"layer": b_layer})
         # ST_Centroid-style centroids fall outside concave footprints (~3% of
         # buildings in a dense extent), so anchor on a guaranteed interior
@@ -1914,13 +1916,15 @@ def main():
         first = True
         for part in _anchor_rules.polygon_parts(shape):
             entity = msp.add_lwpolyline(
-                list(part.exterior.coords), close=True,
+                _anchor_rules.ring_points(part.exterior.coords),
+                close=True,
                 dxfattribs={"layer": LAYERS["site_poi"]})
             if first:
                 attach(entity, fid)
                 first = False
             for ring in part.interiors:
-                msp.add_lwpolyline(list(ring.coords), close=True,
+                msp.add_lwpolyline(_anchor_rules.ring_points(ring.coords),
+                                   close=True,
                                    dxfattribs={"layer": LAYERS["site_poi"]})
         try:
             cx, cy = _anchor_rules.interior_point(shape)
@@ -2147,6 +2151,7 @@ def main():
     if a.mono:
         apply_mono(doc)
         print("Monochrome: all layers set to ACI 7")
+    _anchor_rules.set_drawing_extents(doc)
     doc.saveas(a.out)
     print(f"Saved: {a.out}")
 

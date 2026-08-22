@@ -30,6 +30,62 @@ import math
 import sys
 
 
+# Millimetre. The two routes compute from the same staged numbers, so they
+# agree exactly; this is here to absorb float formatting through the DXF,
+# not to tolerate a real disagreement.
+GEOM_DP = 3
+
+
+def _round(*values):
+    return tuple(round(float(v), GEOM_DP) for v in values)
+
+
+def _shape(e):
+    """A comparable fingerprint of one entity's geometry.
+
+    Deliberately includes an INSERT's scale and rotation: a symbol placed at
+    the right point at the wrong size is a difference nobody staged, and it
+    was invisible here.
+    """
+    t = e.dxftype()
+    if t == "LWPOLYLINE":
+        return (bool(e.closed),
+                tuple(_round(p[0], p[1]) for p in e))
+    if t == "POLYLINE":
+        return (bool(e.is_closed),
+                tuple(_round(*v.dxf.location) for v in e.vertices))
+    if t == "LINE":
+        return (_round(*e.dxf.start), _round(*e.dxf.end))
+    if t == "CIRCLE":
+        return (_round(*e.dxf.center), round(float(e.dxf.radius), GEOM_DP))
+    if t == "ARC":
+        return (_round(*e.dxf.center), round(float(e.dxf.radius), GEOM_DP),
+                _round(e.dxf.start_angle, e.dxf.end_angle))
+    if t == "POINT":
+        return _round(*e.dxf.location)
+    if t == "INSERT":
+        return (e.dxf.name, _round(*e.dxf.insert),
+                _round(e.dxf.xscale, e.dxf.yscale, e.dxf.rotation))
+    if t == "MTEXT":
+        return (e.text, _round(*e.dxf.insert),
+                round(float(e.dxf.rotation), GEOM_DP),
+                round(float(e.dxf.char_height), GEOM_DP))
+    if t == "SOLID":
+        return tuple(_round(*e.dxf.get(f"vtx{i}")) for i in range(4)
+                     if e.dxf.hasattr(f"vtx{i}"))
+    if t == "HATCH":
+        # The fill pattern and where it lands; the boundary is already
+        # compared as the polyline it was built from.
+        return (e.dxf.pattern_name, round(float(e.dxf.pattern_scale), 3),
+                len(e.paths))
+    if t == "DIMENSION":
+        return (_round(*e.dxf.defpoint), _round(*e.dxf.text_midpoint),
+                e.dxf.get("dimstyle", ""))
+    # An entity type nothing here draws yet: compare what every entity has,
+    # so a new one is not silently exempt from the check.
+    return (t,)
+
+
 def survey(path):
     """(entity counts, MTEXT positions, text styles, layer table, XDATA)."""
     import ezdxf
@@ -49,8 +105,16 @@ def survey(path):
     # lost its mask is a real difference that also went unseen here.
     appids = [ap.dxf.name for ap in doc.appids]
     xdata = collections.Counter()
+    # Where the linework actually is. Counts say how many polylines are on
+    # C-BLDG-OUTL, never whether they are the same polylines: the two routes
+    # could draw a footprint fifty metres apart, or with a different vertex
+    # list, and every check here passed. Only MTEXT had its position
+    # compared, because a label 287 m out was the failure that got noticed.
+    # Keyed on rounded content, as a multiset, since draw order differs.
+    geometry = collections.Counter()
     for e in doc.modelspace():
         counts[(e.dxftype(), e.dxf.layer)] += 1
+        geometry[(e.dxftype(), e.dxf.layer, _shape(e))] += 1
         if e.dxftype() == "MTEXT":
             labels[(e.dxf.layer, e.text)].append(
                 (e.dxf.insert.x, e.dxf.insert.y, e.dxf.rotation))
@@ -66,7 +130,7 @@ def survey(path):
     # hold identical geometry and still plot differently, so compare it.
     layers = {ly.dxf.name: (ly.dxf.color, ly.dxf.linetype, ly.dxf.lineweight)
               for ly in doc.layers}
-    return counts, labels, styles, layers, xdata
+    return counts, labels, styles, layers, xdata, geometry
 
 
 def main() -> int:
@@ -82,8 +146,8 @@ def main() -> int:
                    help="print only the verdict")
     a = p.parse_args()
 
-    ca, la, sa, ya, xa = survey(a.a)
-    cb, lb, sb, yb, xb = survey(a.b)
+    ca, la, sa, ya, xa, ga = survey(a.a)
+    cb, lb, sb, yb, xb, gb = survey(a.b)
     problems = 0
 
     if not a.quiet:
@@ -175,6 +239,20 @@ def main() -> int:
                   + (" ..." if len(tags) > 3 else ""))
         if len(xdiff) > 5:
             print(f"    ... and {len(xdiff) - 5} more")
+
+    # ---- geometry -------------------------------------------------------
+    gdiff = (ga - gb) + (gb - ga)
+    if gdiff:
+        problems += sum(gdiff.values())
+        print(f"\ngeometry differs on {sum(gdiff.values())} entity/entities:")
+        for (t, layer, shape), n in sorted(
+                gdiff.items(), key=lambda kv: (kv[0][0], kv[0][1]))[:5]:
+            where = "A" if ga[(t, layer, shape)] else "B"
+            head = str(shape)
+            print(f"    {n} x {t} on {layer}, {where} only: "
+                  + (head[:70] + " ..." if len(head) > 70 else head))
+        if len(gdiff) > 5:
+            print(f"    ... and {len(gdiff) - 5} more")
 
     if problems:
         print(f"\nDIFFER — {problems} problem(s)")
