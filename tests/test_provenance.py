@@ -211,6 +211,21 @@ def test_the_check_never_loses_a_drawing():
     assert stage_db.font_warnings([]) == []
 
 
-def test_the_zip_carries_the_font_note():
-    src = (SCRIPTS / "serve.py").read_text(encoding="utf-8")
-    assert '"sources.csv", "fonts.txt"' in src
+def test_the_zip_carries_the_font_note(tmp_path):
+    """A DXF names its fonts and cannot embed them, so the requirement has
+    to travel with the package or the recipient sees ??? and has nothing
+    telling them why."""
+    import io
+    import zipfile
+
+    import serve
+
+    run = tmp_path / "job"
+    run.mkdir()
+    (run / "site.dxf").write_bytes(b"x")
+    (run / "fonts.txt").write_text("THSarabunNew.ttf\n")
+    data, _name = serve.job_zip(
+        {"id": "abc", "dir": str(run), "params": {"lat": 0.0, "lon": 0.0},
+         "dxf": str(run / "site.dxf")})
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        assert "fonts.txt" in z.namelist()

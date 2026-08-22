@@ -1353,6 +1353,22 @@ def main(argv=None) -> int:
                         poi_points=staged_pois, poi_areas=staged_site_pois,
                         context=staged_context, attributes=attrs,
                         merge=not a.replace)
+
+    if a.db:
+        # The same account of where the lines came from the other two
+        # routes write. An import names itself openstreetmap:<file>, which
+        # is the whole point of recording it per file.
+        _prov_conn = _anchor_rules.connect(a.db)
+        _prov_row = _prov_conn.execute(
+            "SELECT id FROM projects WHERE name = ?", (project,)).fetchone()
+        _prov = (_anchor_rules.provenance(_prov_conn, _prov_row["id"])
+                 if _prov_row else [])
+        _prov_conn.close()
+        if _prov:
+            prov_path = out.with_name("sources.csv")
+            _anchor_rules.write_provenance_csv(prov_path, _prov)
+            print(f"Sources: {len(_prov)} (source, feature class) row(s) "
+                  f"-> {prov_path}")
     if not a.no_attributes:
         print(f"XDATA: OSM tags attached to each entity under app id "
               f"'{XDATA_APPID}' — select an entity and LIST it to read them")

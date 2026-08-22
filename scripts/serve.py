@@ -695,7 +695,12 @@ def run_generator(p: dict, progress: "Progress | None" = None) -> dict:
         record["project"] = project
         record["dxf"] = dxf
         # Files the CAD step writes beside the drawing, when it wrote them
-        for kind in ("tif", "attrs", "roads", "landmarks"):
+        # "csv" included: topo2cad.py writes building_inventory.csv beside
+        # the drawing, and a CAD-only run offered every other table it
+        # produced but not the one the B### codes on the sheet are keyed
+        # on — 15.9 KB of it sitting in the folder, unreachable.
+        for kind in ("tif", "attrs", "roads", "landmarks", "csv",
+                     "sources"):
             if (run / KINDS[kind]).is_file():
                 record[kind] = str(run / KINDS[kind])
         plot = str(run / "site_preview.pdf")
@@ -758,6 +763,9 @@ KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          # The sheet has always carried the symbols; this is the list a
          # ผังบริเวณ is read alongside.
          "landmarks": "landmark_inventory.csv",
+         # Which source supplied which feature class. Every route writes
+         # one now, not only compose.py.
+         "sources": "sources.csv",
          "plot": "site_preview.pdf",
          # The DXF stores a path to the background map, not its pixels, so
          # the GeoTIFF has to be downloadable beside it or the drawing opens
@@ -792,18 +800,23 @@ def job_zip(rec: dict) -> tuple[bytes, str]:
     lat, lon = params.get("lat", 0.0), params.get("lon", 0.0)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        packed = set()
         for kind, name in KINDS.items():
             path = rec.get(kind)
             if path and Path(path).is_file():
                 z.write(path, name)
-        # What the drawing is made of, when the run staged anything, and
-        # what it needs to be read with. A DXF names its fonts and cannot
-        # embed them, so without this note a recipient missing
-        # THSarabunNew just sees ??? where the Thai should be and has
-        # nothing telling them why.
+                packed.add(name)
+        # Then anything else the run left in its folder that a reader needs
+        # and the record happens not to name — a run restored from an older
+        # session, or written by a route that never registered it. The
+        # promise here is "every file of this run", so the folder is the
+        # authority, not the bookkeeping.
+        folder = Path(rec["dir"]) if rec.get("dir") else None
         for extra in ("sources.csv", "fonts.txt"):
-            side = Path(rec["dir"]) / extra if rec.get("dir") else None
-            if side and side.is_file():
+            if extra in packed or folder is None:
+                continue
+            side = folder / extra
+            if side.is_file():
                 z.write(side, extra)
     stem = (f"maps2cad_{lat:.6f}_{lon:.6f}" if (lat or lon)
             else f"maps2cad_{rec['id']}")
@@ -1494,7 +1507,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(b"File missing", 404, "text/plain")
 
         # Both CSVs render as a grid; only the words around them differ.
-        if kind in ("csv", "attrs", "roads", "landmarks"):
+        if kind in ("csv", "attrs", "roads", "landmarks", "sources"):
             rows = list(csv.reader(
                 target.read_text(encoding="utf-8").splitlines()))
             head = rows[0] if rows else []
@@ -1667,7 +1680,7 @@ drawing.</p>
             rec["plot"] = plot
         # db2dxf re-attaches the staged tags and rewrites the table, so a
         # re-issue offers the same attribute grid the first run did
-        for kind in ("attrs", "roads", "landmarks"):
+        for kind in ("attrs", "roads", "landmarks", "sources"):
             if (run / KINDS[kind]).is_file():
                 rec[kind] = str(run / KINDS[kind])
         conn = db_conn()

@@ -861,8 +861,17 @@ that looks like nothing until the drawing opens. The extent is written back
 from the request (`set_extent()`) because an import carries features, not an
 extent, and the crop line, dimensions and grid come from the project row.
 
-*One link hands over the whole run.* `/zip/<job>` packages every file of a
-run under **their on-disk names** — `site.dxf`, `basemap.tif`,
+*One link hands over the whole run, and means it.* The zip walked `KINDS`
+against what the record happened to register, and a CAD-only run registered
+neither `building_inventory.csv` — the table the B### codes on the sheet are
+keyed on — nor `sources.csv`: 16 KB of inventory sitting in the folder,
+unreachable. Both are `KINDS` entries now, and the zip *then* sweeps the run
+folder for anything a reader needs that the bookkeeping missed, because the
+promise is "every file of this run" and the folder is the authority. A live
+CAD-only run now packages all ten files it produced, with nothing left
+behind.
+
+`/zip/<job>` packages every file of a run under **their on-disk names** — `site.dxf`, `basemap.tif`,
 `attributes.csv`, `sources.csv`, the posters and previews. The per-file
 download route renames deliberately (a folder full of `site.dxf` is
 useless); a package is the opposite case, because the DXF references its
@@ -929,8 +938,10 @@ frame is not on the sheet at all. An unrecognised source still prints its
 own name — silence is the wrong default for attribution.
 
 *Provenance names the file.* `stage_db.provenance()` reports one row per
-(source, feature class) and the run writes `sources.csv` beside the
-drawing. Getting there closed a real hole: `stage_roads()` never wrote the
+(source, feature class) and **every route** writes `sources.csv` beside the
+drawing — for a long time only `compose.py` did, so an ordinary run staging
+openstreetmap, microsoft_ml, copernicus_dem and often overture kept no
+record of that at all, and `/zip` packaged a file it never found. Getting there closed a real hole: `stage_roads()` never wrote the
 `source` column at all, so a survey centreline merged from a shapefile read
 as OpenStreetMap in the staging layer, and `staging_contours` /
 `staging_spots` had no such column (added via `MIGRATIONS`, defaulting to

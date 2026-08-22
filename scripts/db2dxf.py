@@ -591,6 +591,12 @@ def main(argv=None) -> int:
         refd = sum(1 for r in road_rows if r["road_ref"])
         print(f"  {len(road_rows)} road(s) ({named} named, {refd} numbered)"
               f" -> {road_path.name}")
+    prov = stage_db.provenance(conn, pid)
+    if prov:
+        prov_path = out.with_name("sources.csv")
+        stage_db.write_provenance_csv(prov_path, prov)
+        print(f"  {len(prov)} (source, feature class) row(s) "
+              f"-> {prov_path.name}")
     poi_rows = stage_db.poi_inventory_rows(conn, pid, centre=(cx, cy))
     if poi_rows:
         poi_path = out.with_name("landmark_inventory.csv")

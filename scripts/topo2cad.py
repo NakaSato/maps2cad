@@ -468,7 +468,22 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
                               (pid,)).fetchone()[0]
               for t in ("staging_buildings", "staging_roads")} if existed \
         else {}
+    # The table saying where each line came from, beside the drawing. Only
+    # compose.py wrote one, so an ordinary run — which stages
+    # openstreetmap, microsoft_ml, copernicus_dem and often overture — had
+    # no record of that at all, and /zip packaged a sources.csv it never
+    # found. The drawing credits its sources in the title block; this is
+    # the same account in a form a spreadsheet opens.
+    prov = stage_db.provenance(conn, pid)
     conn.close()
+    if prov and getattr(a, "out", None):
+        prov_path = Path(a.out).with_name("sources.csv")
+        try:
+            stage_db.write_provenance_csv(prov_path, prov)
+            print(f"Sources: {len(prov)} (source, feature class) row(s) "
+                  f"-> {prov_path}")
+        except OSError:
+            pass
     verb = "Merged into" if existed else "Staged to"
     print(f"{verb} {a.db}: project '{project}' (id {pid}) — "
           f"{n_b} buildings, {n_r} roads, {n_c} contours, "
