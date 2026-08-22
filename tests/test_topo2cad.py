@@ -768,3 +768,51 @@ def test_both_stacks_agree_on_the_overpass_endpoints():
             for u in topo2cad.OVERPASS_URLS]
     assert ours == theirs, f"topo2cad {ours} vs site map {theirs}"
     assert not any("mail.ru" in u for u in ours), "the 19-minute mirror"
+
+
+def test_the_source_layer_does_not_import_the_drawing():
+    """osm_source.py is where the data comes from and what each tag means;
+    topo2cad.py is what gets drawn. The dependency runs one way, and it
+    staying that way is what lets dxfaudit, gisqa, mapposter and osm2cad ask
+    what a tag means without pulling in rasterio, ezdxf and a DEM."""
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    src = (scripts / "osm_source.py").read_text(encoding="utf-8")
+    for line in src.split("\n"):
+        bare = line.strip()
+        assert not bare.startswith(("import topo2cad", "from topo2cad")), line
+    # and none of the heavy CAD/DEM stack
+    for heavy in ("import ezdxf", "import rasterio", "from skimage",
+                  "from scipy"):
+        assert heavy not in src, heavy
+
+
+def test_every_source_rule_is_still_reachable_through_topo2cad():
+    """Four scripts import these from topo2cad and CLAUDE.md names them that
+    way. The seam moved; the call sites did not."""
+    import ast
+
+    import osm_source
+
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    src = (scripts / "topo2cad.py").read_text(encoding="utf-8")
+    claimed = []
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.ImportFrom) and node.module == "osm_source":
+            claimed += [a.name for a in node.names]
+    assert len(claimed) > 30, "the facade lost its export list"
+    missing = [n for n in claimed if not hasattr(topo2cad, n)]
+    assert not missing, missing
+    drifted = [n for n in claimed
+               if getattr(topo2cad, n) is not getattr(osm_source, n)]
+    assert not drifted, drifted
+
+
+def test_the_scripts_that_borrow_the_rules_still_reach_them():
+    """The four importers named in CLAUDE.md, checked by name so a facade
+    trimmed 'because nothing uses it' fails here rather than in a run."""
+    for name in ("fetch_osm", "clip_runs", "new_ml_rings", "oneway_dir",
+                 "best_name", "classify_elements", "fetch_ms_buildings",
+                 "names_by_lang", "poi_kind", "bbox_around",
+                 "carriageway_width", "road_cad_layer", "PATH_TYPES",
+                 "LAYERS"):
+        assert hasattr(topo2cad, name), name

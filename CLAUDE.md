@@ -64,6 +64,35 @@ alternative to `uv run` (`.venv/bin/python -m pytest tests/ -q`).
 
 ## Architecture
 
+**Four files, one direction.** The two big scripts were 2,000 and 2,300
+lines because each was several things at once. They are now:
+
+    cad_rules.py    what a drawing looks like — anchors, ring closing,
+                    junction trimming, annotation scale, XDATA, fonts,
+                    bearings, the NCS LAYERS table. No database, no network.
+    osm_source.py   where the data comes from and what each tag means —
+                    Overpass and its cache, Microsoft ML footprints, the
+                    extent and clipping, classify_elements and the tag rules.
+    stage_db.py     what the database keeps — schema, migrations, staging
+                    writers, inventories, provenance.
+    topo2cad.py     what gets drawn.
+
+The dependency runs one way down that list and tests assert it: `cad_rules`
+imports neither `stage_db` nor `sqlite3`; `osm_source` imports neither
+`topo2cad` nor `ezdxf`/`rasterio`/`skimage`/`scipy`. That is what lets a
+drawing rule be tested without a database, and what lets `dxfaudit.py`,
+`gisqa.py`, `mapposter.py` and `osm2cad.py` ask what a tag means without
+pulling in the DEM and CAD stack to do it.
+
+**Both facades are complete, and that is the point.** `stage_db.py`
+re-exports every `cad_rules` name and `topo2cad.py` every `osm_source` name,
+in full and by name, because eight modules, four scripts, the tests and this
+file all call them as `stage_db.<name>` / `topo2cad.<name>`. **The seams
+moved; no call site did.** A test per facade reads the module's own
+`from … import (…)` list, checks each name resolves, and checks it is the
+*same object* rather than a copy that can drift — so trimming an export
+"because nothing uses it" fails in a tenth of a second instead of in a run.
+
 **Two independent OSM stacks. They share no code.**
 
 1. `topo2cad.py` owns the raw-Overpass layer and is imported as a module by

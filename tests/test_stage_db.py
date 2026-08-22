@@ -1444,15 +1444,26 @@ def test_the_rules_do_not_import_the_database():
 def test_every_rule_is_still_reachable_through_stage_db():
     """Eight modules and the documentation call these as stage_db.<name>.
     The seam moved; the call sites did not, and must not have to."""
+    import ast
+
     import cad_rules
 
-    import types
-
-    public = [n for n in dir(cad_rules)
-              if not n.startswith("_")
-              and not isinstance(getattr(cad_rules, n), types.ModuleType)]
-    missing = [n for n in public if not hasattr(stage_db, n)]
+    # Read the facade's own list rather than everything cad_rules holds: a
+    # rule only the CAD writers need (the NCS layer table) does not have to
+    # be reachable through the database module. What must hold is that every
+    # name the facade claims actually resolves, to the *same object*.
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "stage_db.py").read_text(encoding="utf-8")
+    claimed = []
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.ImportFrom) and node.module == "cad_rules":
+            claimed += [a.name for a in node.names]
+    assert len(claimed) > 50, "the facade lost its export list"
+    missing = [n for n in claimed if not hasattr(stage_db, n)]
     assert not missing, missing
+    drifted = [n for n in claimed
+               if getattr(stage_db, n) is not getattr(cad_rules, n)]
+    assert not drifted, drifted
     # and it is the same object, not a copy that can drift
     assert stage_db.interior_point is cad_rules.interior_point
     assert stage_db.carriageway_edges is cad_rules.carriageway_edges

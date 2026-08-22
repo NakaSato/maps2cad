@@ -976,3 +976,115 @@ def credit_lines(sources, max_files: int = 2,
                                + (f" +{more} more" if more else ""), width,
                                subsequent_indent="   ")
     return lines
+
+
+# CAD layer names follow the NCS/AIA convention (discipline-major-minor) so
+# the DXF drops straight into an engineering drawing set. All annotation is
+# isolated on C-ANNO-TEXT so drafters can toggle labels in one click.
+LAYERS = {
+    "building": "C-BLDG-OUTL",
+    # A footprint OpenStreetMap has no name for. Same geometry, different
+    # layer, no label: a drafter can see at a glance which buildings are
+    # identified and which are still anonymous, and freeze or hand off the
+    # anonymous ones as a set. The B### code that identifies each of them
+    # lives in the inventory CSV.
+    "building_unnamed": "C-BLDG-UNNM",
+    "road_edge": "C-ROAD-EDGE",     # the two carriageway edges (double lines)
+    "road_centre": "C-ROAD-CNTR",   # centreline, CENTER linetype
+    # Footways, cycleways and steps are not carriageways: drawing a 1.5 m
+    # path with two offset kerb lines makes it read as a road on the plan.
+    "road_path": "C-ROAD-PATH",
+    # Direction-of-travel arrows on one-way carriageways, from the OSM
+    # `oneway` tag (and the roundabouts that imply it). Their own layer so a
+    # drafter can plot the drawing without traffic direction on it.
+    "road_arrow": "C-ROAD-ARRW",
+    # A bridge crosses whatever is under it and a tunnel runs beneath the
+    # ground the plan describes; a drafter needs both separable from the
+    # carriageways at grade.
+    "road_bridge": "C-ROAD-BRDG",
+    "road_tunnel": "C-ROAD-TUNL",
+    # No OSM source for a legal right-of-way, so this is created empty and
+    # ready for a drafter to draw the ROW onto, like C-PROP-LINE.
+    "road_row": "C-ROAD-ROWY",
+    # Annotation splits by language so a drafter can LAYFRZ one script and
+    # plot a single-language sheet. Language-neutral text (B### codes,
+    # contour elevations, the GPS tag, the north arrow) stays on the base
+    # C-ANNO-TEXT layer and survives freezing either language.
+    "anno": "C-ANNO-TEXT",
+    "anno_th": "C-ANNO-TEXT-TH",
+    "anno_en": "C-ANNO-TEXT-EN",
+    # NCS splits topography into index (every 5th, heavier and labelled) and
+    # intermediate contours, which is what a reviewer expects to see
+    # staging_contours defaults cad_layer to C-TOPO-CONT, so db2dxf.py
+    # defines it; create it here too or the two layer tables disagree even
+    # when every entity matches. Empty unless a contour arrives undifferentiated.
+    "contour_plain": "C-TOPO-CONT",
+    "contour_major": "C-TOPO-MAJR",
+    "contour_minor": "C-TOPO-MINR",
+    "water": "C-HYDR-WATR",
+    "green": "C-LAND-VEGT",
+    "rail": "C-RAIL-TRAK",
+    "barrier": "C-BNDY-BARR",
+    "poi": "C-ANNO-SYMB",
+    # Utilities and planting. Power infrastructure is on almost every Thai
+    # site plan and OSM maps it well: lines on C-UTIL-POWR with the pylons
+    # and poles as symbols on the same layer, pipelines beside them.
+    "power": "C-UTIL-POWR",
+    "pipeline": "C-UTIL-PIPE",
+    "tree": "C-LAND-TREE",
+    # Spot heights: the elevation at a point, which is what a surveyor
+    # levels to. Contours give the shape, a spot height gives the number.
+    "spot": "C-TOPO-SPOT",
+    # Built-up land use — residential, commercial, industrial. Kept off
+    # C-LAND-VEGT, which is planting: a factory estate is not a park, and a
+    # reviewer reads the two differently.
+    "zoning": "C-LAND-ZONE",
+    # UTM coordinate grid: crosses at the intersections with the easting
+    # and northing written along two edges, which is how a survey sheet
+    # lets a reader take a coordinate off the paper.
+    "grid": "C-ANNO-GRID",
+    # Real DIMENSION entities on the extent, so the drawing states its own
+    # size instead of leaving a reviewer to measure it.
+    "dims": "C-ANNO-DIMS",
+    # A plaza or a covered walkway is an area you walk on, not a line you
+    # walk along; drawn closed so it reads as surface on the plan.
+    "plaza": "C-ROAD-PLAZ",
+    # Street lighting rides with the other utilities.
+    "lamp": "C-UTIL-LAMP",
+    # Everything --all-features brought in that no rule claimed. On its own
+    # layer so a drafter can look at exactly what the curated rules skip,
+    # and freeze it in one click if it is noise.
+    "other": "C-MISC-OTHR",
+    "other_point": "C-MISC-SYMB",
+    # Parking: drawn whatever the POI filter says, because a site plan
+    # needs the parking whether or not a car park counts as a landmark.
+    "parking": "C-SITE-PARK",
+    # House numbers, small and language-neutral, under the building label.
+    "addr": "C-ANNO-ADDR",
+    # Landmark grounds that carry no building tag — hospital and school
+    # campuses, temple precincts, car parks. Kept off C-BLDG-OUTL so a
+    # 3,000 m2 car park does not read as a structure.
+    "site_poi": "C-SITE-POI",
+    # Named places from Overture Maps — a conflation of Meta, Microsoft,
+    # Esri and others rather than OpenStreetMap. They keep their own layer,
+    # labels included, because a name nobody in this project can trace to a
+    # survey or to OSM must be visibly separable: freeze C-ANNO-OVTR* and
+    # the drawing is back to what OSM says. The language split is kept
+    # within it for the same reason it exists everywhere else.
+    "overture": "C-ANNO-OVTR",
+    "overture_th": "C-ANNO-OVTR-TH",
+    "overture_en": "C-ANNO-OVTR-EN",
+    "north": "C-ANNO-NORT",
+    "site": "C-ANNO-GPSP",
+    # The requested extent, drawn as a closed rectangle. Features are not
+    # trimmed to it — a building straddling the edge stays whole — so this
+    # is the crop line a drafter trims or clips a viewport to.
+    "extent": "C-ANNO-EXTN",
+    "property": "C-PROP-LINE",
+    "setback": "C-PROP-SETB",
+    # Boundary corner marks and their labels. Empty from this route: OSM
+    # has no surveyed parcel to take corners from, and tabling an OSM
+    # building outline to the millimetre would say someone had measured it.
+    # Created anyway, like C-PROP-LINE, so every layer table agrees.
+    "corner": "C-PROP-CORN",
+}
