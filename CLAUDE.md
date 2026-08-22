@@ -1198,6 +1198,24 @@ write PDF/PNG/CSV. Implements a written spec; two layout profiles share one
 
 Invariants worth preserving, all of them load-bearing and test-covered:
 
+**The sheet is plotted at a round scale, and states it exactly.** The map
+used to be drawn at whatever scale filled the frame, and the sheet then
+*reported* that to two significant figures — `≈ 1:1,900`. Nobody can measure
+a sheet with a scale rule at 1:1,900, and a ผังบริเวณ is a document an
+officer measures. Worse, the CAD sheet for the same 500 x 400 m extent on
+the same A3 said 1:2,000: two deliverables of one site quoting different
+scales, which a reviewer sees immediately. `fit_round_scale()` picks the
+largest scale from `MAP_ROUND_SCALES` that fits and resizes the axes to
+exactly what that scale needs, centred in the box the layout allotted —
+whitespace inside the frame is the price, and it is the right one against a
+stated scale that is not the drawing's. It must be called **before** the map
+body is drawn: label fitting measures the axes, so resizing afterwards would
+place labels against a box that no longer exists. Verified exact across ten
+extent/sheet combinations, and matching `sheet.fitting_scale()` on every one
+— a test asserts that agreement, and if it fails the two sheets have
+silently diverged rather than the test having become too strict.
+
+
 **Google sign-in and Drive upload are optional and stdlib-only.**
 `gdrive.py` speaks OAuth 2.0 and Drive v3 over `urllib` rather than pulling
 in `google-api-python-client`, because `serve.py` having no third-party

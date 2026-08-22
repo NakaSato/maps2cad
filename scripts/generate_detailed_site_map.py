@@ -1101,6 +1101,49 @@ def metres_per_point(fig, ax, width_m: float, height_m: float) -> float:
     return width_m / (drawn_width_inches(fig, ax, width_m, height_m) * 72.0)
 
 
+# The scales a submission is plotted at, and the only ones a reviewing
+# officer can measure off the sheet with a scale rule. The same family
+# sheet.py uses on the CAD side, so the two deliverables of one site agree.
+MAP_ROUND_SCALES = (100, 200, 250, 500, 1000, 1250, 2000, 2500, 5000,
+                    10000, 20000, 25000, 50000)
+
+
+def fit_round_scale(fig, ax, width_m: float, height_m: float) -> int:
+    """Resize the map axes to plot at a round scale, and return it.
+
+    The map used to be drawn at whatever scale filled the space, and the
+    sheet then *reported* that to two significant figures: "≈ 1:1,900".
+    Nobody can measure a sheet with a scale rule at 1:1,900, and a ผังบริเวณ
+    is a document an officer measures. Worse, the CAD sheet for the same
+    500 x 400 m extent on the same A3 said 1:2,000 — two deliverables of one
+    site quoting different scales.
+
+    So the axes is shrunk to exactly the size the round scale needs and
+    centred in the box the layout allotted it. Whitespace inside the frame
+    is the price, and it is the right one: the alternative is a stated scale
+    that is not the drawing's scale.
+
+    Call this *before* the map body is drawn — label fitting measures the
+    axes, so resizing afterwards would place labels against a box that no
+    longer exists.
+    """
+    fw, fh = fig.get_size_inches()
+    pos = ax.get_position()
+    box_w, box_h = fw * pos.width, fh * pos.height
+    chosen = MAP_ROUND_SCALES[-1]
+    for candidate in MAP_ROUND_SCALES:
+        if (width_m / candidate / 0.0254 <= box_w + 1e-9
+                and height_m / candidate / 0.0254 <= box_h + 1e-9):
+            chosen = candidate
+            break
+    need_w = width_m / chosen / 0.0254
+    need_h = height_m / chosen / 0.0254
+    ax.set_position([pos.x0 + (box_w - need_w) / 2 / fw,
+                     pos.y0 + (box_h - need_h) / 2 / fh,
+                     need_w / fw, need_h / fh])
+    return chosen
+
+
 def representative_fraction(fig, ax, width_m: float, height_m: float) -> int:
     drawn_w_in = drawn_width_inches(fig, ax, width_m, height_m)
     denom = (width_m / (drawn_w_in * 0.0254))
@@ -1129,6 +1172,7 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
     fig = plt.figure(figsize=(sheet_w, sheet_h))
     fig.patch.set_facecolor("white")
     ax = fig.add_axes([0.04, 0.225, 0.92, 0.695])
+    rf = fit_round_scale(fig, ax, args.width, args.height)
     stats["road_labels"] = _draw_map_body(ax, args, layers, records,
                                           site_xy, rect, colours, epsg)
 
@@ -1144,13 +1188,12 @@ def render_standard(args, layers, records, site_xy, rect, epsg, stats):
 
     # Metadata strip (spec FR-10), outside the map frame
     x, y = site_xy
-    rf = representative_fraction(fig, ax, args.width, args.height)
     meta_left = (
         f"Geographic (WGS 84 / EPSG:4326): Lat {args.lat:.8f}°, "
         f"Lon {args.lon:.8f}°\n"
         f"Projected (EPSG:{epsg}): E {x:,.2f} m, N {y:,.2f} m\n"
         f"Coverage: {args.width:.0f} m × {args.height:.0f} m   |   "
-        f"Approx. scale 1:{rf:,} at {args.sheet_size} {orientation}"
+        f"Scale 1:{rf:,} at {args.sheet_size} {orientation}"
     )
     meta_right = (
         f"Roads: {stats['roads']} segments ({stats['road_labels']} "
@@ -1214,6 +1257,7 @@ def render_government(args, layers, records, site_xy, rect, epsg, stats):
 
     # Map frame on the left; information column on the right
     ax = fig.add_axes([0.035, 0.06, 0.63, 0.86])
+    rf = fit_round_scale(fig, ax, args.width, args.height)
     stats["road_labels"] = _draw_map_body(ax, args, layers, records,
                                           site_xy, rect, colours)
     draw_north_arrow(ax, colours)
@@ -1255,14 +1299,15 @@ def render_government(args, layers, records, site_xy, rect, epsg, stats):
         f"ต./แขวง {args.subdistrict}" if args.subdistrict else "",
         f"อ./เขต {args.district}" if args.district else "",
         f"จ. {args.province}" if args.province else ""] if v)
-    rf = representative_fraction(fig, ax, args.width, args.height)
     block([
         f"ชื่อโครงการ (Project): {args.project_name or '—'}",
         f"สถานที่ตั้ง (Location): {args.site_location or '—'}",
         f"เขตปกครอง: {admin or '—'}",
         f"หน่วยงานเจ้าของโครงการ (Agency): {args.agency or '—'}",
         f"วันที่จัดทำ (Date): {stats['generated_date']}",
-        f"มาตราส่วน (Scale): ≈ 1:{rf:,} ({args.sheet_size} landscape)",
+        # Stated exactly, not "≈": the map is now plotted at this scale
+        # rather than measured after the fact, so a scale rule works on it.
+        f"มาตราส่วน (Scale): 1:{rf:,} ({args.sheet_size} landscape)",
         f"เลขที่แบบ (Drawing no.): {args.drawing_no or '—'}    "
         f"แผ่นที่ (Sheet): {args.sheet}    แก้ไขครั้งที่ (Rev.): "
         f"{args.revision}",

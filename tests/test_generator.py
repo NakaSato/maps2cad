@@ -589,3 +589,77 @@ def test_the_legend_keys_supplied_data_only_when_it_is_drawn():
     assert any("Supplied survey" in h.get_label() for h in handles)
     plain = generator.legend_handles(generator.GOV_COLOURS, True)
     assert not any("Supplied survey" in h.get_label() for h in plain)
+
+
+# ------------------------------------------------- a measurable scale
+def _map_axes(size, box=(0.035, 0.06, 0.63, 0.86)):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=generator.SHEET_SIZES[size])
+    return fig, fig.add_axes(list(box))
+
+
+@pytest.mark.parametrize("size", ["A4", "A3"])
+@pytest.mark.parametrize("extent", [(200, 150), (250, 200), (500, 400),
+                                    (1000, 750), (2000, 1500)])
+def test_the_stated_scale_is_the_drawings_actual_scale(size, extent):
+    """The map used to be drawn at whatever scale filled the space and the
+    sheet then reported that to two significant figures — "≈ 1:1,900".
+    Nobody can measure a sheet with a scale rule at 1:1,900, and a
+    ผังบริเวณ is a document an officer measures."""
+    import matplotlib.pyplot as plt
+
+    w, h = extent
+    fig, ax = _map_axes(size)
+    stated = generator.fit_round_scale(fig, ax, w, h)
+    drawn_in = generator.drawn_width_inches(fig, ax, w, h)
+    actual = w / (drawn_in * 0.0254)
+    plt.close(fig)
+    assert actual == pytest.approx(stated, abs=0.5)
+    assert stated in generator.MAP_ROUND_SCALES
+
+
+@pytest.mark.parametrize("size", ["A4", "A3"])
+@pytest.mark.parametrize("extent", [(200, 150), (250, 200), (500, 400),
+                                    (1000, 750), (2000, 1500)])
+def test_the_map_and_the_cad_sheet_agree_on_the_scale(size, extent):
+    """Two deliverables of one site quoting different scales is a defect a
+    reviewer sees immediately: the CAD sheet said 1:2,000 for the same
+    500 x 400 m extent on the same A3 while the map said ≈ 1:1,900.
+
+    If this ever fails, the map's layout box or sheet.py's viewport has
+    moved and the two sheets have silently diverged — decide which is
+    right rather than loosening the test.
+    """
+    import matplotlib.pyplot as plt
+
+    sheet = pytest.importorskip("sheet")
+    w, h = extent
+    fig, ax = _map_axes(size)
+    on_map = generator.fit_round_scale(fig, ax, w, h)
+    plt.close(fig)
+    on_cad, _, _ = sheet.fitting_scale(w, h, size)
+    assert on_map == on_cad, (
+        f"{w}x{h} on {size}: map 1:{on_map}, CAD 1:{on_cad}")
+
+
+def test_the_map_fills_the_frame_it_is_given_as_far_as_a_round_scale_allows():
+    """The axes is shrunk to the exact size the round scale needs, which
+    leaves whitespace inside the frame. It must still be the largest round
+    scale that fits — shrinking to the next one down would waste half the
+    sheet."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _map_axes("A3")
+    chosen = generator.fit_round_scale(fig, ax, 500, 400)
+    finer = [s for s in generator.MAP_ROUND_SCALES if s < chosen]
+    pos = ax.get_position()
+    fw, fh = fig.get_size_inches()
+    plt.close(fig)
+    # the next finer scale would need more room than the frame has
+    if finer:
+        need = 500 / max(finer) / 0.0254
+        assert need > fw * 0.63 or (400 / max(finer) / 0.0254) > fh * 0.86
+    assert pos.width > 0 and pos.height > 0
