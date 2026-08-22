@@ -995,6 +995,31 @@ after expansion by what it turned out to hold (a shapefile set wins over an
 `osm2cad.py`, which answers with the conversion command; rejecting it at the
 door would say "not a GIS file" about a file that is plainly OSM data.
 
+**The web app's markup lives in `webui.py`, and the dependency runs one
+way.** `serve.py` imports it, never the reverse, and nothing in `webui.py`
+reaches for a database, the filesystem or a subprocess: a builder is handed
+the data it renders and returns bytes. That is what lets a page be rendered
+in a test without a server, and it is what keeps `serve.py` about routing.
+The page functions `serve.py` still exposes keep their old names and
+signatures — each is now a few lines that gather data and hand it over — so
+a route never has to know which module drew its HTML. Both files stay
+stdlib-only: no template engine, no build step, no third-party CSS.
+
+The generate form quotes the plot scale as you type, because the extent and
+the sheet are chosen independently and the *pairing* decides the scale —
+1000 × 750 on A3 is 1:5000, which is not obvious from either field alone.
+`webui.fitting_scale()` restates `sheet.py`'s arithmetic rather than
+importing it (that module is on the ezdxf side of the tree, and this app
+staying stdlib-only is what lets it run anywhere Python does), so two tests
+hold them together: one compares the viewport and the chosen scale against
+`sheet.fitting_scale()` across a grid of extents and sheet sizes, the other
+runs the page's own JavaScript under `node` and compares 240 combinations
+with Python. The browser is sent each sheet's viewport **already worked
+out**, so the only rule the script repeats is the loop over the round
+scales. `fitting_scale()` returns None where `sheet.py` clamps to its
+largest scale: a form that quotes 1:20,000 for an extent nothing holds is
+telling the user it fits when the sheet would crop it.
+
 ## Conventions
 
 - Generated output goes to `output/` (gitignored). DEM `.tif` tiles, `ms_cache/`,

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import urllib.parse
 from pathlib import Path
 
@@ -159,7 +160,77 @@ font-variant-numeric:tabular-nums}
 .pg:hover{border-color:var(--survey);color:var(--survey)}
 .pg.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 .pg.off{color:var(--soft);border-color:transparent}
+/* .note was used in the markup from the start and never had a rule, so
+   every aside rendered at body size and read as heavily as the lede. */
+.note{color:var(--soft);font-size:13.5px;line-height:1.6;margin:10px 0 0;
+max-width:76ch}
+.note code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:12.5px;background:var(--faint);padding:1px 5px}
+/* The form asks for eleven things. Grouping them means a first-time user
+   reads three questions rather than a wall of controls. */
+.sect{margin:0 0 26px}
+.sect+.sect{padding-top:24px;border-top:1px solid var(--faint)}
+.sect-h{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+letter-spacing:.14em;text-transform:uppercase;color:var(--survey);
+margin:0 0 14px;font-weight:400}
+details.adv{border:1px solid var(--rule);margin:0 0 26px}
+details.adv>summary{padding:12px 16px;cursor:pointer;font-size:14.5px;
+color:var(--ink);list-style:none;display:flex;justify-content:space-between;
+align-items:center;gap:12px}
+details.adv>summary::-webkit-details-marker{display:none}
+details.adv>summary::after{content:"+";font-family:ui-monospace,monospace;
+color:var(--soft);font-size:17px;line-height:1}
+details.adv[open]>summary::after{content:"−"}
+details.adv>summary:hover{background:var(--faint)}
+details.adv>summary:focus-visible{outline:2px solid var(--survey);
+outline-offset:-2px}
+details.adv .adv-body{padding:0 16px 18px;border-top:1px solid var(--faint)}
+details.adv .adv-body>*:first-child{margin-top:16px}
+/* The extent and the sheet are chosen independently, and the pairing decides
+   the plot scale — 1000 x 750 on A3 is 1:5000, a locality map, which is not
+   obvious from either field on its own. So the form says so as you type. */
+.readout{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+margin:14px 0 0;padding:11px 14px;background:var(--faint);
+border-left:3px solid var(--teal);font-size:13.5px;color:var(--soft)}
+.readout b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums;
+font-weight:600;letter-spacing:.01em}
+.readout.warn{border-left-color:var(--survey)}
+.readout.over{border-left-color:var(--marker)}
 """
+
+
+# The plot-scale readout on the form needs the same arithmetic sheet.py uses,
+# and serve.py cannot import sheet.py: that module needs ezdxf, and this app
+# staying stdlib-only is what lets it run anywhere Python does. So the three
+# tables are restated here and a test compares them against sheet.py's, the
+# same way the layer tables are kept in step across the writers.
+SHEET_MM = {"A4": (297, 210), "A3": (420, 297), "A2": (594, 420),
+            "A1": (841, 594), "A0": (1189, 841)}
+BLOCK_W = {"A4": 80, "A3": 100, "A2": 120, "A1": 140, "A0": 160}
+ROUND_SCALES = [200, 250, 500, 1000, 1250, 2000, 2500, 5000, 10000, 20000]
+
+
+def viewport_mm(size: str):
+    """Usable viewport of a sheet, after the margins and the title block."""
+    pw, ph = SHEET_MM[size.upper()]
+    margin = 10
+    return (pw - margin - BLOCK_W[size.upper()] - margin * 2,
+            ph - margin * 2 - 4)
+
+
+def fitting_scale(width_m: float, height_m: float, size: str):
+    """Smallest round scale at which the extent fits, or None if none does.
+
+    The browser runs this same rule on the form. It is written once here and
+    the *result* — the viewport in millimetres — is handed to the page, so
+    the only thing the script repeats is the loop, not the arithmetic.
+    """
+    vp_w, vp_h = viewport_mm(size)
+    for s in ROUND_SCALES:
+        if width_m * 1000 / s <= vp_w and height_m * 1000 / s <= vp_h:
+            return s
+    return None
 
 
 def page(title: str, body: str) -> bytes:
@@ -263,11 +334,6 @@ def form_page(values: dict, error: str, recent: str,
             f'<option value="{n}"{" selected" if n == chosen else ""}>{n}'
             "</option>" for n in names)
 
-    def opts_sel(names, chosen):
-        return "".join(
-            f'<option value="{n}"{" selected" if n == chosen else ""}>{n}'
-            "</option>" for n in names)
-
     def opts_scale(values, chosen):
         return "".join(
             f'<option value="{n}"{" selected" if n == chosen else ""}>'
@@ -279,6 +345,14 @@ def form_page(values: dict, error: str, recent: str,
         f"{html.escape(label)}</option>"
         for k, label in basemap_choices.items())
 
+    # Advanced stays open when the run that bounced set one of its fields,
+    # so an error message never points at a control the page has hidden.
+    advanced_used = any(v.get(k) for k in
+                        ("cad_sheet", "cad_scale", "basemap", "sheet_size",
+                         "title"))
+    viewport_js = json.dumps({k: list(viewport_mm(k)) for k in SHEET_MM},
+                             separators=(",", ":"))
+    scales_js = json.dumps(ROUND_SCALES, separators=(",", ":"))
     return page("maps2cad", f"""
 <p class="eyebrow">GPS coordinate → CAD drawing + site map</p>
 <h1>maps2cad</h1>
@@ -288,62 +362,80 @@ at its centre — plus a print-ready site map sheet and the building inventory C
 that resolves the B### codes.</p>
 {err}
 <form method="post" action="/generate">
-  <div class="grid g2">
-    <div><label for="coords">Coordinates (latitude, longitude)</label>
-      <input type="text" id="coords" name="coords" placeholder="15.83384548, 104.39445555"
-             value="{val('coords')}" autofocus></div>
-    <div class="grid g2" style="gap:12px">
-      <div><label for="width">Width (m)</label>
-        <input type="number" id="width" name="width" step="any" min="20"
-               value="{val('width', 1000)}"></div>
-      <div><label for="height">Height (m)</label>
-        <input type="number" id="height" name="height" step="any" min="20"
-               value="{val('height', 750)}"></div>
+  <section class="sect">
+    <h2 class="sect-h">Where and how much ground</h2>
+    <div class="grid g2">
+      <div><label for="coords">Coordinates (latitude, longitude)</label>
+        <input type="text" id="coords" name="coords" placeholder="15.83384548, 104.39445555"
+               value="{val('coords')}" autofocus></div>
+      <div class="grid g2" style="gap:12px">
+        <div><label for="width">Width (m)</label>
+          <input type="number" id="width" name="width" step="any" min="20"
+                 value="{val('width', 1000)}"></div>
+        <div><label for="height">Height (m)</label>
+          <input type="number" id="height" name="height" step="any" min="20"
+                 value="{val('height', 750)}"></div>
+      </div>
     </div>
-  </div>
-  <div class="grid g3" style="margin-top:16px">
-    <div><label for="export">Export</label>
-      <select id="export" name="export" onchange="toggleGov()">
-        <option value="both"{" selected" if v.get('export', 'both') == 'both' else ""}>CAD + site map</option>
-        <option value="cad"{" selected" if v.get('export') == 'cad' else ""}>CAD only (DXF)</option>
-        <option value="map"{" selected" if v.get('export') == 'map' else ""}>Site map only (PDF)</option>
-      </select></div>
-    <div><label for="profile">Layout</label>
-      <select id="profile" name="profile" onchange="toggleGov()">
-        <option value="standard"{" selected" if sel == "standard" else ""}>Standard</option>
-        <option value="government"{" selected" if sel == "government" else ""}>Thai government submission</option>
-      </select></div>
-    <div><label for="sheet_size">Sheet</label>
-      <select id="sheet_size" name="sheet_size">{opts(["A4","A3","A2","A1"], sheet)}</select></div>
-    <div><label for="title">Map title</label>
-      <input type="text" id="title" name="title" value="{val('title', 'Detailed Site Map')}"></div>
-  </div>
-  <div class="grid g3" style="margin-top:16px">
-    <div><label for="cad_sheet">CAD sheet (paper space)</label>
-      <select id="cad_sheet" name="cad_sheet">
-        {opts_sel(["A3", "A2", "A1", "A0", "A4"], v.get('cad_sheet', 'A3'))}
-        <option value="none"{" selected" if v.get('cad_sheet') == 'none' else ""}>No sheet — model space only</option>
-      </select></div>
-    <div><label for="cad_scale">Plot scale</label>
-      <select id="cad_scale" name="cad_scale">
-        <option value="fit"{" selected" if v.get('cad_scale', 'fit') == 'fit' else ""}>Fit the extent (recommended)</option>
-        {opts_scale(["500", "1000", "1250", "2000", "2500", "5000"], str(v.get('cad_scale', '')))}
-      </select></div>
-    <div><label for="basemap">Background map</label>
-      <select id="basemap" name="basemap">{basemap_opts}</select></div>
-  </div>
-  <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
-    <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
-    <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
-  </div>
-  <p class="note" style="margin-top:10px">Every run also gets the B&amp;W
-  poster, one-way direction arrows, every mapped landmark and colour plot
-  previews — nothing to remember to tick. Monochrome CAD stays on the
-  command line, since it drops the layer colours.</p>
-  <p class="note" id="gov_note" style="display:none;margin-top:10px">
-  The government sheet renders what its spec lists: one-way arrows and the
-  background map are left off it, and apply to the CAD export and the
-  poster only.</p>
+    <p class="readout" id="readout"><b id="readout_scale">—</b>
+      <span id="readout_note">Enter an extent to see the plot scale.</span></p>
+  </section>
+
+  <section class="sect">
+    <h2 class="sect-h">What to produce</h2>
+    <div class="grid g3">
+      <div><label for="export">Export</label>
+        <select id="export" name="export" onchange="formSync()">
+          <option value="both"{" selected" if v.get('export', 'both') == 'both' else ""}>CAD + site map</option>
+          <option value="cad"{" selected" if v.get('export') == 'cad' else ""}>CAD only (DXF)</option>
+          <option value="map"{" selected" if v.get('export') == 'map' else ""}>Site map only (PDF)</option>
+        </select></div>
+      <div><label for="profile">Layout</label>
+        <select id="profile" name="profile" onchange="formSync()">
+          <option value="standard"{" selected" if sel == "standard" else ""}>Standard</option>
+          <option value="government"{" selected" if sel == "government" else ""}>Thai government submission</option>
+        </select></div>
+      <div><label for="title">Map title</label>
+        <input type="text" id="title" name="title" value="{val('title', 'Detailed Site Map')}"></div>
+    </div>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
+      <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
+      <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
+    </div>
+    <p class="note">Every run also gets the B&amp;W poster, one-way direction
+    arrows, every mapped landmark and colour plot previews — nothing to
+    remember to tick. Monochrome CAD stays on the command line, since it
+    drops the layer colours.</p>
+    <p class="note" id="gov_note" style="display:none">The government sheet
+    renders what its spec lists: one-way arrows and the background map are
+    left off it, and apply to the CAD export and the poster only.</p>
+  </section>
+
+  <details class="adv" id="adv"{" open" if advanced_used else ""}>
+    <summary>Sheet sizes, plot scale and background map</summary>
+    <div class="adv-body">
+      <div class="grid g3">
+        <div><label for="cad_sheet">CAD sheet (paper space)</label>
+          <select id="cad_sheet" name="cad_sheet" onchange="formSync()">
+            {opts(["A3", "A2", "A1", "A0", "A4"], v.get('cad_sheet', 'A3'))}
+            <option value="none"{" selected" if v.get('cad_sheet') == 'none' else ""}>No sheet — model space only</option>
+          </select></div>
+        <div><label for="cad_scale">Plot scale</label>
+          <select id="cad_scale" name="cad_scale" onchange="formSync()">
+            <option value="fit"{" selected" if v.get('cad_scale', 'fit') == 'fit' else ""}>Fit the extent (recommended)</option>
+            {opts_scale(["500", "1000", "1250", "2000", "2500", "5000"], str(v.get('cad_scale', '')))}
+          </select></div>
+        <div><label for="sheet_size">Site map sheet</label>
+          <select id="sheet_size" name="sheet_size">{opts(["A4","A3","A2","A1"], sheet)}</select></div>
+        <div><label for="basemap">Background map</label>
+          <select id="basemap" name="basemap">{basemap_opts}</select></div>
+      </div>
+      <p class="note">The background map is a backdrop, not survey data: it
+      lands on its own layer so a drafter can drop it without dropping
+      imagery they traced from.</p>
+    </div>
+  </details>
+
   <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
     <legend>Title block</legend>
     <div class="grid g2">{gov_inputs}</div>
@@ -375,14 +467,79 @@ for sites OpenStreetMap has nothing mapped at.</p>
 <div class="wide">{recent}</div>
 <footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
 <script>
-function toggleGov(){{
+// The viewport of each sheet is computed by webui.fitting_scale() and sent
+// down already worked out, so the only rule repeated here is the loop. A
+// test keeps webui's arithmetic in step with sheet.py's.
+var VIEWPORT = {viewport_js};
+var ROUND_SCALES = {scales_js};
+function viewport(size){{ return VIEWPORT[size] || null; }}
+function fittingScale(w, h, size){{
+  var vp = viewport(size); if(!vp) return null;
+  for(var i = 0; i < ROUND_SCALES.length; i++){{
+    var s = ROUND_SCALES[i];
+    if(w * 1000 / s <= vp[0] && h * 1000 / s <= vp[1]) return s;
+  }}
+  return null;
+}}
+function formSync(){{
   var gov = document.getElementById('profile').value === 'government';
   document.getElementById('gov').style.display = gov ? 'block' : 'none';
   document.getElementById('gov_note').style.display = gov ? 'block' : 'none';
-}}
-document.addEventListener('DOMContentLoaded', toggleGov);
-</script>""")
 
+  var w = parseFloat(document.getElementById('width').value);
+  var h = parseFloat(document.getElementById('height').value);
+  var size = document.getElementById('cad_sheet').value;
+  var chosen = document.getElementById('cad_scale').value;
+  var box = document.getElementById('readout');
+  var big = document.getElementById('readout_scale');
+  var note = document.getElementById('readout_note');
+  box.className = 'readout';
+  if(!(w > 0 && h > 0)){{
+    big.textContent = '—';
+    note.textContent = 'Enter an extent to see the plot scale.';
+    return;
+  }}
+  if(size === 'none'){{
+    big.textContent = Math.round(w) + ' × ' + Math.round(h) + ' m';
+    note.textContent = 'Model space only — no sheet, so no plot scale.';
+    return;
+  }}
+  var fit = fittingScale(w, h, size);
+  if(chosen === 'fit'){{
+    if(fit === null){{
+      box.className = 'readout over';
+      big.textContent = 'Too large for ' + size;
+      note.textContent = 'Nothing down to 1:20,000 holds this extent. '
+        + 'Narrow it or plot on a bigger sheet.';
+      return;
+    }}
+    big.textContent = '1:' + fit.toLocaleString('en-US');
+    var words = fit <= 1000 ? 'a site plan'
+      : fit <= 2500 ? 'a detailed layout' : 'a locality map';
+    note.textContent = Math.round(w) + ' × ' + Math.round(h) + ' m on '
+      + size + ' plots at 1:' + fit.toLocaleString('en-US') + ' — ' + words + '.';
+    if(fit >= 5000) box.className = 'readout warn';
+  }} else {{
+    var s = parseInt(chosen, 10);
+    var vp = viewport(size);
+    var fits = w * 1000 / s <= vp[0] && h * 1000 / s <= vp[1];
+    big.textContent = '1:' + s.toLocaleString('en-US');
+    if(fits){{
+      note.textContent = 'Fits ' + size + ' at the scale you chose.';
+    }} else {{
+      box.className = 'readout over';
+      note.textContent = 'Does not fit ' + size + ' — the sheet would crop the '
+        + 'extent. ' + (fit ? 'It fits at 1:' + fit.toLocaleString('en-US') + '.'
+                            : 'No round scale holds it.');
+    }}
+  }}
+}}
+['width','height'].forEach(function(id){{
+  document.getElementById(id).addEventListener('input', formSync);
+}});
+document.addEventListener('DOMContentLoaded', formSync);
+formSync();
+</script>""")
 
 def result_page(rec: dict, kinds, zone: str, drive: bool) -> bytes:
     p = rec["params"]
