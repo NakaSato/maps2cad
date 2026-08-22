@@ -942,6 +942,7 @@ def arrow_positions(coords, spacing=ONEWAY_SPACING_M,
 # three bytes a character, so the cap is applied after encoding.
 XDATA_APPID = "OSM"          # OpenStreetMap tags
 GIS_XDATA_APPID = "GIS"      # fields of a file the user supplied
+MS_XDATA_APPID = "MICROSOFT"  # Microsoft's ML building footprints
 XDATA_MAX_TAGS = 40
 ATTR_FIELDS = ["feature_id", "feature_type", "cad_layer", "display_name",
                "key", "value"]

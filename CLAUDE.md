@@ -461,6 +461,38 @@ and attaches accordingly; at a mixed site that is 33 entities under OSM and
 the CAD attribute browser would be a lie, which is the whole reason for the
 column.
 
+**Every drawn feature carries provenance, including the ones with no source
+tags.** A Microsoft ML footprint has no OSM tags, so it used to reach the
+drawing carrying nothing at all — 49 of 53 features at Lopburi, sitting on
+`C-BLDG-UNNM` beside traced outlines and indistinguishable from them once
+both are black polylines. `topo2cad.ms_source_tags()` builds one tag set per
+run under the appid `MICROSOFT`: `source`, `dataset`, `licence`, the
+`region`/`release` parsed out of the cached `dataset-links.csv`
+(`ms_release_from_url()`, pure and tested), and `method=predicted from
+imagery, not surveyed` — the load-bearing line, because a reviewer needs to
+know before treating an outline as survey. Confidence and height are
+deliberately *not* carried: both are `-1.0` across all 2.5 M footprints in
+the Thailand tiles, and a sentinel written as a value is worse than silence.
+The quadkey is not carried either — an extent can straddle four tiles, so one
+value would be wrong for three quarters of what it labelled. `gis2cad.py`
+does the same for a file with no attribute columns, tagging `@source=
+user_gis:<file>`; the `@` marks it as assigned here, the way `@id` already
+is, so a user column genuinely called `source` keeps its own name. Both
+routes' output is unchanged when `--no-attributes` is given.
+
+**`dxfdiff.py` compares XDATA, not just geometry.** It did not, so the appid
+convention above — the whole reason `staging_tags` carries the column — had
+no guard at all: a re-issue could hand back a drawing stripped of its source
+data, or file a survey under `OSM`, and the tool still said IDENTICAL.
+`survey()` now returns a multiset of `(appid, tags)` per entity (keyed on
+content, since the two routes draw in different orders), prints an
+appid-by-appid tally, and names the entities whose provenance differs.
+*Every* registered appid is compared, ezdxf's and AutoCAD's included —
+measured against a real pair first to confirm the internals do not produce
+false differences. Verified both ways: a matching re-issue is IDENTICAL with
+49 MICROSOFT + 4 OSM on each side, and a `--no-attributes` re-issue of the
+same project now exits 1 with 53 differences instead of passing.
+
 **`compose.py` conducts, it does not convert.** One command puts several
 sources in one drawing: `topo2cad.py` (OSM + Microsoft ML + DEM + optionally
 Overture and a basemap) first, then every `--add` file through `osm2cad.py`

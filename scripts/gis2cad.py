@@ -387,6 +387,17 @@ def main(argv=None) -> int:
             # table and the staging layer describe one feature.
             fid = f"gis/{path.stem}/{i:05d}"
             tags = {} if a.no_attributes else row_attributes(row, columns)
+            if not a.no_attributes:
+                # A file with no attribute columns — plenty of exports are
+                # bare geometry — used to reach the drawing carrying
+                # nothing, and drop out of attributes.csv with it, so the
+                # table stopped describing the whole drawing. Name the file
+                # it came from at least: in a composed drawing this line is
+                # what separates a supplied survey from OSM on the same
+                # layer. The '@' marks it as assigned here, the way '@id'
+                # already is, so it cannot collide with a column of the
+                # user's own called "source".
+                tags = {"@source": f"user_gis:{path.name}", **tags}
 
             def record(kind, layer):
                 if tags:

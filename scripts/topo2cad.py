@@ -354,6 +354,67 @@ def quadkey(lat, lon, z=9):
                    for i in range(z))
 
 
+def ms_release_from_url(url: str) -> dict:
+    """Region and release date out of a dataset-links.csv row's URL.
+
+    The path is .../global-buildings/<release>/global-buildings.geojsonl/
+    RegionName=<region>/quadkey=<key>/part-... — the only place the release
+    is stated. Pure, so the parsing is testable without the 30,000-line
+    index or the network.
+    """
+    out = {}
+    for part in url.split("/"):
+        if part.startswith("RegionName="):
+            out["region"] = part.split("=", 1)[1]
+        elif part.startswith("quadkey="):
+            out["quadkey"] = part.split("=", 1)[1]
+    marker = "/global-buildings/"
+    if marker in url:
+        rest = url.split(marker, 1)[1].split("/", 1)[0]
+        # The next path element is the release date on a data URL and
+        # "dataset-links.csv" on the index itself; only take a date.
+        if len(rest) == 10 and rest.count("-") == 2:
+            out["release"] = rest
+    return out
+
+
+def ms_source_tags(s, w, n, e, cache_dir) -> dict:
+    """What to say on an ML footprint about where it came from.
+
+    A predicted outline and a traced one are indistinguishable once they
+    are both black polylines on C-BLDG-UNNM, and the difference is exactly
+    what a reviewer needs before treating one as survey. `method` is the
+    load-bearing word; the release makes the run reproducible, since
+    Microsoft reissues a region and the outlines move.
+
+    Reads the already-cached index — no network. Returns {} when the index
+    is missing, so a drawing is never lost to a provenance lookup.
+    """
+    tags = {"source": "microsoft_ml",
+            "dataset": "Microsoft Global ML Building Footprints",
+            "method": "predicted from imagery, not surveyed",
+            "licence": "ODbL"}
+    links = Path(cache_dir) / "dataset-links.csv"
+    if not links.exists():
+        return tags
+    keys = {quadkey(la, lo) for la in (s, n) for lo in (w, e)}
+    seen = {}
+    try:
+        for line in links.read_text().splitlines():
+            cols = line.split(",")
+            if len(cols) > 2 and cols[1] in keys:
+                seen |= ms_release_from_url(cols[2])
+    except OSError:
+        return tags
+    # The quadkey is per tile and an extent can straddle four of them, so
+    # it is deliberately not carried: one value would be wrong for the
+    # other three footprints it labelled.
+    for key in ("region", "release"):
+        if seen.get(key):
+            tags[key] = seen[key]
+    return tags
+
+
 def fetch_ms_buildings(s, w, n, e, cache_dir):
     """Microsoft Global ML Building Footprints intersecting the bbox (unnamed)."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1341,6 +1402,7 @@ def main():
               f"{len(other_points)} extra point(s)"
               + (f" — {summary}" if summary else ""))
 
+    ml_tags = {}
     if not a.no_ml:
         # Always supplement, not only when OSM is nearly empty. The old
         # "fewer than 20" rule meant a mapped area got OSM alone: at Pathum
@@ -1348,8 +1410,11 @@ def main():
         # ground OSM has nothing for. A building missing from a site plan is
         # a worse error than one whose outline came from a model.
         print("Supplementing with Microsoft ML footprints...")
-        ms = fetch_ms_buildings(s, w, n, e, Path(a.dem).parent / "ms_cache")
+        ms_cache = Path(a.dem).parent / "ms_cache"
+        ms = fetch_ms_buildings(s, w, n, e, ms_cache)
         added = merge_ml_footprints(buildings, ms)
+        if added:
+            ml_tags = ms_source_tags(s, w, n, e, ms_cache)
         print(f"MS footprints: {len(ms)} available, {added} added, "
               f"{len(ms) - added} already mapped in OSM")
 
@@ -1409,18 +1474,40 @@ def main():
     tag_index = source_tags(elements)
     drawn = []
 
+    # Which XDATA application id a feature's attributes belong under. The
+    # id is the honest answer to "where did this come from" in the CAD
+    # attribute browser, so a modelled footprint must not file its
+    # provenance under OSM — the same reason gis2cad.py has its own.
+    appid_index = {}
+
+    def appid_for(fid):
+        return appid_index.get(fid, _anchor_rules.XDATA_APPID)
+
+    # A modelled footprint carries no OSM tags, so it used to reach the
+    # drawing carrying nothing at all: 49 of 126 entities at this site with
+    # no way to tell a predicted outline from a traced one once both are
+    # black polylines. Its provenance is the same for every footprint in a
+    # run — one release of one region — so it is built once and shared.
+    for _names, _geom, fid in buildings:
+        if fid.startswith("ms/") and ml_tags:
+            tag_index[fid] = ml_tags
+            appid_index[fid] = _anchor_rules.MS_XDATA_APPID
+
     if not a.no_attributes:
         doc.appids.add(_anchor_rules.XDATA_APPID)
 
     def attach(entity, fid):
         tags = tag_index.get(fid) or tag_index.get(fid.rsplit("/", 1)[0], {})
         if not a.no_attributes and entity is not None and tags:
-            entity.set_xdata(_anchor_rules.XDATA_APPID,
-                             _anchor_rules.xdata_tags(fid, tags))
+            appid = appid_for(fid)
+            if appid not in doc.appids:
+                doc.appids.add(appid)
+            entity.set_xdata(appid, _anchor_rules.xdata_tags(fid, tags))
 
     def record(fid, kind, layer, name):
         drawn.append({"feature_id": fid, "feature_type": kind,
-                      "cad_layer": layer, "display_name": name or ""})
+                      "cad_layer": layer, "display_name": name or "",
+                      "appid": appid_for(fid)})
 
     if a.underlay:
         import underlay as ul
