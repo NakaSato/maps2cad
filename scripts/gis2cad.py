@@ -479,6 +479,10 @@ def main(argv=None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.mono:
         apply_mono(doc)
+    # ezdxf writes UTF-8 regardless; what decides whether a
+    # reader sees the Thai is the font the STYLE points at.
+    stage_db.check_fonts(TEXT_STYLES,
+                     Path(out).with_name("fonts.txt"))
     stage_db.set_drawing_extents(doc)
     doc.saveas(out)
     if attrs:

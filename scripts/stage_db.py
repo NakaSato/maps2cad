@@ -987,6 +987,119 @@ def set_drawing_extents(doc) -> bool:
     return True
 
 
+# U+0E01 THAI CHARACTER KO KAI. A font that has this has the Thai block;
+# one that does not will render every Thai label as ??? or as boxes.
+THAI_PROBE = "\u0e01"
+
+
+def font_report(styles, thai_styles=("TH_STYLE",)) -> list[dict]:
+    """What each text style will actually be drawn with, and whether that
+    font can render Thai.
+
+    ezdxf writes UTF-8 whatever happens, so the text is *in* the file; what
+    decides whether a reader sees it is the font the STYLE points at. The
+    styles name `THSarabunNew.ttf` and `arial.ttf` by filename and nothing
+    ever checked they exist. When one does not, ezdxf silently substitutes:
+    on the machine this was written on THSarabunNew is absent and the
+    substitute is Arial Unicode, which happens to carry Thai — so every
+    plot preview looked right by luck. AutoCAD on a machine whose
+    substitute is an SHX renders the same drawing's Thai as ???.
+
+    Returns one dict per style: declared, present, resolved, has_thai,
+    needs_thai. Never raises — a font check must not be what loses a
+    drawing.
+    """
+    out = []
+    try:
+        from ezdxf.fonts import fonts as _f
+        manager = _f.font_manager
+    except Exception:
+        return out
+    for style, declared in styles.items():
+        row = {"style": style, "declared": declared,
+               "needs_thai": style in thai_styles,
+               "present": False, "resolved": declared, "has_thai": None}
+        try:
+            row["present"] = bool(manager.has_font(declared))
+            face = manager.get_font_face(declared)
+            row["resolved"] = getattr(face, "filename", declared)
+            ttf = manager.ttf_font_from_font_face(face)
+            row["has_thai"] = any(ord(THAI_PROBE) in t.cmap
+                                  for t in ttf["cmap"].tables)
+        except Exception:
+            pass
+        out.append(row)
+    return out
+
+
+def font_warnings(report) -> list[str]:
+    """The lines worth saying out loud. Empty when every style resolves to
+    the font it names."""
+    lines = []
+    for row in report:
+        if row["present"]:
+            continue
+        where = row["resolved"]
+        if row["needs_thai"] and row["has_thai"] is False:
+            lines.append(
+                f"{row['style']} wants {row['declared']}, which is not "
+                f"installed; it falls back to {where}, which has no Thai "
+                "glyphs — every Thai label will render as ???")
+        elif row["needs_thai"]:
+            lines.append(
+                f"{row['style']} wants {row['declared']}, which is not "
+                f"installed here; this plot used {where}. A reader without "
+                f"{row['declared']} may see ??? for Thai")
+        else:
+            lines.append(f"{row['style']} wants {row['declared']}, which is "
+                         f"not installed here; this plot used {where}")
+    return lines
+
+
+def write_font_note(path, report) -> int:
+    """List the fonts the drawing needs, beside the drawing.
+
+    A DXF cannot carry a font, only its name, so the requirement has to
+    travel some other way or the recipient just sees ??? and has nothing
+    telling them why. /zip/<job> packages a run under its on-disk names, so
+    this rides along with the deliverable.
+    """
+    lines = ["Fonts this drawing needs",
+             "========================",
+             "",
+             "A DXF references fonts by name; it cannot embed them. Install",
+             "these on the machine that opens the drawing, or the text will",
+             "be substituted — Thai has no glyphs in the usual substitutes",
+             "and renders as ??? or as boxes.",
+             ""]
+    for row in report:
+        need = " (carries the Thai script — required for Thai labels)" \
+            if row["needs_thai"] else ""
+        lines.append(f"  {row['style']:<10} {row['declared']}{need}")
+    lines += ["",
+              "THSarabunNew is one of Thailand's national fonts and is the",
+              "face Thai government documents are set in.",
+              ""]
+    path = Path(path)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return len(report)
+
+
+def check_fonts(styles, out_path=None, thai_styles=("TH_STYLE",)):
+    """Warn about substituted fonts and leave the requirement beside the
+    drawing. Called by every writer, so no route ships a drawing whose
+    Thai will silently vanish without saying so."""
+    report = font_report(styles, thai_styles)
+    for line in font_warnings(report):
+        print(f"WARNING: {line}")
+    if report and out_path is not None:
+        try:
+            write_font_note(out_path, report)
+        except OSError:
+            pass
+    return report
+
+
 # A carriageway shorter than this has no meaningful edges to offset, and a
 # trimmed fragment shorter than this is noise rather than kerb.
 MIN_EDGE_M = 0.5

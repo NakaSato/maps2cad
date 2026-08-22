@@ -2190,6 +2190,10 @@ def main():
     if a.mono:
         apply_mono(doc)
         print("Monochrome: all layers set to ACI 7")
+    # ezdxf writes UTF-8 regardless; what decides whether a
+    # reader sees the Thai is the font the STYLE points at.
+    _anchor_rules.check_fonts(TEXT_STYLES,
+                     Path(a.out).with_name("fonts.txt"))
     _anchor_rules.set_drawing_extents(doc)
     doc.saveas(a.out)
     print(f"Saved: {a.out}")

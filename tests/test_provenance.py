@@ -141,13 +141,75 @@ def test_dxfdiff_compares_extended_data(tmp_path):
     mislabelled = write(tmp_path / "c.dxf",
                         [(1000, "@id=ms/00000"), (1000, "source=survey")])
 
-    _c, _l, _s, _y, xa = dxfdiff.survey(str(full))
+    xa = dxfdiff.survey(str(full))[4]
     assert sum(xa.values()) == 1
-    _c, _l, _s, _y, xb = dxfdiff.survey(str(bare))
+    xb = dxfdiff.survey(str(bare))[4]
     assert sum(xb.values()) == 0
-    _c, _l, _s, _y, xc = dxfdiff.survey(str(mislabelled))
+    xc = dxfdiff.survey(str(mislabelled))[4]
 
     # Same entity count, same layers, different provenance: the case the
     # counts alone cannot see.
     assert xa != xc
     assert sum(xc.values()) == 1
+
+
+# ------------------------------------------- the fonts a reader will need
+def test_a_missing_thai_font_is_reported_not_swallowed():
+    """ezdxf writes UTF-8 whatever happens, so the Thai is in the file;
+    what decides whether anyone sees it is the font the STYLE points at.
+    The styles name THSarabunNew.ttf and arial.ttf by filename and nothing
+    ever checked they exist — on the machine this was written on
+    THSarabunNew is absent and ezdxf substitutes Arial Unicode, which
+    happens to carry Thai, so every plot looked right by luck.
+    """
+    pytest.importorskip("ezdxf")
+    report = stage_db.font_report(topo2cad.TEXT_STYLES)
+    assert report, "no styles were examined"
+    by_style = {r["style"]: r for r in report}
+    assert by_style["TH_STYLE"]["needs_thai"] is True
+    assert by_style["EN_STYLE"]["needs_thai"] is False
+    # Whatever this machine has, a style that resolves to something other
+    # than what it asked for has to say so.
+    for row in report:
+        if not row["present"]:
+            assert stage_db.font_warnings([row]), row
+
+
+def test_a_font_that_resolves_to_itself_says_nothing():
+    """A warning that fires when everything is fine is read once and then
+    ignored, which is worse than the silence it replaced."""
+    ok = [{"style": "EN_STYLE", "declared": "arial.ttf", "present": True,
+           "resolved": "arial.ttf", "has_thai": False, "needs_thai": False}]
+    assert stage_db.font_warnings(ok) == []
+
+
+def test_a_substitute_with_no_thai_is_the_loudest_case():
+    bad = [{"style": "TH_STYLE", "declared": "THSarabunNew.ttf",
+            "present": False, "resolved": "simplex.shx", "has_thai": False,
+            "needs_thai": True}]
+    line = stage_db.font_warnings(bad)[0]
+    assert "???" in line and "simplex.shx" in line
+
+
+def test_the_requirement_travels_beside_the_drawing(tmp_path):
+    """A DXF names its fonts and cannot embed them, so a recipient missing
+    THSarabunNew sees ??? and has nothing telling them why."""
+    note = tmp_path / "fonts.txt"
+    stage_db.write_font_note(note, [
+        {"style": "TH_STYLE", "declared": "THSarabunNew.ttf",
+         "present": False, "resolved": "x", "has_thai": True,
+         "needs_thai": True}])
+    body = note.read_text(encoding="utf-8")
+    assert "THSarabunNew.ttf" in body
+    assert "cannot embed" in body
+
+
+def test_the_check_never_loses_a_drawing():
+    """A font lookup is a courtesy; failing one must not fail a run."""
+    assert stage_db.font_report({}) == []
+    assert stage_db.font_warnings([]) == []
+
+
+def test_the_zip_carries_the_font_note():
+    src = (SCRIPTS / "serve.py").read_text(encoding="utf-8")
+    assert '"sources.csv", "fonts.txt"' in src

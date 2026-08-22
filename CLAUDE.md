@@ -44,10 +44,19 @@ Tests (`tests/test_generator.py` for the site map, `tests/test_topo2cad.py` for
 the CAD path's geometry and CRS helpers):
 
 ```bash
-uv run --with pytest --with pillow python -m pytest tests/ -q
+uv run --with pytest --with pillow python -m pytest tests/ -q          # 570
+uv run --with pytest --with ezdxf --with shapely --with pillow \
+  python -m pytest tests/ -q                                          # 622
 uv run --with pytest --with pillow python -m pytest tests/ -q -k label_fits   # one test
 RUN_NETWORK_TESTS=1 uv run --with pytest --with pillow python -m pytest tests/ -q
 ```
+
+**Run the second form before committing.** The first skips 34 tests —
+everything gated on `pytest.importorskip("ezdxf")`, which is the whole of
+`test_dxfdiff.py`, `test_blocks.py`, the sheet layout and the font checks.
+A test that only runs in the fuller environment can sit broken indefinitely
+under the short command: widening `dxfdiff.survey()`'s return value left one
+unpacking five values from six and nothing said so for two commits.
 
 The network test is opt-in because it hits Overpass; everything else runs offline
 against synthetic GeoDataFrames. A `.venv` + `requirements.txt` exist as an
@@ -868,6 +877,25 @@ branch. Area POIs are staged in `staging_buildings` with their own
 what that table stores) and are excluded from the building inventory CSV and
 from `serve.py`'s name editor by that same column. Rural sites have none of
 this: Yasothon and Lopburi return 0 area POIs, Pathum Wan returns 10.
+
+**A named font is a promise the drawing cannot keep by itself.** The
+styles point at `THSarabunNew.ttf` and `arial.ttf` *by filename* and nothing
+checked they exist. ezdxf writes UTF-8 regardless, so the Thai is in the
+file; what decides whether anyone sees it is the font the STYLE resolves to.
+On the machine this was written on THSarabunNew is **absent** and ezdxf
+substitutes Arial Unicode, which happens to carry Thai — so every plot
+preview looked right by luck, while AutoCAD on a machine whose substitute is
+an SHX renders the same drawing's Thai as `???`.
+
+`stage_db.font_report()` asks ezdxf's font manager what each style actually
+resolves to and reads the resolved font's cmap for U+0E01, so the check is
+whether the glyphs are really there rather than whether a name matched. Every
+writer calls `check_fonts()` before saving: it warns when a style falls back
+(loudest when the substitute has no Thai) and writes `fonts.txt` beside the
+drawing, which `/zip/<job>` now packages along with `sources.csv`. A DXF
+cannot embed a font, so the requirement has to travel some other way or the
+recipient sees `???` with nothing telling them why. The check never raises —
+a font lookup is a courtesy and must not be what loses a run.
 
 **Thai needs a text style, not just UTF-8.** ezdxf writes UTF-8 regardless,
 but AutoCAD renders Thai as `???` unless the MTEXT's style points at a font

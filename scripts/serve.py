@@ -731,10 +731,15 @@ def job_zip(rec: dict) -> tuple[bytes, str]:
             path = rec.get(kind)
             if path and Path(path).is_file():
                 z.write(path, name)
-        # What the drawing is made of, when the run staged anything
-        sources = Path(rec["dir"]) / "sources.csv" if rec.get("dir") else None
-        if sources and sources.is_file():
-            z.write(sources, "sources.csv")
+        # What the drawing is made of, when the run staged anything, and
+        # what it needs to be read with. A DXF names its fonts and cannot
+        # embed them, so without this note a recipient missing
+        # THSarabunNew just sees ??? where the Thai should be and has
+        # nothing telling them why.
+        for extra in ("sources.csv", "fonts.txt"):
+            side = Path(rec["dir"]) / extra if rec.get("dir") else None
+            if side and side.is_file():
+                z.write(side, extra)
     stem = (f"maps2cad_{lat:.6f}_{lon:.6f}" if (lat or lon)
             else f"maps2cad_{rec['id']}")
     return buf.getvalue(), f"{stem}.zip"
