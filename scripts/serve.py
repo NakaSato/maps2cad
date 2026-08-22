@@ -489,6 +489,27 @@ PREVIEW_KINDS = (("plot", "Plot preview", "pdf"),
                  ("pdf", "Site map (PDF)", "pdf"))
 
 
+# Content types are stated here, not asked of the operating system.
+# mimetypes.guess_type() reads the Windows registry, so on Windows a .png
+# or .pdf can come back with a registry-specific type or with none at all —
+# and "none" fell through to application/octet-stream, which every browser
+# downloads instead of showing. That is what turned the preview into an
+# automatic download there while it rendered fine everywhere else. These are
+# our own files with known formats; there is nothing to guess.
+CONTENT_TYPES = {".png": "image/png", ".pdf": "application/pdf",
+                 ".csv": "text/csv; charset=utf-8", ".tif": "image/tiff",
+                 ".tiff": "image/tiff", ".dxf": "image/vnd.dxf",
+                 ".zip": "application/zip", ".txt": "text/plain; charset=utf-8",
+                 ".json": "application/json", ".geojson": "application/json"}
+
+
+def content_type(name: str, fallback: str = "application/octet-stream") -> str:
+    """The MIME type for one of our own output files."""
+    dot = str(name).rfind(".")
+    return CONTENT_TYPES.get(str(name)[dot:].lower(), fallback) if dot >= 0 \
+        else fallback
+
+
 def preview_files(jid: str) -> list[dict]:
     """The previewable files a run has produced so far.
 
@@ -1401,7 +1422,7 @@ class Handler(BaseHTTPRequestHandler):
         target = OUT / jid / KINDS[kind]
         if not target.is_file():
             return self._send(b"Not yet", 404, "text/plain")
-        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        ctype = content_type(target.name, "application/pdf")
         try:
             body = target.read_bytes()
         except OSError:
@@ -1410,7 +1431,8 @@ class Handler(BaseHTTPRequestHandler):
         # Shown inline, and never cached: a step can overwrite its own
         # output and the page has to see the new one.
         self._send(body, ctype=ctype,
-                   extra={"Content-Disposition": "inline",
+                   extra={"Content-Disposition":
+                          f'inline; filename="{KINDS[kind]}"',
                           "Cache-Control": "no-store"})
 
     def serve_file(self, path):
@@ -1425,9 +1447,9 @@ class Handler(BaseHTTPRequestHandler):
         target = Path(rec[parts[2]])
         if not target.is_file():
             return self._send(b"File missing", 404, "text/plain")
-        ctype = (mimetypes.guess_type(target.name)[0]
-                 or ("image/vnd.dxf" if parts[2] == "dxf"
-                     else "application/octet-stream"))
+        # A download says what it is too: a browser that has to guess at a
+        # .dxf or a .tif is a browser that may rename or mangle it.
+        ctype = content_type(target.name)
         stem, ext = kinds[parts[2]].rsplit(".", 1)
         if parts[2] == "tif":
             # Keeps its bare name on purpose: the DXF references the raster
@@ -1503,9 +1525,13 @@ drawing.</p>
 <b>Spreadsheet</b>Download CSV</a></div>
 <a class="back" href="/">← Back</a>"""))
 
-        ctype = mimetypes.guess_type(target.name)[0] or "application/pdf"
+        ctype = content_type(target.name, "application/pdf")
+        # Named as well as inline: a browser that does decide to save it
+        # then writes a sensible filename instead of the route's last path
+        # segment ("plot", "png").
         self._send(target.read_bytes(), ctype=ctype,
-                   extra={"Content-Disposition": "inline"})
+                   extra={"Content-Disposition":
+                          f'inline; filename="{KINDS[kind]}"'})
 
     def read_form(self):
         length = int(self.headers.get("Content-Length") or 0)

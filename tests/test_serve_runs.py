@@ -183,3 +183,27 @@ def test_the_status_payload_carries_the_previews(tmp_path, monkeypatch):
     finally:
         with serve.RUNS_LOCK:
             serve.RUNS.pop("deadbeef", None)
+
+
+def test_content_types_are_stated_not_guessed():
+    """mimetypes.guess_type() reads the Windows registry, so a .png or .pdf
+    can come back with a registry-specific type or none at all — and none
+    fell through to application/octet-stream, which every browser downloads
+    instead of showing. That turned the preview into an automatic download
+    on Windows while it rendered fine everywhere else."""
+    assert serve.content_type("site_map.png") == "image/png"
+    assert serve.content_type("site_preview.pdf") == "application/pdf"
+    assert serve.content_type("basemap.tif") == "image/tiff"
+    assert serve.content_type("site.dxf") == "image/vnd.dxf"
+    # Every file a run can produce has a stated type; none may fall through
+    # to the octet-stream that forces a download.
+    for kind, name in serve.KINDS.items():
+        assert serve.content_type(name) != "application/octet-stream", kind
+
+
+def test_the_preview_route_asks_the_browser_to_show_not_save():
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "serve.py").read_text(encoding="utf-8")
+    # inline for the two preview routes, attachment only for downloads
+    assert src.count('"Content-Disposition":\n                          f\'inline;') >= 1
+    assert "attachment; filename=" in src

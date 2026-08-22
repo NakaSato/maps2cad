@@ -1310,6 +1310,16 @@ plot at on A3 and a test checks that claim against
 `webui.fitting_scale()` — a wrong number on a button is a promise the
 drawing then breaks.
 
+**Content types are stated, never guessed.** `mimetypes.guess_type()`
+reads the *Windows registry*, so on Windows a `.png` or `.pdf` can come back
+with a registry-specific type or with none at all — and none fell through to
+`application/octet-stream`, which every browser downloads instead of
+showing. That is what turned the preview into an automatic download there
+while it rendered correctly everywhere else. `CONTENT_TYPES` states the type
+for every file a run can produce (a test asserts none falls through), the
+two preview routes send `Content-Disposition: inline` with a sensible
+filename, and only the download routes send `attachment`.
+
 **The run page shows the sheets as they are written.** The narration told
 you a step was running while the file it produced sat on disk unseen until
 the whole run finished — and a run is 18–105 s, so the first thing a reader
