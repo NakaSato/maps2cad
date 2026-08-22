@@ -480,10 +480,46 @@ def start_run(p: dict) -> str:
     return jid
 
 
+# What a run can show while it is still going, newest-looking first. Only
+# the kinds a browser renders on its own: a DXF has no viewer and a GeoTIFF
+# is not a picture, so neither belongs in a preview pane.
+PREVIEW_KINDS = (("plot", "Plot preview", "pdf"),
+                 ("png", "Site map", "image"),
+                 ("poster", "Poster", "image"),
+                 ("pdf", "Site map (PDF)", "pdf"))
+
+
+def preview_files(jid: str) -> list[dict]:
+    """The previewable files a run has produced so far.
+
+    Read off disk rather than tracked through Progress: the scripts write
+    when they write, and a file that exists is one the browser can show —
+    there is no state to keep in step. Size is reported so the page can
+    tell a file being written from one that is finished, and mtime busts
+    the browser cache when a step overwrites its own output.
+    """
+    folder = OUT / jid
+    out = []
+    for kind, label, how in PREVIEW_KINDS:
+        target = folder / KINDS[kind]
+        try:
+            stat = target.stat()
+        except OSError:
+            continue
+        if stat.st_size <= 0:
+            continue
+        out.append({"kind": kind, "label": label, "how": how,
+                    "bytes": stat.st_size, "ts": int(stat.st_mtime)})
+    return out
+
+
 def run_state(jid: str) -> dict | None:
     with RUNS_LOCK:
         run = RUNS.get(jid)
-        return json.loads(json.dumps(run)) if run else None
+        state = json.loads(json.dumps(run)) if run else None
+    if state is not None:
+        state["previews"] = preview_files(jid)
+    return state
 
 
 def job_id(p: dict) -> str:
@@ -1168,6 +1204,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/run/"):
             parts = path.strip("/").split("/")
             jid = parts[1] if len(parts) > 1 else ""
+            if len(parts) == 4 and parts[2] == "file":
+                return self.serve_run_file(jid, parts[3])
             if len(parts) == 3 and parts[2] == "status":
                 state = run_state(jid)
                 if state is None:
@@ -1346,6 +1384,34 @@ class Handler(BaseHTTPRequestHandler):
         self._send(data, ctype="application/zip",
                    extra={"Content-Disposition":
                           f'attachment; filename="{name}"'})
+
+    def serve_run_file(self, jid, kind):
+        """A file from a run still in flight, for the live preview.
+
+        /file/ and /view/ both read the JOBS record, which only exists once
+        the run has finished — the whole point here is to show the work
+        before then. The folder is addressed by job id and the filename
+        comes from the KINDS table, never from the URL, so there is nothing
+        for a caller to traverse with.
+        """
+        if not re.fullmatch(r"[0-9a-f]{8,32}", jid or ""):
+            return self._send(b"Bad request", 400, "text/plain")
+        if kind not in dict((k, l) for k, l, _h in PREVIEW_KINDS):
+            return self._send(b"Bad request", 400, "text/plain")
+        target = OUT / jid / KINDS[kind]
+        if not target.is_file():
+            return self._send(b"Not yet", 404, "text/plain")
+        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        try:
+            body = target.read_bytes()
+        except OSError:
+            # Being written this instant: the poll comes round again.
+            return self._send(b"Not yet", 404, "text/plain")
+        # Shown inline, and never cached: a step can overwrite its own
+        # output and the page has to see the new one.
+        self._send(body, ctype=ctype,
+                   extra={"Content-Disposition": "inline",
+                          "Cache-Control": "no-store"})
 
     def serve_file(self, path):
         parts = path.strip("/").split("/")

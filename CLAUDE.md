@@ -1310,6 +1310,27 @@ plot at on A3 and a test checks that claim against
 `webui.fitting_scale()` — a wrong number on a button is a promise the
 drawing then breaks.
 
+**The run page shows the sheets as they are written.** The narration told
+you a step was running while the file it produced sat on disk unseen until
+the whole run finished — and a run is 18–105 s, so the first thing a reader
+could look at arrived last. `/run/<id>` is two columns now: steps left,
+preview right. `preview_files()` reads the run folder rather than tracking
+output through `Progress` — a file that exists is one the browser can show,
+and there is no state to keep in step. `/run/<id>/status` carries the list;
+`/run/<id>/file/<kind>` serves one, because `/file/` and `/view/` both read
+the `JOBS` record, which does not exist until the run has finished. The
+folder is addressed by job id and the filename comes from `KINDS`, never
+from the URL. Four rules: only kinds a browser renders on its own (a DXF has
+no viewer and a GeoTIFF is not a picture, so neither belongs in a progress
+page); a zero-byte file is skipped, because a step caught mid-write would
+render as a broken image and read as failure rather than progress; the URL
+carries the file's mtime so a step overwriting its own output is fetched
+again rather than served from cache; and the pane follows whatever was
+written last until the reader picks a tab themselves, after which their
+choice stands. Seeded server-side as well as polled, so reloading mid-run
+paints what already exists instead of an empty pane. Measured on a real run:
+site-map PDF at 24 s, its PNG at 26 s, all four by 28 s.
+
 **A generation runs on its own thread and narrates itself.** `/generate`
 starts the work and redirects to `/run/<id>`, which polls
 `/run/<id>/status`; holding the POST open for 18–105 s is what left the

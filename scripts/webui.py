@@ -269,6 +269,34 @@ background:var(--survey);animation:sweep 1.6s cubic-bezier(.4,0,.2,1) infinite}
 margin-top:12px;font-size:13.5px;color:var(--soft);max-width:76rem}
 .runfoot b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+/* Steps on the left, whatever the run has drawn so far on the right. The
+   preview column sticks so it stays in view while the step list grows. */
+.runwrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,22rem);
+gap:28px;align-items:start;margin-top:24px}
+.runcol{min-width:0}
+.runcol ol.steps{margin-top:0}
+.runprev{min-width:0;position:sticky;top:18px;border:1px solid var(--rule);
+border-radius:10px;overflow:hidden;background:var(--card,transparent)}
+.prevhead{display:flex;align-items:center;justify-content:space-between;
+gap:10px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--rule);
+font-size:13.5px}
+.prevtabs{display:flex;gap:6px;flex-wrap:wrap}
+.prevtabs button{font:inherit;font-size:12px;padding:3px 8px;cursor:pointer;
+border:1px solid var(--rule);border-radius:999px;background:transparent;
+color:var(--soft)}
+.prevtabs button.on{color:var(--ink);border-color:var(--ink)}
+.prevbody{display:flex;align-items:center;justify-content:center;
+min-height:15rem;padding:10px;background:#fff}
+.prevbody img{max-width:100%;height:auto;display:block}
+.prevbody iframe{width:100%;height:26rem;border:0;display:block}
+.prevwait{color:var(--soft);font-size:13.5px;margin:0;padding:18px 6px;
+text-align:center;line-height:1.5}
+.prevnote{margin:0;padding:9px 12px;border-top:1px solid var(--rule);
+font-size:12.5px}
+@media (max-width:900px){
+.runwrap{grid-template-columns:minmax(0,1fr)}
+.runprev{position:static;order:-1}
+.prevbody iframe{height:18rem}}
 """
 
 
@@ -728,18 +756,47 @@ def run_page(jid: str, state: dict) -> bytes:
 <h1>Generating…</h1>
 <p class="lede">Each step narrates itself as it goes. Leave this tab open —
 it turns into the download page by itself when the last one finishes.</p>
-<div id="run" data-job="{html.escape(jid)}">
-  <ol class="steps">
-    <li v-for="s in steps" :key="s.key" :class="s.state">
-      <span class="step-mark" v-text="mark(s)"></span>
-      <span class="step-name" v-text="s.name"></span>
-      <span class="step-detail" v-text="s.detail"></span>
-    </li>
-  </ol>
-  <div class="runbar" v-if="live"></div>
-  <div class="runfoot">
-    <span><b v-text="clock"></b> elapsed</span>
-    <span v-text="hint"></span>
+<div id="run" data-job="{html.escape(jid)}" class="runwrap">
+  <div class="runcol">
+    <ol class="steps">
+      <li v-for="s in steps" :key="s.key" :class="s.state">
+        <span class="step-mark" v-text="mark(s)"></span>
+        <span class="step-name" v-text="s.name"></span>
+        <span class="step-detail" v-text="s.detail"></span>
+      </li>
+    </ol>
+    <div class="runbar" v-if="live"></div>
+    <div class="runfoot">
+      <span><b v-text="clock"></b> elapsed</span>
+      <span v-text="hint"></span>
+    </div>
+  </div>
+  <div class="runprev">
+    <div class="prevhead">
+      <b>Preview</b>
+      <span class="prevtabs" v-if="previews.length > 1">
+        <button type="button" v-for="p in previews" :key="p.kind"
+                :class="{{on: p.kind === shown}}"
+                @click="pick(p.kind)" v-text="p.label"></button>
+      </span>
+    </div>
+    <div class="prevbody">
+      <p class="prevwait" v-if="!previews.length">
+        Nothing to show yet — the first sheet appears here the moment it is
+        written, without waiting for the rest of the run.
+      </p>
+      <template v-for="p in previews" :key="p.kind">
+        <img v-if="p.kind === shown && p.how === 'image'" :src="src(p)"
+             :alt="p.label">
+        <iframe v-if="p.kind === shown && p.how === 'pdf'" :src="src(p)"
+                title="preview"></iframe>
+      </template>
+    </div>
+    <p class="note prevnote" v-if="current">
+      <span v-text="current.label"></span> ·
+      <span v-text="size(current)"></span>
+      <span v-if="live"> · refreshes as the run rewrites it</span>
+    </p>
   </div>
 </div>
 <noscript><p class="note">This page does not refresh itself without
@@ -755,12 +812,35 @@ happens once per square.</p>
   var el = document.getElementById('run');
   if(!window.Vue || !el) return;      // no CDN: the server-rendered plan stands
   var seeded = {json.dumps(state["steps"])};
+  // Seeded from the server too, so reloading mid-run paints whatever the
+  // run has already written instead of an empty pane until the first poll.
+  var seededPreviews = {json.dumps(state.get("previews", []))};
   Vue.createApp({{
     data: function(){{
       return {{steps: seeded, live: true, started: Date.now(), clock: '0:00',
-              hint: 'Working…'}};
+              hint: 'Working…', previews: seededPreviews,
+              shown: seededPreviews.length
+                     ? seededPreviews[seededPreviews.length - 1].kind : '',
+              picked: false}};
+    }},
+    computed: {{
+      current: function(){{
+        var self = this;
+        return this.previews.filter(function(p){{
+          return p.kind === self.shown; }})[0] || null;
+      }}
     }},
     methods: {{
+      // ts is the file's mtime: a step that overwrites its own output
+      // gets a new URL, so the browser fetches it instead of the cached one.
+      src: function(p){{
+        return '/run/' + el.dataset.job + '/file/' + p.kind + '?v=' + p.ts;
+      }},
+      size: function(p){{
+        return p.bytes > 900000 ? (p.bytes / 1048576).toFixed(1) + ' MB'
+                                : Math.max(1, Math.round(p.bytes / 1024)) + ' KB';
+      }},
+      pick: function(kind){{ this.shown = kind; this.picked = true; }},
       mark: function(s){{
         return s.state === 'done' ? '✓' : s.state === 'running' ? '▸'
              : s.state === 'failed' ? '✕' : s.state === 'skipped' ? '–' : '·';
@@ -776,6 +856,20 @@ happens once per square.</p>
           .then(function(r){{ return r.json(); }})
           .then(function(d){{
             if(d.steps) self.steps = d.steps;
+            if(d.previews){{
+              self.previews = d.previews;
+              // Follow the run to whatever it produced last, until the
+              // reader picks one themselves — then leave their choice alone.
+              var have = d.previews.some(function(p){{
+                return p.kind === self.shown; }});
+              if(!have || !self.picked){{
+                if(!self.picked && d.previews.length){{
+                  self.shown = d.previews[d.previews.length - 1].kind;
+                }} else if(!have && d.previews.length){{
+                  self.shown = d.previews[0].kind;
+                }}
+              }}
+            }}
             if(d.state === 'done' || d.state === 'failed'){{
               self.live = false;
               self.hint = d.state === 'done' ? 'Finished — opening the files…'

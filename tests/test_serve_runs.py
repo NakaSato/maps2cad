@@ -117,3 +117,69 @@ def test_the_watch_page_shows_the_plan_without_javascript():
         assert step["name"] in html
     assert "<noscript>" in html
     assert 'id="run" data-job="abc123"' in html
+
+
+# ------------------------------------------- live preview while running
+def test_a_run_reports_the_files_it_has_written_so_far(tmp_path, monkeypatch):
+    """The run page narrated the steps while the sheets it was producing sat
+    on disk unseen until the whole run finished. This is what lets the
+    preview pane fill as the work happens."""
+    monkeypatch.setattr(serve, "OUT", tmp_path)
+    folder = tmp_path / "abc123"
+    folder.mkdir()
+    assert serve.preview_files("abc123") == []
+
+    (folder / serve.KINDS["png"]).write_bytes(b"x" * 40)
+    got = serve.preview_files("abc123")
+    assert [p["kind"] for p in got] == ["png"]
+    assert got[0]["bytes"] == 40 and got[0]["how"] == "image"
+
+    (folder / serve.KINDS["plot"]).write_bytes(b"y" * 10)
+    assert {p["kind"] for p in serve.preview_files("abc123")} == {"png", "plot"}
+
+
+def test_a_half_written_file_is_not_offered(tmp_path, monkeypatch):
+    """A step can be caught mid-write. An empty file would render as a
+    broken image, which reads as a failure rather than as progress."""
+    monkeypatch.setattr(serve, "OUT", tmp_path)
+    folder = tmp_path / "abc123"
+    folder.mkdir()
+    (folder / serve.KINDS["png"]).write_bytes(b"")
+    assert serve.preview_files("abc123") == []
+
+
+def test_only_what_a_browser_can_render_is_previewed(tmp_path, monkeypatch):
+    """A DXF has no viewer and a GeoTIFF is not a picture; offering either
+    would put a download prompt in the middle of a progress page."""
+    monkeypatch.setattr(serve, "OUT", tmp_path)
+    folder = tmp_path / "abc123"
+    folder.mkdir()
+    for kind in ("dxf", "tif", "csv", "attrs"):
+        (folder / serve.KINDS[kind]).write_bytes(b"z" * 10)
+    assert serve.preview_files("abc123") == []
+    offered = {k for k, _label, _how in serve.PREVIEW_KINDS}
+    assert offered <= set(serve.KINDS)
+    assert not offered & {"dxf", "tif", "csv", "attrs", "poster_pdf"}
+
+
+def test_a_missing_run_folder_is_not_an_error(tmp_path, monkeypatch):
+    """The status poll runs before the folder exists and must not raise."""
+    monkeypatch.setattr(serve, "OUT", tmp_path)
+    assert serve.preview_files("nothing-here") == []
+
+
+def test_the_status_payload_carries_the_previews(tmp_path, monkeypatch):
+    monkeypatch.setattr(serve, "OUT", tmp_path)
+    folder = tmp_path / "deadbeef"
+    folder.mkdir()
+    (folder / serve.KINDS["poster"]).write_bytes(b"p" * 20)
+    with serve.RUNS_LOCK:
+        serve.RUNS["deadbeef"] = {"steps": [], "state": "running",
+                                  "error": "", "values": {},
+                                  "started": 0.0}
+    try:
+        state = serve.run_state("deadbeef")
+        assert [p["kind"] for p in state["previews"]] == ["poster"]
+    finally:
+        with serve.RUNS_LOCK:
+            serve.RUNS.pop("deadbeef", None)
