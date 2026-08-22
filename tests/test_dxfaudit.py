@@ -146,3 +146,101 @@ def test_missing_dxf_exits_nonzero(tmp_path):
 def test_no_extent_given_exits_nonzero(tmp_path):
     out = _drawing(tmp_path)
     assert dxfaudit.main([str(out)]) == 1
+
+
+# ------------------------------------------- roads and context linework
+def _way(tags, pts, wid=1):
+    return {"type": "way", "id": wid, "tags": tags,
+            "geometry": [{"lon": x, "lat": y} for x, y in pts]}
+
+
+BOX = (14.0, 100.0, 14.01, 100.01)      # s, w, n, e
+
+
+def test_roads_are_counted_at_all():
+    """They were not. A drawing with every road deleted audited as
+    "COMPLETE — the drawing carries everything the source holds": 15
+    entities removed at Lopburi and not one check moved, 681 at Pathum Wan
+    and only the one-way arrows noticed. Roads are the largest category in
+    the drawing and nothing looked at them."""
+    got = dxfaudit.count_elements(
+        [_way({"highway": "residential"}, [(100.002, 14.002),
+                                           (100.006, 14.006)], 1),
+         _way({"highway": "service"}, [(100.003, 14.003),
+                                       (100.007, 14.004)], 2)], box=BOX)
+    assert got["roads"] == 2
+
+
+def test_a_plaza_is_not_a_centreline():
+    """highway=pedestrian + area=yes on a closed ring leaves the road
+    bucket for C-ROAD-PLAZ and draws closed. Counting it as a centreline is
+    what made this check's first run report a 3-way shortfall against a
+    drawing that was complete — the tool's assumption was wrong, not the
+    drawing, which is the order to check them in."""
+    ring = [(100.002, 14.002), (100.004, 14.002), (100.004, 14.004),
+            (100.002, 14.002)]
+    got = dxfaudit.count_elements(
+        [_way({"highway": "pedestrian", "area": "yes"}, ring)], box=BOX)
+    assert got["roads"] == 0
+    assert got["context"]["plaza"] == 1
+
+
+def test_an_open_pedestrian_way_is_still_a_road():
+    got = dxfaudit.count_elements(
+        [_way({"highway": "pedestrian"},
+              [(100.002, 14.002), (100.006, 14.006)])], box=BOX)
+    assert got["roads"] == 1
+
+
+def test_context_linework_is_counted_by_category():
+    got = dxfaudit.count_elements([
+        _way({"waterway": "canal"}, [(100.002, 14.002), (100.006, 14.006)], 1),
+        _way({"railway": "rail"}, [(100.003, 14.003), (100.007, 14.004)], 2),
+        _way({"landuse": "industrial"},
+             [(100.004, 14.004), (100.008, 14.005)], 3),
+        _way({"barrier": "wall"}, [(100.005, 14.005), (100.009, 14.006)], 4),
+    ], box=BOX)
+    assert got["context_total"] == 4
+    assert set(got["context"]) == {"water", "rail", "land", "barrier"}
+
+
+def test_a_way_outside_the_extent_is_not_counted_as_missing():
+    """clip_runs() cuts at the boundary plus a margin, so a way well
+    outside is correctly absent from the drawing. Reporting it as a
+    shortfall would be a false alarm — a worse defect here than the silent
+    loss this looks for, because an audit that cries wolf is read once and
+    then ignored."""
+    far = _way({"highway": "residential"}, [(101.5, 15.5), (101.6, 15.6)])
+    assert dxfaudit.count_elements([far], box=BOX)["roads"] == 0
+
+
+def test_a_building_relation_also_tagged_landuse_does_not_crash():
+    """The context branch belongs to the *way* arm. Attached to the
+    relation arm it referenced a `pts` that does not exist there — dead for
+    every ordinary relation and a NameError for one carrying both tags."""
+    rel = {"type": "relation", "id": 9,
+           "tags": {"building": "yes", "landuse": "retail"},
+           "members": [{"role": "outer", "geometry": [
+               {"lon": 100.002, "lat": 14.002},
+               {"lon": 100.004, "lat": 14.002},
+               {"lon": 100.004, "lat": 14.004},
+               {"lon": 100.002, "lat": 14.002}]}]}
+    got = dxfaudit.count_elements([rel], box=BOX)
+    assert got["osm_buildings"] == 1
+
+
+def test_the_drawing_side_counts_centrelines_not_kerbs(tmp_path):
+    """Edges of pavement are offsets of the centrelines and are trimmed at
+    the junctions, so one road can leave anything from nought to four edge
+    lines. Counting them would be counting the drawing's own drafting."""
+    ezdxf = pytest.importorskip("ezdxf")
+
+    doc = ezdxf.new("R2010", setup=["linetypes"])
+    for layer in ("C-ROAD-CNTR", "C-ROAD-PATH", "C-ROAD-EDGE",
+                  "C-ROAD-EDGE", "C-ROAD-EDGE"):
+        doc.layers.add(layer) if layer not in doc.layers else None
+        doc.modelspace().add_lwpolyline([(0, 0), (10, 0)],
+                                        dxfattribs={"layer": layer})
+    path = tmp_path / "roads.dxf"
+    doc.saveas(path)
+    assert dxfaudit.drawing_counts(str(path))["roads"] == 2

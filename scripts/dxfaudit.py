@@ -42,6 +42,7 @@ The rules are restated here, from the OSM tags directly.
 from __future__ import annotations
 
 import argparse
+import collections
 import sqlite3
 import sys
 from pathlib import Path
@@ -87,6 +88,65 @@ def project_extent(db: str, project) -> dict:
 # Restated from the OSM wiki rather than imported from topo2cad, so a bug in
 # the drawing route's own reading of the tag cannot excuse itself here.
 AUDIT_ONEWAY_YES = {"yes", "true", "1", "-1", "reverse"}
+# The margin clip_runs() keeps beyond the extent, in degrees. A way that
+# ends up entirely outside it is not drawn, so it must not be counted as
+# missing either: an audit that cries wolf is read once and then ignored.
+AUDIT_CLIP_MARGIN = 0.0005
+# The tag rules are restated here rather than imported, like every other
+# rule in this file: an audit that asks the drawing's own classifier what
+# the source contained cannot catch a bug in that classifier, which is the
+# exact failure it exists to cover. Kept deliberately coarse — this asks
+# whether a whole category reached the drawing, not which layer each way
+# landed on.
+AUDIT_CONTEXT_LAYERS = ("C-HYDR-WATR", "C-LAND-VEGT", "C-LAND-ZONE",
+                        "C-RAIL-TRAK", "C-BNDY-BARR", "C-SITE-PARK",
+                        "C-ROAD-PLAZ", "C-UTIL-POWR", "C-UTIL-PIPE")
+ROAD_LAYERS = ("C-ROAD-CNTR", "C-ROAD-PATH", "C-ROAD-BRDG", "C-ROAD-TUNL")
+
+
+def audit_is_plaza(tags, pts) -> bool:
+    """A pedestrian square, which leaves the road bucket for C-ROAD-PLAZ.
+
+    Restated here, not imported. Counting these as centrelines is what made
+    this check's first run report a 3-way shortfall against a drawing that
+    was complete — the tool's assumption was wrong, not the drawing, which
+    is the order CLAUDE.md says to check them in.
+    """
+    return (tags.get("highway") == "pedestrian"
+            and str(tags.get("area", "")).lower() == "yes"
+            and len(pts) >= 4 and pts[0] == pts[-1])
+
+
+def audit_context_kind(tags):
+    """Which coarse context bucket a way belongs to, or None."""
+    if "waterway" in tags or tags.get("natural") == "water":
+        return "water"
+    if "railway" in tags:
+        return "rail"
+    if "leisure" in tags or "landuse" in tags:
+        return "land"
+    if "barrier" in tags:
+        return "barrier"
+    if "power" in tags or "pipeline" in tags or "man_made" in tags:
+        return "utility"
+    return None
+
+
+def inside_clip(pts, box) -> bool:
+    """Whether a way keeps at least a drawable run inside the extent.
+
+    clip_runs() cuts at the boundary plus a margin, so a way grazing the
+    corner can clip to nothing and is correctly absent from the drawing.
+    Counting it as missing would be a false alarm, which is a worse defect
+    here than the silent loss this looks for.
+    """
+    if box is None:
+        return True
+    s, w, n, e = box
+    inside = [1 for lon, lat in pts
+              if w - AUDIT_CLIP_MARGIN <= lon <= e + AUDIT_CLIP_MARGIN
+              and s - AUDIT_CLIP_MARGIN <= lat <= n + AUDIT_CLIP_MARGIN]
+    return len(inside) >= 2
 AUDIT_PATHS = {"footway", "path", "cycleway", "steps", "pedestrian",
                "bridleway", "corridor"}
 
@@ -129,12 +189,14 @@ def drawable_inner_rings(outers, inners):
     return courtyards, strays
 
 
-def count_elements(elements) -> dict:
+def count_elements(elements, box=None) -> dict:
     """Count what the source holds, from raw OSM elements."""
     from topo2cad import names_by_lang, poi_kind
 
     rings, inner_rings, road_names, poi_nodes, oneway = [], 0, set(), 0, 0
     stray_inners = 0
+    roads = 0
+    context = collections.Counter()
     for el in elements:
         tags = el.get("tags", {})
         if el["type"] == "node":
@@ -145,6 +207,15 @@ def count_elements(elements) -> dict:
             if "building" in tags and len(pts) >= 3:
                 rings.append(pts)
             elif "highway" in tags:
+                # Every road, path, bridge and tunnel the source holds and
+                # the extent keeps. Nothing counted these, so a drawing
+                # with every road deleted audited as COMPLETE: 15 entities
+                # removed at Lopburi, not one check moved.
+                if inside_clip(pts, box):
+                    if audit_is_plaza(tags, pts):
+                        context["plaza"] += 1
+                    else:
+                        roads += 1
                 th, en = names_by_lang(tags)
                 if th or en:
                     road_names.add(th or en)
@@ -154,6 +225,13 @@ def count_elements(elements) -> dict:
                         or tags.get("junction") == "roundabout") \
                         and tags["highway"] not in AUDIT_PATHS:
                     oneway += 1
+            else:
+                # Water, rail, land use, barriers, utilities — the linework
+                # that gives a site plan its context. Nothing counted any
+                # of it either.
+                kind = audit_context_kind(tags)
+                if kind and inside_clip(pts, box):
+                    context[kind] += 1
         elif el["type"] == "relation" and "building" in tags:
             outers, inners = [], []
             for m in el.get("members", []):
@@ -174,7 +252,9 @@ def count_elements(elements) -> dict:
     return {"rings": rings, "osm_buildings": len(rings),
             "inner_rings": inner_rings, "stray_inners": stray_inners,
             "road_names": len(road_names), "poi_nodes": poi_nodes,
-            "oneway_roads": oneway, "ml_added": 0}
+            "oneway_roads": oneway, "ml_added": 0,
+            "roads": roads, "context": context,
+            "context_total": sum(context.values())}
 
 
 def source_counts(lat, lon, width, height, dem_dir, use_ml=True) -> dict:
@@ -188,7 +268,8 @@ def source_counts(lat, lon, width, height, dem_dir, use_ml=True) -> dict:
     # made from would prove only that the file matches itself — the same
     # trap as dxfdiff reporting IDENTICAL while both routes drop the same
     # feature. An audit re-queries.
-    counts = count_elements(fetch_osm(s, w, n, e, cache=False))
+    counts = count_elements(fetch_osm(s, w, n, e, cache=False),
+                            box=(s, w, n, e))
 
     if use_ml and dem_dir:
         ms = fetch_ms_buildings(s, w, n, e, Path(dem_dir) / "ms_cache")
@@ -216,7 +297,7 @@ def drawing_counts(path) -> dict:
 
     doc = ezdxf.readfile(path)
     msp = doc.modelspace()
-    buildings = anno = pois = arrows = 0
+    buildings = anno = pois = arrows = roads = context = 0
     for e in msp:
         t = e.dxftype()
         # A --layer-by run splits C-BLDG-OUTL into C-BLDG-OUTL-HOUSE and
@@ -230,8 +311,18 @@ def drawing_counts(path) -> dict:
             pois += 1        # CIRCLE: drawings made before the POI block
         elif t == "INSERT" and layer.startswith(ARROW_LAYER):
             arrows += 1
+        elif t in ("LWPOLYLINE", "POLYLINE") and layer.startswith(ROAD_LAYERS):
+            # Centrelines only. The edges of pavement are offsets of these
+            # and are now trimmed at the junctions, so one road can leave
+            # anything from nought to four edge lines: counting them would
+            # be counting the drawing's own drafting, not its content.
+            roads += 1
+        elif t in ("LWPOLYLINE", "POLYLINE") and \
+                layer.startswith(AUDIT_CONTEXT_LAYERS):
+            context += 1
     return {"building_polylines": buildings, "annotation": anno,
-            "poi_symbols": pois, "oneway_arrows": arrows}
+            "poi_symbols": pois, "oneway_arrows": arrows,
+            "roads": roads, "context": context}
 
 
 def main(argv=None) -> int:
@@ -300,9 +391,16 @@ def main(argv=None) -> int:
         ("building outlines", expected_outlines, got["building_polylines"],
          f"{src['osm_buildings']} OSM + {src['inner_rings']} courtyard "
          f"ring(s) + {src['ml_added']} ML"),
+        ("road centrelines", src.get("roads", 0), got.get("roads", 0),
+         "ways tagged highway=*, clipped to the extent"),
         ("landmark symbols", src["poi_nodes"], got["poi_symbols"],
          "named amenity/tourism/historic nodes, curated"),
     ]
+    if src.get("context_total"):
+        parts = ", ".join(f"{n} {k}" for k, n in
+                          sorted(src["context"].items()))
+        checks.append(("context linework", src["context_total"],
+                       got.get("context", 0), parts))
     # Arrow *count* is not a source count — spacing along the run decides how
     # many a road gets, and a clipped run may carry none. What can be checked
     # is that a source with one-way roads did not produce a drawing with no

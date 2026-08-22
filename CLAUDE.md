@@ -1065,7 +1065,34 @@ polyline — `buffer(0)` bites a notch instead — so those are reported as a
 note rather than counted as missing. One-way direction is checked the same
 careful way: arrow *count* is not a source count (spacing decides how many a
 run gets), so what it asserts is that a source with one-way roads did not
-produce a drawing with no direction on it at all. It counts **both** building layers: an unnamed footprint draws on
+produce a drawing with no direction on it at all. **The audit checked a third of the drawing and said "COMPLETE".** It
+counted building outlines, landmark symbols and one-way presence — not
+roads, not water, rail, land use, barriers or utilities. Roads are the
+largest category in the drawing and nothing looked at them: deleting every
+road entity from a Lopburi sheet left the audit reporting "COMPLETE — the
+drawing carries everything the source holds", and deleting all 681 road,
+waterway, railway, utility and land-use entities at Pathum Wan moved only
+the one-way check, which passes at any site without one-way tagging. False
+reassurance from a tool you are told to run before a submission.
+
+`road centrelines` and `context linework` are now checks. Both count the
+source ways the extent keeps (`inside_clip()`, using the same margin
+`clip_runs()` does, so a way grazing the corner is not reported missing)
+and compare with `>=`, because clipping only ever splits a way into more
+runs. Only centrelines are counted on the drawing side: the edges of
+pavement are offsets of these and are trimmed at the junctions, so one road
+leaves anything from nought to four edge lines, and counting them would be
+counting the drawing's own drafting rather than its content.
+
+The plaza rule had to be restated here (`audit_is_plaza()`) and that is the
+part worth remembering. Its absence made the check's *first* run report a
+3-way shortfall against a drawing that was complete: 6 `highway=pedestrian`
++ `area=yes` squares draw closed on `C-ROAD-PLAZ`, not as centrelines. The
+tool's assumption was wrong, not the drawing — the order this file already
+tells you to check them in. Verified against five real drawings at three
+sites over two extents and three routes, all COMPLETE, before trusting it.
+
+It counts **both** building layers: an unnamed footprint draws on
 `C-BLDG-UNNM`, and counting only `C-BLDG-OUTL` had it report a SHORTFALL
 against a drawing carrying every building the source held — 23 of 77 at
 Pathum Wan. An audit that cries wolf is read once and then ignored, so a
