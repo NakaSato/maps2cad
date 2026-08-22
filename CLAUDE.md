@@ -176,6 +176,17 @@ drawing against the very snapshot it was made from proves only that the
 file matches itself — the same trap as `dxfdiff` reporting IDENTICAL while
 both routes drop the same feature. An audit re-queries.
 
+**Both stacks keep their own endpoint list, and the two must not
+disagree.** They are separate on purpose — the disjoint dependency sets —
+but `topo2cad.py`'s had drifted from the measured order documented below:
+it was missing `lz4.overpass-api.de` (11 s on a query `kumi.systems` took
+114 s and then failed on) and ended at `maps.mail.ru`, which answers
+*correctly* after 1142 s. Nineteen minutes is not a fallback, it is a hang,
+and it is what a run fell into whenever the first two returned 504 and 500
+within a minute of each other — the exact failure this file already
+describes. A test compares the two lists host for host and refuses the
+19-minute mirror.
+
 `generate_detailed_site_map.py` has none of that cache — osmnx keeps its
 own — but it had no *retry* either: one endpoint, no rotation, so a single
 "Connection refused" from `overpass-api.de` lost a whole run while the same
@@ -1073,6 +1084,24 @@ chain are two places while the same shop mapped twice is one. `dxfaudit.py`
 counts only `C-ANNO-SYMB` as landmark symbols, which is correct rather than
 an oversight: it audits the drawing against its OSM source, and a place
 from another source is not OSM's to account for.
+
+**The drawing rules live in `cad_rules.py`, the database in
+`stage_db.py`.** `stage_db.py` had grown to 2,000 lines by being both — the
+staging schema *and* the rulebook every writer applies. They are different
+things, so the rules moved: where a label anchors, how a ring closes, where
+a kerb stops at a junction, how big text is at a plot scale, which tags ride
+as XDATA, what a bearing reads as, which fonts a drawing needs. Nothing in
+`cad_rules.py` touches a connection — a test asserts it imports neither
+`stage_db` nor `sqlite3` — and the dependency runs one way, which is what
+lets a drawing rule be tested without a database and stops the rulebook
+growing a schema.
+
+`stage_db.py` **re-exports every name, in full and by name**, because eight
+modules and the tests call them as `stage_db.<name>` and this file names
+them that way: the seam moved, the call sites did not. A test checks the
+facade is complete and that the names are the *same objects*, not copies
+that can drift. Verified after the move: all four routes still IDENTICAL,
+`dxfaudit` COMPLETE, and compose/poster/site-map runs unchanged.
 
 **Two ways to reach a DXF, and they must agree.** `topo2cad.py` draws during
 extraction; `db2dxf.py` draws from the SQLite staging layer (`stage_db.py`)

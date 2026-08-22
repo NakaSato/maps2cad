@@ -115,8 +115,9 @@ def test_a_gis_feature_with_no_columns_still_names_its_file():
     src = (SCRIPTS / "gis2cad.py").read_text(encoding="utf-8")
     assert '"@source": f"user_gis:{path.name}"' in src
     # '@' marks it as assigned here, so a user column named "source" wins
-    # its own name back.
-    assert "@id=" in (SCRIPTS / "stage_db.py").read_text(encoding="utf-8")
+    # its own name back. xdata_tags() lives in cad_rules.py — the drawing
+    # rules, which is what it is.
+    assert "@id=" in (SCRIPTS / "cad_rules.py").read_text(encoding="utf-8")
 
 
 # ------------------------------------------------------ the parity check

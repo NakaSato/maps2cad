@@ -746,3 +746,25 @@ def test_the_poster_and_the_drawing_share_the_rule():
     assert "auto_contour_interval" in src
     # ...and does not keep a copy of the ladder to drift against
     assert "(0.5, 1, 2, 5, 10, 20, 50)" not in src
+
+
+def test_both_stacks_agree_on_the_overpass_endpoints():
+    """The two stacks keep separate lists on purpose — disjoint dependency
+    sets — but they must not disagree about which mirrors are worth trying.
+    topo2cad's had drifted: it was missing lz4 (11 s for a query kumi took
+    114 s on) and ended at maps.mail.ru, which answers correctly after 1142
+    seconds. Nineteen minutes is not a fallback, it is a hang, and it is
+    what a run fell into when the first two returned 504 and 500 within a
+    minute of each other.
+    """
+    import re
+
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    gen = (scripts / "generate_detailed_site_map.py").read_text(
+        encoding="utf-8")
+    theirs = [u.rstrip("/") for u in
+              re.findall(r'"(https://[^"]*overpass[^"]*)"', gen)]
+    ours = [u.replace("/interpreter", "").rstrip("/")
+            for u in topo2cad.OVERPASS_URLS]
+    assert ours == theirs, f"topo2cad {ours} vs site map {theirs}"
+    assert not any("mail.ru" in u for u in ours), "the 19-minute mirror"

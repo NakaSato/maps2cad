@@ -1426,3 +1426,33 @@ def test_a_landmark_list_without_a_centre_states_no_distance(db):
          "poi_type": "school", "display_name": "โรงเรียนบ้านนา"}])
     rows = stage_db.poi_inventory_rows(conn, pid)
     assert rows[0]["distance_m"] == "" and rows[0]["bearing"] == ""
+
+
+def test_the_rules_do_not_import_the_database():
+    """cad_rules.py holds what a drawing looks like; stage_db.py holds what
+    the database keeps. The dependency runs one way, and it staying that way
+    is what lets a drawing rule be tested without a connection."""
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "cad_rules.py").read_text(encoding="utf-8")
+    for line in src.split("\n"):
+        stripped = line.strip()
+        assert not stripped.startswith(("import stage_db", "from stage_db")), \
+            line
+    assert "sqlite3" not in src
+
+
+def test_every_rule_is_still_reachable_through_stage_db():
+    """Eight modules and the documentation call these as stage_db.<name>.
+    The seam moved; the call sites did not, and must not have to."""
+    import cad_rules
+
+    import types
+
+    public = [n for n in dir(cad_rules)
+              if not n.startswith("_")
+              and not isinstance(getattr(cad_rules, n), types.ModuleType)]
+    missing = [n for n in public if not hasattr(stage_db, n)]
+    assert not missing, missing
+    # and it is the same object, not a copy that can drift
+    assert stage_db.interior_point is cad_rules.interior_point
+    assert stage_db.carriageway_edges is cad_rules.carriageway_edges

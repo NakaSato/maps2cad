@@ -32,10 +32,17 @@ import requests
 # geometry and CRS helpers below are pure and stay importable (and testable,
 # and usable from mapposter.py) without the DEM and CAD stack.
 
+# Measured, not assumed, and the order is the measurement: the same query
+# took 11 s on lz4 and 114 s on kumi.systems, which then answered 500.
+# maps.mail.ru answered *correctly* after 1142 s — nineteen minutes is not a
+# fallback, it is a hang, so it is not here. It used to be third, which is
+# exactly what a run fell into when the first two returned 504 and 500
+# within a minute of each other; generate_detailed_site_map.py already had
+# the right list and this one had drifted from it.
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 HEADERS = {"User-Agent": "topo2cad/1.0 (personal CAD export script)"}
 

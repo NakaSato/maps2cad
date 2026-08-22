@@ -595,9 +595,12 @@ def main(argv=None) -> int:
         print(f"  {n_s} spot heights, {n_h} hatched area(s), "
               f"{n_f} flow arrows")
     if n_nofit:
+        # a.scale is still the string "fit" when no sheet was asked for —
+        # compose.py's closing re-issue passes none — and ",d" on a string
+        # raises. Name the scale only when there is one.
+        at = f" at 1:{a.scale:,}" if isinstance(a.scale, int) else ""
         print(f"  {n_nofit} B### code(s) left off footprints too small to "
-              f"hold them at 1:{a.scale:,} — all of them are in "
-              "building_inventory.csv")
+              f"hold them{at} — all of them are in building_inventory.csv")
     if n_skipped:
         # Say it out loud: an unlabelled building layer is what --names-only
         # is for, but it looks identical to a bug from the drawing alone.
