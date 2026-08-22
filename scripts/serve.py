@@ -108,6 +108,114 @@ JOBS_LOCK = threading.Lock()
 COORD_RE = re.compile(
     r"^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$")
 
+# A coordinate reaches a person in whatever shape the thing that gave it to
+# them uses: a Google Maps link, the app's share sheet, a GPS handset in
+# degrees-minutes-seconds, a colleague's email. Refusing everything but
+# "15.8, 104.4" makes the user the converter, so read them all. Order
+# matters: a URL is tried first because its query string contains decimals
+# that the plain-pair rule would otherwise pick up out of the wrong field.
+_URL_LATLON = [
+    # /maps/@lat,lon,17z  and  /maps/place/Name/@lat,lon,17z
+    re.compile(r"/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)"),
+    # ?q=lat,lon  ?ll=lat,lon  ?center=lat,lon  ?daddr=lat,lon
+    re.compile(r"[?&](?:q|ll|center|daddr|sll)=(-?\d+(?:\.\d+)?),"
+               r"(-?\d+(?:\.\d+)?)"),
+    # openstreetmap.org/#map=17/lat/lon
+    re.compile(r"#map=[\d.]+/(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)"),
+    # openstreetmap.org/?mlat=..&mlon=..
+    re.compile(r"[?&]mlat=(-?\d+(?:\.\d+)?).*?[?&]mlon=(-?\d+(?:\.\d+)?)"),
+    # geo:lat,lon  (Android share sheet, RFC 5870)
+    re.compile(r"^geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)"),
+]
+
+# 15°50'02.4"N   15 50 2.4 N   15°50.04'N   N15°50'02"
+def _dms_part(n: str) -> str:
+    """One half of a degrees-minutes-seconds pair, with numbered groups so
+    the two halves can sit in the same expression."""
+    return (rf"(?:(?P<pre{n}>[NSEWnsew])\s*)?"
+            rf"(?P<deg{n}>-?\d+(?:\.\d+)?)\s*[°ºd]?\s*"
+            rf"(?:(?P<min{n}>\d+(?:\.\d+)?)\s*['′m]\s*)?"
+            rf"(?:(?P<sec{n}>\d+(?:\.\d+)?)\s*(?:\"|″|'')\s*)?"
+            rf"(?P<post{n}>[NSEWnsew])?")
+
+
+_DMS_PAIR = re.compile(r"^\s*" + _dms_part("1") + r"\s*[,; ]\s*"
+                       + _dms_part("2") + r"\s*$")
+
+
+def _dms_value(deg, minutes, seconds, hemi):
+    v = float(deg) + float(minutes or 0) / 60 + float(seconds or 0) / 3600
+    if hemi and hemi.upper() in ("S", "W"):
+        v = -abs(v)
+    return v
+
+
+def parse_coords(text: str) -> tuple[float, float]:
+    """Read a coordinate in whatever shape it arrived in.
+
+    Accepts a decimal pair, hemisphere letters, degrees-minutes-seconds, and
+    the URLs Google Maps, OpenStreetMap, Apple Maps and the Android share
+    sheet hand out. Raises BadRequest naming what it does accept — a parser
+    this permissive that still fails should say why rather than repeat the
+    one format the user already tried.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise BadRequest("Enter a latitude and longitude.")
+
+    if "goo.gl" in raw or "maps.app" in raw:
+        raise BadRequest(
+            "That is a shortened Google Maps link, which only Google can "
+            "expand. Open it in a browser and copy the address bar once it "
+            "has loaded — that URL carries the coordinate — or right-click "
+            "the map pin and copy the numbers.")
+
+    if "://" in raw or raw.startswith("geo:"):
+        for rx in _URL_LATLON:
+            m = rx.search(raw)
+            if m:
+                return _check(float(m.group(1)), float(m.group(2)), raw)
+        raise BadRequest(
+            f"No coordinate found in that link. In Google Maps, right-click "
+            f"the spot and click the latitude/longitude at the top of the "
+            f"menu to copy it, then paste that here.")
+
+    # Strip the labels people paste along with the numbers
+    cleaned = re.sub(r"(?i)\b(lat|latitude|lon|lng|long|longitude)\b\s*[:=]?",
+                     " ", raw).strip(" ,;")
+
+    m = COORD_RE.match(cleaned)
+    if m:
+        return _check(float(m.group(1)), float(m.group(2)), raw)
+
+    m = _DMS_PAIR.match(cleaned)
+    if m:
+        h1 = (m.group("pre1") or m.group("post1") or "").upper()
+        h2 = (m.group("pre2") or m.group("post2") or "").upper()
+        a = _dms_value(m.group("deg1"), m.group("min1"), m.group("sec1"), h1)
+        b = _dms_value(m.group("deg2"), m.group("min2"), m.group("sec2"), h2)
+        # Hemisphere letters beat position: "104°E, 15°N" is still lat 15.
+        if h1 in ("E", "W") and h2 in ("N", "S"):
+            a, b = b, a
+        return _check(a, b, raw)
+
+    raise BadRequest(
+        f"Could not read “{raw}” as a coordinate. Any of these work: "
+        "15.83384548, 104.39445555 · 15.8338 N, 104.3944 E · "
+        "15°50'02\"N 104°23'40\"E · a Google Maps or OpenStreetMap link.")
+
+
+def _check(lat: float, lon: float, raw: str) -> tuple[float, float]:
+    if not (-90 <= lat <= 90):
+        # The one mistake worth naming: a swapped pair reads as a latitude
+        # past the pole, and silently swapping it back would be a guess.
+        extra = (" — that looks like longitude first; this field takes "
+                 "latitude first.") if -90 <= lon <= 90 else "."
+        raise BadRequest(f"Latitude {lat} is outside -90..90{extra}")
+    if not (-180 <= lon <= 180):
+        raise BadRequest(f"Longitude {lon} is outside -180..180.")
+    return lat, lon
+
 GOV_FIELDS = [
     ("project_name", "ชื่อโครงการ / Project name"),
     ("site_location", "สถานที่ตั้ง / Site location"),
@@ -164,18 +272,6 @@ def parse_form(form: dict[str, list[str]]) -> dict:
     def one(key, default=""):
         return (form.get(key) or [default])[0].strip()
 
-    coords = one("coords")
-    lat_s, lon_s = one("lat"), one("lon")
-    if coords:
-        m = COORD_RE.match(coords)
-        if not m:
-            raise BadRequest(
-                f"Could not read “{coords}” as coordinates. Use "
-                "“latitude, longitude”, for example 15.83384548, 104.39445555.")
-        lat_s, lon_s = m.group(1), m.group(2)
-    if not lat_s or not lon_s:
-        raise BadRequest("Enter a latitude and longitude.")
-
     def number(value, label, lo, hi):
         try:
             n = float(value)
@@ -185,8 +281,16 @@ def parse_form(form: dict[str, list[str]]) -> dict:
             raise BadRequest(f"{label} must be between {lo} and {hi}.")
         return n
 
-    lat = number(lat_s, "Latitude", -90, 90)
-    lon = number(lon_s, "Longitude", -180, 180)
+    coords = one("coords")
+    lat_s, lon_s = one("lat"), one("lon")
+    if coords:
+        lat, lon = parse_coords(coords)
+    elif lat_s or lon_s:
+        # Two separate fields, as the browser's own geolocation sends them.
+        lat = number(lat_s, "Latitude", -90, 90)
+        lon = number(lon_s, "Longitude", -180, 180)
+    else:
+        raise BadRequest("Enter a latitude and longitude.")
     # 1000 x 750 m — larger than A3 holds at 1:2000, so a sheet export
     # lands on 1:5000 (A3), 1:2500 (A2) or 1:2000 (A1).
     width = number(one("width", "1000"), "Width", 20, 20000)

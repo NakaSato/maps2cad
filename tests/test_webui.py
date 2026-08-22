@@ -148,3 +148,19 @@ def test_the_browser_scale_loop_agrees_with_python():
                          text=True, check=True)
     for case, got in zip(cases, json.loads(out.stdout)):
         assert got == webui.fitting_scale(*case), case
+
+
+# ------------------------------------------------------- the simplified form
+def test_the_presets_offer_extents_whose_scale_is_stated_correctly():
+    """Each preset names the scale it plots at on A3. A preset that quotes
+    the wrong one is worse than no preset: it is a promise on the button."""
+    for w, h, _name, _why, scale in webui.PRESETS:
+        got = webui.fitting_scale(float(w), float(h), "A3")
+        assert scale == f"1:{got:,}", (w, h, scale, got)
+
+
+def test_the_form_still_opens_the_fold_for_a_government_run():
+    """The title block lives inside the fold; a government run must not have
+    to go looking for it."""
+    assert '<details class="adv" id="adv" open>' in render_form(
+        {"profile": "government"})

@@ -1020,6 +1020,24 @@ scales. `fitting_scale()` returns None where `sheet.py` clamps to its
 largest scale: a form that quotes 1:20,000 for an extent nothing holds is
 telling the user it fits when the sheet would crop it.
 
+**A coordinate is read in whatever shape it arrived in.** `parse_coords()`
+takes a decimal pair, hemisphere letters, degrees-minutes-seconds, and the
+URLs Google Maps, OpenStreetMap, Apple Maps and the Android share sheet
+hand out — because that is how a coordinate actually reaches someone, and
+accepting only `15.8, 104.4` made the user do the conversion. Three rules
+it must keep. Hemisphere letters beat position, so a handset that prints
+longitude first still lands on the right continent. A swapped pair is
+*named*, never quietly swapped back: silently correcting it is a guess
+about what someone meant, and it would be wrong at any site where both
+numbers are valid latitudes. And a `goo.gl` short link says that only
+Google can expand it rather than "could not read that" — the app does not
+call out to resolve one, and the user needs to know why, not that it
+failed. The form is three questions now: where, how much ground, and a fold
+holding everything else. The three extent presets each state the scale they
+plot at on A3 and a test checks that claim against
+`webui.fitting_scale()` — a wrong number on a button is a promise the
+drawing then breaks.
+
 ## Conventions
 
 - Generated output goes to `output/` (gitignored). DEM `.tif` tiles, `ms_cache/`,

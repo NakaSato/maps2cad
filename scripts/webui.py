@@ -207,6 +207,37 @@ font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums;
 font-weight:600;letter-spacing:.01em}
 .readout.warn{border-left-color:var(--survey)}
 .readout.over{border-left-color:var(--marker)}
+/* Step 1 is one field. The location button sits beside it rather than
+   under it, so the row still reads as a single question. */
+.locrow{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.locfield{flex:1 1 420px;min-width:260px;max-width:44rem}
+.locfield input{max-width:none}
+button.ghost{margin-top:0;padding:9px 16px;background:transparent;
+color:var(--ink);border:1px solid var(--rule);font-weight:400;font-size:14px;
+white-space:nowrap}
+button.ghost:hover{border-color:var(--survey);color:var(--survey);
+background:transparent}
+button.ghost:disabled{opacity:.55;cursor:default;border-color:var(--rule);
+color:var(--soft)}
+/* Three presets instead of two number fields nobody can price. Each says
+   what it is for and what it plots at, because the extent alone does not
+   tell you which of those you are asking for. */
+.presets{display:grid;gap:12px;
+grid-template-columns:repeat(auto-fit,minmax(230px,1fr));max-width:96rem}
+button.preset{margin:0;display:flex;flex-direction:column;gap:3px;
+align-items:flex-start;text-align:left;padding:13px 15px;
+background:var(--sheet);color:var(--ink);border:1px solid var(--rule);
+font-weight:400;cursor:pointer}
+button.preset:hover{border-color:var(--survey);background:var(--faint)}
+button.preset.on{border-color:var(--survey);border-width:1.5px;
+background:var(--faint)}
+.preset-name{font-size:15px;font-weight:600}
+button.preset.on .preset-name{color:var(--survey)}
+.preset-size{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:12.5px;color:var(--soft);font-variant-numeric:tabular-nums}
+.preset-why{font-size:12.5px;color:var(--soft);line-height:1.45}
+.extent{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}
+.extent>div{flex:0 1 170px}
 """
 
 
@@ -321,6 +352,19 @@ def history_table(rows: list[dict]) -> str:
     return "".join(out)
 
 
+# What the three preset buttons set, and what each is for. The scale shown
+# is what that extent plots at on A3, the default sheet — which is the
+# whole point of offering them: the pairing is what decides the scale, and
+# picking an extent without knowing that is how a site plan comes out as a
+# locality map.
+PRESETS = [
+    ("200", "150", "Site plan", "the parcel and its frontage", "1:1,000"),
+    ("500", "400", "Site + context", "the block around it", "1:2,000"),
+    ("1000", "750", "Locality", "where the site sits in the district",
+     "1:5,000"),
+]
+
+
 def form_page(values: dict, error: str, recent: str,
               gov_fields, basemap_choices) -> bytes:
     v = values or {}
@@ -355,76 +399,94 @@ def form_page(values: dict, error: str, recent: str,
         f"{html.escape(label)}</option>"
         for k, label in basemap_choices.items())
 
-    # Advanced stays open when the run that bounced set one of its fields,
-    # so an error message never points at a control the page has hidden.
+    presets = "".join(
+        f'<button type="button" class="preset" data-w="{w}" data-h="{h}">'
+        f'<span class="preset-name">{html.escape(name)}</span>'
+        f'<span class="preset-size">{w} × {h} m</span>'
+        f'<span class="preset-why">{html.escape(why)} · {scale} on A3</span>'
+        f'</button>' for w, h, name, why, scale in PRESETS)
+
+    # The fold opens by itself when the run that bounced had set something
+    # inside it, so an error never points at a control the page has hidden.
     advanced_used = any(v.get(k) for k in
                         ("cad_sheet", "cad_scale", "basemap", "sheet_size",
-                         "title"))
+                         "title", "export")) or sel == "government"
     viewport_js = json.dumps({k: list(viewport_mm(k)) for k in SHEET_MM},
                              separators=(",", ":"))
     scales_js = json.dumps(ROUND_SCALES, separators=(",", ":"))
     return page("maps2cad", f"""
 <p class="eyebrow">GPS coordinate → CAD drawing + site map</p>
 <h1>maps2cad</h1>
-<p class="lede">Enter a WGS 84 coordinate and the ground area to cover. You get a
-DXF in true UTM metres — double-line roads, contours, and every building labelled
-at its centre — plus a print-ready site map sheet and the building inventory CSV
-that resolves the B### codes.</p>
+<p class="lede">Give it a point on the ground. You get a DXF in true UTM
+metres — double-line roads, contours, every building labelled — plus a
+print-ready site map sheet and the inventory CSV that resolves the codes.</p>
 {err}
 <form method="post" action="/generate">
   <section class="sect">
-    <h2 class="sect-h">Where and how much ground</h2>
-    <div class="grid g2">
-      <div><label for="coords">Coordinates (latitude, longitude)</label>
-        <input type="text" id="coords" name="coords" placeholder="15.83384548, 104.39445555"
-               value="{val('coords')}" autofocus></div>
-      <div class="grid g2" style="gap:12px">
-        <div><label for="width">Width (m)</label>
-          <input type="number" id="width" name="width" step="any" min="20"
-                 value="{val('width', 1000)}"></div>
-        <div><label for="height">Height (m)</label>
-          <input type="number" id="height" name="height" step="any" min="20"
-                 value="{val('height', 750)}"></div>
+    <h2 class="sect-h">1 · Where</h2>
+    <div class="locrow">
+      <div class="locfield">
+        <label for="coords">Paste a coordinate, or a Google Maps link</label>
+        <input type="text" id="coords" name="coords"
+               placeholder="15.83384548, 104.39445555"
+               value="{val('coords')}" autofocus autocomplete="off"
+               spellcheck="false">
       </div>
+      <button type="button" class="ghost" id="here">Use my location</button>
+    </div>
+    <p class="note" id="loc_note">Anything readable works: a decimal pair,
+    <code>15°50'02"N 104°23'40"E</code>, a Google Maps or OpenStreetMap link,
+    or the <code>geo:</code> link a phone shares.</p>
+  </section>
+
+  <section class="sect">
+    <h2 class="sect-h">2 · How much ground</h2>
+    <div class="presets">{presets}</div>
+    <div class="extent">
+      <div><label for="width">Width (m)</label>
+        <input type="number" id="width" name="width" step="any" min="20"
+               value="{val('width', 1000)}"></div>
+      <div><label for="height">Height (m)</label>
+        <input type="number" id="height" name="height" step="any" min="20"
+               value="{val('height', 750)}"></div>
     </div>
     <p class="readout" id="readout"><b id="readout_scale">—</b>
       <span id="readout_note">Enter an extent to see the plot scale.</span></p>
   </section>
 
-  <section class="sect">
-    <h2 class="sect-h">What to produce</h2>
-    <div class="grid g3">
-      <div><label for="export">Export</label>
-        <select id="export" name="export" onchange="formSync()">
-          <option value="both"{" selected" if v.get('export', 'both') == 'both' else ""}>CAD + site map</option>
-          <option value="cad"{" selected" if v.get('export') == 'cad' else ""}>CAD only (DXF)</option>
-          <option value="map"{" selected" if v.get('export') == 'map' else ""}>Site map only (PDF)</option>
-        </select></div>
-      <div><label for="profile">Layout</label>
-        <select id="profile" name="profile" onchange="formSync()">
-          <option value="standard"{" selected" if sel == "standard" else ""}>Standard</option>
-          <option value="government"{" selected" if sel == "government" else ""}>Thai government submission</option>
-        </select></div>
-      <div><label for="title">Map title</label>
-        <input type="text" id="title" name="title" value="{val('title', 'Detailed Site Map')}"></div>
-    </div>
-    <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
-      <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
-      <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
-    </div>
-    <p class="note">Every run also gets the B&amp;W poster, one-way direction
-    arrows, every mapped landmark and colour plot previews — nothing to
-    remember to tick. Monochrome CAD stays on the command line, since it
-    drops the layer colours.</p>
-    <p class="note" id="gov_note" style="display:none">The government sheet
-    renders what its spec lists: one-way arrows and the background map are
-    left off it, and apply to the CAD export and the poster only.</p>
-  </section>
+  <button type="submit" data-idle="Generate" data-busy="Generating…">
+  Generate</button>
+  <div id="busy"><div class="load" data-estimate="60">
+    <div class="load-head"><span class="load-title">Generating…</span>
+      <span class="load-time">1:00</span></div>
+    <div class="load-bar"></div>
+    <p class="load-note">Querying Overpass, reading the elevation tile,
+    tracing contours and drawing. Measured runs take 18–105 s; the first
+    export in a new 1°×1° square also downloads a ~40 MB elevation tile.</p>
+    <p class="load-note load-over" style="display:none">Over the estimate —
+    still working. A cold start or a fresh elevation tile adds a minute or
+    so. Leave this tab open.</p>
+  </div></div>
 
   <details class="adv" id="adv"{" open" if advanced_used else ""}>
-    <summary>Sheet sizes, plot scale and background map</summary>
+    <summary>Everything else — output, layout, sheets, background map</summary>
     <div class="adv-body">
       <div class="grid g3">
+        <div><label for="export">Export</label>
+          <select id="export" name="export" onchange="formSync()">
+            <option value="both"{" selected" if v.get('export', 'both') == 'both' else ""}>CAD + site map</option>
+            <option value="cad"{" selected" if v.get('export') == 'cad' else ""}>CAD only (DXF)</option>
+            <option value="map"{" selected" if v.get('export') == 'map' else ""}>Site map only (PDF)</option>
+          </select></div>
+        <div><label for="profile">Layout</label>
+          <select id="profile" name="profile" onchange="formSync()">
+            <option value="standard"{" selected" if sel == "standard" else ""}>Standard</option>
+            <option value="government"{" selected" if sel == "government" else ""}>Thai government submission</option>
+          </select></div>
+        <div><label for="title">Map title</label>
+          <input type="text" id="title" name="title" value="{val('title', 'Detailed Site Map')}"></div>
+      </div>
+      <div class="grid g3" style="margin-top:16px">
         <div><label for="cad_sheet">CAD sheet (paper space)</label>
           <select id="cad_sheet" name="cad_sheet" onchange="formSync()">
             {opts(["A3", "A2", "A1", "A0", "A4"], v.get('cad_sheet', 'A3'))}
@@ -440,29 +502,23 @@ that resolves the B### codes.</p>
         <div><label for="basemap">Background map</label>
           <select id="basemap" name="basemap">{basemap_opts}</select></div>
       </div>
-      <p class="note">The background map is a backdrop, not survey data: it
-      lands on its own layer so a drafter can drop it without dropping
-      imagery they traced from.</p>
+      <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:18px">
+        <label class="check"><input type="checkbox" name="codes" checked> Label unnamed features by type (school, cafe)</label>
+        <label class="check"><input type="checkbox" name="final"> Final (remove DRAFT watermark)</label>
+      </div>
+      <p class="note">Every run also gets the B&amp;W poster, one-way
+      direction arrows, every mapped landmark and colour plot previews —
+      nothing to remember to tick.</p>
+      <p class="note" id="gov_note" style="display:none">The government
+      sheet renders what its spec lists: one-way arrows and the background
+      map are left off it, and apply to the CAD export and the poster
+      only.</p>
+      <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
+        <legend>Title block</legend>
+        <div class="grid g2">{gov_inputs}</div>
+      </fieldset>
     </div>
   </details>
-
-  <fieldset id="gov" style="display:{'block' if sel == 'government' else 'none'}">
-    <legend>Title block</legend>
-    <div class="grid g2">{gov_inputs}</div>
-  </fieldset>
-  <button type="submit" data-idle="Generate" data-busy="Generating…">
-  Generate</button>
-  <div id="busy"><div class="load" data-estimate="60">
-    <div class="load-head"><span class="load-title">Generating…</span>
-      <span class="load-time">1:00</span></div>
-    <div class="load-bar"></div>
-    <p class="load-note">Querying Overpass, reading the elevation tile,
-    tracing contours and drawing. Measured runs take 18–105 s; the first
-    export in a new 1°×1° square also downloads a ~40 MB elevation tile.</p>
-    <p class="load-note load-over" style="display:none">Over the estimate —
-    still working. A cold start or a fresh elevation tile adds a minute or
-    so. Leave this tab open.</p>
-  </div></div>
 </form>
 <h2>Staged projects <a href="/projects">Browse and edit names →</a></h2>
 <p class="note">Correct building names on a staged project and re-issue the
@@ -498,6 +554,13 @@ function formSync(){{
 
   var w = parseFloat(document.getElementById('width').value);
   var h = parseFloat(document.getElementById('height').value);
+  // Light up the preset this extent came from, so the buttons read as the
+  // current choice rather than as three things that fire and forget.
+  document.querySelectorAll('.preset').forEach(function(b){{
+    var on = parseFloat(b.dataset.w) === w && parseFloat(b.dataset.h) === h;
+    b.classList.toggle('on', on);
+  }});
+
   var size = document.getElementById('cad_sheet').value;
   var chosen = document.getElementById('cad_scale').value;
   var box = document.getElementById('readout');
@@ -544,9 +607,39 @@ function formSync(){{
     }}
   }}
 }}
+document.querySelectorAll('.preset').forEach(function(b){{
+  b.addEventListener('click', function(){{
+    document.getElementById('width').value = b.dataset.w;
+    document.getElementById('height').value = b.dataset.h;
+    formSync();
+  }});
+}});
 ['width','height'].forEach(function(id){{
   document.getElementById(id).addEventListener('input', formSync);
 }});
+// Geolocation is a convenience, never a requirement: the button says what
+// happened either way rather than failing silently, and the field stays
+// typeable if the browser refuses.
+(function(){{
+  var btn = document.getElementById('here');
+  if(!btn) return;
+  if(!navigator.geolocation){{ btn.style.display = 'none'; return; }}
+  btn.addEventListener('click', function(){{
+    var note = document.getElementById('loc_note');
+    btn.disabled = true; btn.textContent = 'Locating…';
+    navigator.geolocation.getCurrentPosition(function(pos){{
+      document.getElementById('coords').value =
+        pos.coords.latitude.toFixed(8) + ', ' + pos.coords.longitude.toFixed(8);
+      btn.disabled = false; btn.textContent = 'Use my location';
+      note.textContent = 'Filled in from your device, accurate to about '
+        + Math.round(pos.coords.accuracy) + ' m. Edit it if you know better.';
+    }}, function(err){{
+      btn.disabled = false; btn.textContent = 'Use my location';
+      note.textContent = 'Could not get your location (' + err.message
+        + '). Type or paste one instead.';
+    }}, {{enableHighAccuracy: true, timeout: 10000}});
+  }});
+}})();
 document.addEventListener('DOMContentLoaded', formSync);
 formSync();
 </script>""")
