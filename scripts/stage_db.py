@@ -991,6 +991,64 @@ def set_drawing_extents(doc) -> bool:
 # trimmed fragment shorter than this is noise rather than kerb.
 MIN_EDGE_M = 0.5
 
+# Annotation heights in this repo are metres of ground, and every one of
+# them was picked to read at 1:1000 — a building name at 3.5 m plots at
+# 3.5 mm, a spot level at 2.5 m plots at 2.5 mm, which are the sizes a
+# drafter expects. Nothing rescaled them for the sheet, so the *default*
+# 1000 x 750 m extent on A3 — which fitting_scale() puts at 1:5000 — plotted
+# building names at 0.70 mm, road names at 1.00 mm and house numbers at
+# 0.44 mm. ISO 3098 sets 2.5 mm as the smallest drafting size and legibility
+# gives out below about 1.8 mm, so the default sheet went out unreadable.
+#
+# The reference is therefore 1:1000, and the factor is the plot scale over
+# it: 1.0 at 1:1000, so nothing about the scale a site plan is read at
+# changes, and 5.0 at 1:5000, which puts the same 3.5 mm on the paper.
+ANNOTATION_REFERENCE_SCALE = 1000.0
+
+
+# Width of one character as a fraction of the text height. MTEXT is
+# proportional, so this is an average over mixed digits and Latin caps —
+# enough to tell a 4-character code that will not fit a 6 m shed from one
+# that will, which is all this decides.
+CHAR_ASPECT = 0.6
+
+
+def label_fits(text, height_m, box_w_m, box_h_m) -> bool:
+    """Whether a label at its *plotted* size still fits what it labels.
+
+    The CAD routes had no such test, and it did not show while annotation
+    was fixed at the 1:1000 sizes because at 1:5000 the text was too small
+    to read, let alone collide. Sizing it correctly made the real problem
+    visible: the default 1000 x 750 m extent holds 400-odd buildings, and a
+    3.5 mm code on every one of them is a solid mass of overlapping text.
+
+    So a code is drawn only where its footprint has room for it. This is
+    the rule generate_detailed_site_map.py already applies on the other
+    stack — and the same priority: a B### code is recoverable from
+    building_inventory.csv against the same feature id, so dropping one
+    loses nothing a reader cannot get back, while a name is the
+    identification the sheet exists to carry.
+    """
+    if not text or not height_m or box_w_m is None or box_h_m is None:
+        return True
+    return (len(str(text)) * height_m * CHAR_ASPECT <= float(box_w_m)
+            and height_m <= float(box_h_m))
+
+
+def annotation_scale(plot_scale) -> float:
+    """Multiplier for model-space text heights and their offsets.
+
+    Both CAD routes take the same --sheet/--scale, derive this from them and
+    apply it to the same numbers, so a drawing and its re-issue put text of
+    the same size in the same place. A drawing with no sheet has no plot
+    scale to work from and keeps the 1:1000 sizes.
+    """
+    try:
+        scale = float(plot_scale)
+    except (TypeError, ValueError):
+        return 1.0
+    return scale / ANNOTATION_REFERENCE_SCALE if scale > 0 else 1.0
+
 
 def road_edges(coords, width_m):
     """Both edges of one carriageway, offset from its centreline.
@@ -1306,9 +1364,19 @@ def stage_context(conn, project_id, records) -> int:
 POI_LABEL_DX = 3.0
 
 
-def stage_pois(conn, project_id, records) -> int:
+def stage_pois(conn, project_id, records, label_dx=None) -> int:
     """records: dicts with feature_id, x, y (project SRID), poi_key,
-    poi_type, display_name and optionally name_th/name_en."""
+    poi_type, display_name and optionally name_th/name_en.
+
+    `label_dx` is how far the name sits from the symbol, in metres of
+    ground — POI_LABEL_DX at 1:1000, scaled up with the sheet, because a
+    3 m gap is 0.6 mm at 1:5000 and the name lands on the symbol it
+    belongs to. The anchor is stored already offset (db2dxf.py draws the
+    staged point as it finds it), so a re-issue onto a very different sheet
+    keeps the gap the extraction chose while its text resizes: the label
+    stays clear of the symbol either way, and no anchor moves between a
+    drawing and its own re-issue.
+    """
     from shapely import wkb as shp_wkb
     from shapely.geometry import Point
 
@@ -1322,7 +1390,8 @@ def stage_pois(conn, project_id, records) -> int:
             r.get("source", "openstreetmap"), r.get("poi_key"),
             r.get("poi_type"), r.get("display_name") or "", th, en,
             r.get("cad_layer", "C-ANNO-SYMB"),
-            shp_wkb.dumps(Point(x, y)), x + POI_LABEL_DX, y,
+            shp_wkb.dumps(Point(x, y)),
+            x + (POI_LABEL_DX if label_dx is None else float(label_dx)), y,
             r.get("latitude"), r.get("longitude")))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_pois (project_id, feature_id, osm_id,"

@@ -1285,3 +1285,49 @@ def test_a_stub_shorter_than_the_minimum_is_not_drawn():
     out = stage_db.carriageway_edges([
         ("stub", [(0, 0), (0.2, 0)], 6.0, True)])
     assert out.get("stub", []) == []
+
+
+# ----------------------------------------------- annotation on the paper
+def test_annotation_is_unchanged_at_the_scale_it_was_drawn_for():
+    """Every height in this repo was picked to read at 1:1000 — a building
+    name at 3.5 m plots at 3.5 mm. The factor must leave that alone, or the
+    scale a site plan is actually read at changes for no reason."""
+    assert stage_db.annotation_scale(1000) == 1.0
+
+
+@pytest.mark.parametrize("scale", [500, 1000, 2000, 5000, 20000])
+def test_a_label_plots_the_same_size_at_every_scale(scale):
+    """Nothing rescaled annotation for the sheet, so the *default*
+    1000 x 750 m extent on A3 — 1:5000 — plotted building names at 0.70 mm
+    and house numbers at 0.44 mm. ISO 3098 sets 2.5 mm as the smallest
+    drafting size, so the default sheet went out unreadable."""
+    for height_m in (2.2, 2.5, 3.5, 4.0, 5.0):
+        on_paper = height_m * stage_db.annotation_scale(scale) / scale * 1000
+        assert on_paper == pytest.approx(height_m)
+        assert on_paper >= 2.2
+
+
+def test_a_drawing_with_no_sheet_keeps_the_reference_sizes():
+    """Model space with no plot scale has nothing to scale to."""
+    for missing in (None, "fit", "", 0):
+        assert stage_db.annotation_scale(missing) == 1.0
+
+
+def test_a_code_bigger_than_its_building_is_not_drawn():
+    """Sizing annotation correctly made the real problem visible: 400-odd
+    footprints each carrying a 3.5 mm code is a solid mass of overlapping
+    text. A 4-character code 17.5 m tall needs ~42 m of footprint."""
+    assert not stage_db.label_fits("B001", 17.5, 12.0, 10.0)
+    assert stage_db.label_fits("B001", 3.5, 12.0, 10.0)
+
+
+def test_a_code_needs_room_in_both_directions():
+    """A long thin shed is wide enough for the text and not tall enough."""
+    assert not stage_db.label_fits("B001", 5.0, 100.0, 3.0)
+
+
+def test_a_label_with_nothing_to_fit_inside_is_kept():
+    """The test only applies where a box is known; absent one, dropping the
+    label would lose it for no reason."""
+    assert stage_db.label_fits("B001", 17.5, None, None)
+    assert stage_db.label_fits("", 3.5, 1.0, 1.0)

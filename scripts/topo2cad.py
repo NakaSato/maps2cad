@@ -1280,7 +1280,11 @@ def stage_to_db(a, utm_epsg, inventory, building_geoms, road_records,
         n_sp += 1
     n_b = stage_db.stage_buildings(conn, pid, b_rows, to_wgs=to_wgs) - n_sp
 
-    n_p = stage_db.stage_pois(conn, pid, list(poi_points))
+    # osm2cad.py calls this with its own Namespace, so the factor is read
+    # defensively: a caller that never resolved a sheet stages at 1:1000.
+    n_p = stage_db.stage_pois(
+        conn, pid, list(poi_points),
+        label_dx=stage_db.POI_LABEL_DX * getattr(a, "anno_scale", 1.0))
     n_x = stage_db.stage_context(conn, pid, list(context))
 
     r_rows = []
@@ -1499,6 +1503,27 @@ def main():
     tag_index = source_tags(elements)
     drawn = []
 
+    # The plot scale has to be known before a single label is written, not
+    # when the sheet is added at the end: annotation is sized in metres of
+    # ground and only the scale says what that is on paper.
+    if a.sheet:
+        import sheet as _sheet
+        ext_w = a.width or a.radius * 2
+        ext_h = a.height or a.radius * 2
+        if str(a.scale).lower() == "fit":
+            a.scale, _, _ = _sheet.fitting_scale(ext_w, ext_h, a.sheet)
+        else:
+            a.scale = int(a.scale)
+        anno = _anchor_rules.annotation_scale(a.scale)
+        if anno != 1.0:
+            print(f"Annotation scaled x{anno:g} for 1:{a.scale:,} — a "
+                  f"{3.5 * anno:.0f} m label is 3.5 mm on the sheet")
+    else:
+        anno = 1.0
+    # stage_to_db() runs well after this and needs the same factor, so it
+    # travels on the args rather than through six call signatures.
+    a.anno_scale = anno
+
     # Which XDATA application id a feature's attributes belong under. The
     # id is the honest answer to "where did this come from" in the CAD
     # attribute browser, so a modelled footprint must not file its
@@ -1549,7 +1574,7 @@ def main():
         selects the language sub-layer; it defaults to the neutral one."""
         layer = layer or LAYERS["anno"]
         m = msp.add_mtext(str(label), dxfattribs={
-            "layer": layer, "char_height": height,
+            "layer": layer, "char_height": height * anno,
             "style": ANNO_STYLE[layer][1]})
         m.set_location((x, y), rotation=rotation,
                        attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
@@ -1576,7 +1601,7 @@ def main():
         if en:
             ex, ey = ((x, y) if not th else
                       offset_along_normal(x, y, rotation,
-                                          height * LANG_OFFSET))
+                                          height * anno * LANG_OFFSET))
             mtext(en, ex, ey, height, rotation, LAYERS[family[1]])
             n += 1
         if not n and fallback:
@@ -1625,7 +1650,7 @@ def main():
                                dxfattribs={"layer": LAYERS["spot"]})
                 # {:+.1f}, not "+" + the number: a point below datum
                 # would otherwise be labelled "+-0.3"
-                mtext(f"{elev:+.1f}", gx + 2.5, gy, 2.5,
+                mtext(f"{elev:+.1f}", gx + 2.5 * anno, gy, 2.5,
                       layer=LAYERS["spot"])
                 staged_spots.append({"x": gx, "y": gy, "elevation_m": elev})
         print(f"Spot heights: {len(staged_spots)} sampled from the DEM")
@@ -1636,6 +1661,7 @@ def main():
     inventory = []
     staged_geoms = {}
     counter = 0
+    n_nofit = 0
     for (th, en), (ext, holes), fid in sorted(buildings, key=lambda b: b[2]):
         ux, uy = to_utm.transform(*zip(*ext))
         upts = list(zip(ux, uy))
@@ -1687,21 +1713,31 @@ def main():
             cx, cy = float(np.mean(ux)), float(np.mean(uy))
         # The code rides in on `fallback`, so it lands on the neutral
         # layer at the same anchor and height cad_labels gives it — a
-        # re-issue has to put it in the same place.
-        mtext_bilingual(th, en, cx, cy, 3.5,
-                        fallback=None if a.names_only else code)
+        # re-issue has to put it in the same place. It is also dropped
+        # where the footprint has no room for it at the plotted size: the
+        # same test db2dxf.py applies to the same box, since a code bigger
+        # than its building is noise and the inventory CSV keeps them all.
+        fallback = None
+        if code and not a.names_only:
+            bx0, by0, bx1, by1 = shape.bounds
+            if _anchor_rules.label_fits(code, 3.5 * anno,
+                                        bx1 - bx0, by1 - by0):
+                fallback = code
+            else:
+                n_nofit += 1
+        mtext_bilingual(th, en, cx, cy, 3.5, fallback=fallback)
         # House number under the label, small and language-neutral — the
         # same row cad_labels emits, at the same offset, so a re-issue puts
         # it in the same place.
         btags = tag_index.get(fid) or {}
         house = btags.get("addr:housenumber")
         if house:
-            hx, hy = offset_along_normal(cx, cy, 0.0, -3.0)
+            hx, hy = offset_along_normal(cx, cy, 0.0, -3.0 * anno)
             mtext(house, hx, hy, 2.2, layer=LAYERS["addr"])
         # Storeys under the number, at the offset cad_labels uses
         levels = _anchor_rules.levels_label(btags)
         if levels:
-            lx2, ly2 = offset_along_normal(cx, cy, 0.0, -5.4)
+            lx2, ly2 = offset_along_normal(cx, cy, 0.0, -5.4 * anno)
             mtext(levels, lx2, ly2, 2.2, layer=LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         record(fid, "building", b_layer, name or "")
@@ -1716,6 +1752,10 @@ def main():
                           else "microsoft_ml",
                           "latitude": round(blat, 8),
                           "longitude": round(blon, 8)})
+
+    if n_nofit:
+        print(f"Building codes: {n_nofit} left off footprints too small to "
+              f"hold them at this scale — all are in the inventory CSV")
 
     # Roads: both carriageway edges (CAD convention) plus a thin centreline,
     # labelled once per unique name with its route number.
@@ -1826,7 +1866,10 @@ def main():
         else:
             text = rec["road_ref"]
             off = 6.0 + (5.0 * LANG_OFFSET if th and en else 0.0)
-        rx, ry = offset_along_normal(x, y, rot, off)
+        # Every offset here is a distance on the sheet, not on the ground:
+        # the number sits clear of the name stack above it, and that gap has
+        # to grow with the text it is clearing.
+        rx, ry = offset_along_normal(x, y, rot, off * anno)
         mtext(text, rx, ry, 4.0, rotation=rot,
               layer=LAYERS["anno_th" if is_thai(text) else "anno_en"])
 
@@ -1955,7 +1998,7 @@ def main():
         # is there, and a made-up title says something OSM never did.
         title = (th or en) or ""
         if title:
-            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX,
+            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX * anno,
                             py, 4.0)
         record(fid, key or "other", layer, title)
         staged_pois.append({"feature_id": fid, "poi_key": key or "other",
@@ -1990,7 +2033,7 @@ def main():
         import blocks
         attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0, LAYERS["poi"]),
                fid)
-        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0)
+        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX * anno, py, 4.0)
         record(fid, "landmark", LAYERS["poi"], th or en)
         staged_pois.append({"feature_id": fid,
                             "poi_key": kind[0], "poi_type": kind[1],
@@ -2044,7 +2087,7 @@ def main():
                 entity.set_xdata(_overture.XDATA_APPID,
                                  _anchor_rules.xdata_tags(fid, tags))
             th, en = _anchor_rules.split_by_script(place["name"])
-            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0,
+            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX * anno, py, 4.0,
                             family=("overture_th", "overture_en"))
             drawn.append({"feature_id": fid, "feature_type": "overture_place",
                           "cad_layer": layer, "display_name": place["name"],
@@ -2101,7 +2144,9 @@ def main():
     blocks.add_north_arrow(doc, msp, ax_, ay, sz, LAYERS["north"])
 
     msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": LAYERS["site"]})
-    mtext(f"GPS {a.lat},{a.lon}", cx + 40, cy, 5.0)
+    # Clear of the site marker by a distance on the sheet, not on the
+    # ground: at 1:5000 a fixed 40 m puts a 25 m tag on top of it.
+    mtext(f"GPS {a.lat},{a.lon}", cx + 40 * anno, cy, 5.0)
 
     if a.basemap:
         import basemap as bm
@@ -2125,12 +2170,6 @@ def main():
 
     if a.sheet:
         import sheet as sheet_mod
-        ext_w = a.width or a.radius * 2
-        ext_h = a.height or a.radius * 2
-        if str(a.scale).lower() == "fit":
-            a.scale, _, _ = sheet_mod.fitting_scale(ext_w, ext_h, a.sheet)
-        else:
-            a.scale = int(a.scale)
         # The same credit line db2dxf.py derives from the staging layer,
         # built here from what was actually drawn — a re-issue of this
         # drawing must not come back with a different title block.

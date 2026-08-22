@@ -782,10 +782,21 @@ def main(argv=None) -> int:
         if tags:
             entity.set_xdata(XDATA_APPID, xdata_tags(fid, tags))
 
+    # Annotation is sized in metres of ground; only the plot scale says
+    # what that is on paper. Resolved here, before a label is written, and
+    # by the same shared rule the other two writers use.
+    if a.sheet:
+        import sheet as _sheet
+        anno = _anchor_rules.annotation_scale(
+            _sheet.fitting_scale(ext_w, ext_h, a.sheet)[0]
+            if str(a.scale).lower() == "fit" else int(a.scale))
+    else:
+        anno = 1.0
+
     def mtext(label, x, y, height, rotation=0.0, layer=None):
         layer = layer or t2c.LAYERS["anno"]
         m = msp.add_mtext(str(label), dxfattribs={
-            "layer": layer, "char_height": height,
+            "layer": layer, "char_height": height * anno,
             "style": t2c.ANNO_STYLE[layer][1]})
         m.set_location((x, y), rotation=rotation,
                        attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
@@ -803,7 +814,8 @@ def main(argv=None) -> int:
         if en:
             ex, ey = ((x, y) if not th else
                       t2c.offset_along_normal(x, y, rotation,
-                                              height * t2c.LANG_OFFSET))
+                                              height * anno
+                                              * t2c.LANG_OFFSET))
             mtext(en, ex, ey, height, rotation, t2c.LAYERS["anno_en"])
             count += 1
         if not count and fallback:
@@ -865,11 +877,11 @@ def main(argv=None) -> int:
         btags = tags_for(tag_index, fid)
         house = btags.get("addr:housenumber")
         if house:
-            hx, hy = t2c.offset_along_normal(cx, cy, 0.0, -3.0)
+            hx, hy = t2c.offset_along_normal(cx, cy, 0.0, -3.0 * anno)
             mtext(house, hx, hy, 2.2, layer=t2c.LAYERS["addr"])
         levels = _anchor_rules.levels_label(btags)
         if levels:
-            lx2, ly2 = t2c.offset_along_normal(cx, cy, 0.0, -5.4)
+            lx2, ly2 = t2c.offset_along_normal(cx, cy, 0.0, -5.4 * anno)
             mtext(levels, lx2, ly2, 2.2, layer=t2c.LAYERS["addr"])
         staged_geoms[fid] = (upts, uholes)
         drawn.append({"feature_id": fid, "feature_type": "building",
@@ -985,7 +997,7 @@ def main(argv=None) -> int:
             text, off = f"ทล.{rec['road_ref']}", 0.0
         else:
             text = rec["road_ref"]
-            off = 6.0 + (5.0 * t2c.LANG_OFFSET if th and en else 0.0)
+            off = (6.0 + (5.0 * t2c.LANG_OFFSET if th and en else 0.0)) * anno
         rx, ry = t2c.offset_along_normal(x, y, rot, off)
         mtext(text, rx, ry, 4.0, rotation=rot,
               layer=t2c.LAYERS["anno_th" if t2c.is_thai(text) else "anno_en"])
@@ -1094,7 +1106,8 @@ def main(argv=None) -> int:
                                  blocks.symbol_size(base), layer), fid)
         title = (th or en) or ""
         if title:
-            mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX,
+            mtext_bilingual(th, en,
+                            px + _anchor_rules.POI_LABEL_DX * anno,
                             py, 4.0)
         drawn.append({"feature_id": fid, "feature_type": key or "other",
                       "cad_layer": layer, "display_name": title})
@@ -1131,7 +1144,8 @@ def main(argv=None) -> int:
         px, py = to_utm.transform(plon, plat)
         attach(blocks.add_poi_symbol(doc, msp, px, py, 2.0,
                                      layer_for(t2c.LAYERS["poi"], fid)), fid)
-        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX, py, 4.0)
+        mtext_bilingual(th, en, px + _anchor_rules.POI_LABEL_DX * anno,
+                        py, 4.0)
         drawn.append({"feature_id": fid, "feature_type": "landmark",
                       "cad_layer": t2c.LAYERS["poi"],
                       "display_name": th or en or ""})
@@ -1179,7 +1193,7 @@ def main(argv=None) -> int:
     # Unformatted, like topo2cad.py: db2dxf.py prints the staged REAL back
     # with str(), so a formatted tag here would make a drawing and its
     # re-issue differ on the one label that is not geometry.
-    mtext(f"GPS {lat},{lon}", cx + 40, cy, 5.0)
+    mtext(f"GPS {lat},{lon}", cx + 40 * anno, cy, 5.0)
 
     if a.basemap:
         import basemap as bm
@@ -1251,7 +1265,7 @@ def main(argv=None) -> int:
                   "keeps the base NCS layers db2dxf.py draws from.")
         staging = argparse.Namespace(
             db=a.db, project=project, lat=lat, lon=lon,
-            width=ext_w, height=ext_h, radius=None)
+            width=ext_w, height=ext_h, radius=None, anno_scale=anno)
         t2c.stage_to_db(staging, epsg, inventory, staged_geoms, staged_roads,
                         contours=(), contour_layers={},
                         poi_points=staged_pois, poi_areas=staged_site_pois,

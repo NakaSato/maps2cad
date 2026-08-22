@@ -174,6 +174,20 @@ def main(argv=None) -> int:
     out = Path(a.out) if a.out else Path(f"{proj['name']}.dxf")
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # Resolved before anything is drawn: annotation is sized in metres of
+    # ground and only the plot scale says what that is on paper. Same
+    # --sheet/--scale as topo2cad.py, same factor, same text.
+    if a.sheet:
+        import sheet as _sheet
+        if str(a.scale).lower() == "fit":
+            a.scale, _, _ = _sheet.fitting_scale(
+                proj["width_m"], proj["height_m"], a.sheet)
+        else:
+            a.scale = int(a.scale)
+        anno = stage_db.annotation_scale(a.scale)
+    else:
+        anno = 1.0
+
     doc = ezdxf.new("R2010", setup=stage_db.DXF_SETUP)
     msp = doc.modelspace()
     for style, font in TEXT_STYLES.items():
@@ -325,9 +339,9 @@ def main(argv=None) -> int:
             msp.add_circle((row["x"], row["y"]), radius=0.6,
                            dxfattribs={"layer": row["cad_layer"]})
             m = msp.add_mtext(f"{row['elevation_m']:+.1f}", dxfattribs={
-                "layer": row["cad_layer"], "char_height": 2.5,
+                "layer": row["cad_layer"], "char_height": 2.5 * anno,
                 "style": ANNO_TEXT_STYLE.get(row["cad_layer"], "EN_STYLE")})
-            m.set_location((row["x"] + 2.5, row["y"]),
+            m.set_location((row["x"] + 2.5 * anno, row["y"]),
                            attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
             m.set_bg_color("canvas", scale=BG_MASK_SCALE)
             n_s += 1
@@ -351,6 +365,16 @@ def main(argv=None) -> int:
     # ---- annotation: one SELECT against the view ----------------------
     n_t = 0
     n_skipped = 0
+    n_nofit = 0
+    # How much room each B### code has to sit in. The code is unique per
+    # project by construction, so it keys the footprint it belongs to
+    # without widening the view — and only codes are tested, which is why
+    # nothing else needs a box.
+    code_box = {r["code"]: (r["maxx"] - r["minx"], r["maxy"] - r["miny"])
+                for r in conn.execute(
+                    "SELECT code, minx, maxx, miny, maxy FROM"
+                    " staging_buildings WHERE project_id = ? AND code <> ''"
+                    " AND code IS NOT NULL", (pid,))}
     if not a.no_labels:
         for row in conn.execute(
                 "SELECT feature_class, text, label_x, label_y,"
@@ -364,16 +388,26 @@ def main(argv=None) -> int:
             if a.names_only and row["feature_class"] == "building_code":
                 n_skipped += 1
                 continue
+            # A code bigger than the building it names is noise: at 1:5000
+            # the default extent holds 400-odd footprints and every code
+            # plots at 3.5 mm, which is a solid mass of overlapping text.
+            # The inventory CSV still carries every one of them.
+            if row["feature_class"] == "building_code":
+                box = code_box.get(row["text"])
+                if box and not stage_db.label_fits(
+                        row["text"], row["text_height"] * anno, *box):
+                    n_nofit += 1
+                    continue
             layer = row["cad_layer"]
             # The view stacks a feature's English label above its Thai one
             # by handing back a perpendicular distance rather than moved
             # coordinates, so the anchor stays the feature's own point.
             lx, ly = offset_along_normal(row["label_x"], row["label_y"],
                                          row["label_rotation"],
-                                         row["label_offset"] or 0.0)
+                                         (row["label_offset"] or 0.0) * anno)
             m = msp.add_mtext(str(row["text"]), dxfattribs={
                 "layer": layer,
-                "char_height": row["text_height"],
+                "char_height": row["text_height"] * anno,
                 "style": ANNO_TEXT_STYLE.get(layer, "EN_STYLE")})
             m.set_location(
                 (lx, ly),
@@ -391,7 +425,7 @@ def main(argv=None) -> int:
                     " AND label_x IS NOT NULL AND cad_layer = 'C-TOPO-MAJR'",
                     (pid,)):
                 m = msp.add_mtext(f"{row['elevation_m']:g}", dxfattribs={
-                    "layer": "C-ANNO-TEXT", "char_height": 2.5,
+                    "layer": "C-ANNO-TEXT", "char_height": 2.5 * anno,
                     "style": "EN_STYLE"})
                 m.set_location((row["label_x"], row["label_y"]),
                                rotation=row["label_rotation"],
@@ -464,9 +498,9 @@ def main(argv=None) -> int:
         msp.add_circle((cx, cy), radius=5, dxfattribs={"layer": "C-ANNO-GPSP"})
         m = msp.add_mtext(f"GPS {proj['lat']},{proj['lon']}",
                           dxfattribs={"layer": "C-ANNO-TEXT",
-                                      "char_height": 5.0,
+                                      "char_height": 5.0 * anno,
                                       "style": "EN_STYLE"})
-        m.set_location((cx + 40, cy),
+        m.set_location((cx + 40 * anno, cy),
                        attachment_point=MTextEntityAlignment.MIDDLE_CENTER)
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
     else:
@@ -502,11 +536,6 @@ def main(argv=None) -> int:
     if a.sheet:
         import datetime
         import sheet as sheet_mod
-        if str(a.scale).lower() == "fit":
-            a.scale, _, _ = sheet_mod.fitting_scale(
-                proj["width_m"], proj["height_m"], a.sheet)
-        else:
-            a.scale = int(a.scale)
         # Credit every source that actually supplied a line. A composed
         # drawing carrying a survey boundary and Microsoft footprints while
         # the title block credits OpenStreetMap alone is wrong twice over.
@@ -546,6 +575,10 @@ def main(argv=None) -> int:
     if n_s or n_h or n_f:
         print(f"  {n_s} spot heights, {n_h} hatched area(s), "
               f"{n_f} flow arrows")
+    if n_nofit:
+        print(f"  {n_nofit} B### code(s) left off footprints too small to "
+              f"hold them at 1:{a.scale:,} — all of them are in "
+              "building_inventory.csv")
     if n_skipped:
         # Say it out loud: an unlabelled building layer is what --names-only
         # is for, but it looks identical to a bug from the drawing alone.

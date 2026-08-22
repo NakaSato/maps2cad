@@ -505,6 +505,41 @@ shape in every route. Note a bow-tie ring repairs to a *single* polygon of
 half the original area — that is GEOS, not a bug here, and it is identical
 on both sides.
 
+**Annotation is sized for the paper, not for the ground.** Every text
+height here is metres of ground and every one was picked to read at
+1:1000 — a building name at 3.5 m plots at 3.5 mm, a spot level at 2.5 m at
+2.5 mm, which are the sizes a drafter expects. Nothing rescaled them for the
+sheet, so the **default** 1000 x 750 m extent on A3 — which `fitting_scale()`
+puts at 1:5000 — went out with building names at 0.70 mm, road names at
+1.00 mm and house numbers at **0.44 mm**. ISO 3098 sets 2.5 mm as the
+smallest drafting size and legibility gives out around 1.8 mm: the default
+sheet was unreadable.
+
+`stage_db.annotation_scale()` is the plot scale over a 1:1000 reference, so
+1:1000 is untouched and 1:5000 multiplies by 5. All three writers resolve
+`--sheet`/`--scale` **before drawing anything** — it used to be resolved when
+the sheet was added at the end — and apply the factor to every height *and
+every offset*, because a gap that keeps a label clear of what it labels is a
+distance on the sheet too: the language stack, the house number at -3.0, the
+storeys at -5.4, the road ref clearing the name, the spot level at +2.5, the
+GPS tag at +40 (a fixed 40 m puts a 25 m tag on top of the site marker at
+1:5000) and `POI_LABEL_DX`. That last one is staged already offset, so
+`stage_pois()` takes a `label_dx`; a re-issue onto a very different sheet
+keeps the gap the extraction chose while its text resizes, and no anchor
+moves between a drawing and its own re-issue.
+
+Sizing it correctly is what made the *real* problem visible, and the fix is
+half of this change: 400-odd footprints each carrying a legible code is a
+solid mass of overlapping text. `stage_db.label_fits()` drops a `B###` code
+whose footprint has no room for it at the plotted size — the rule
+`generate_detailed_site_map.py` has always applied on the other stack, with
+the same priority, because a code is recoverable from
+`building_inventory.csv` against the same feature id while a name is the
+identification the sheet exists to carry. Only codes are tested. At 1:5000
+that leaves 16 of 449; at 1:1000 it drops 3 of 49, so a site plan is
+effectively untouched. Both routes test the same box (`db2dxf.py` keys it on
+the code, which is unique per project) and both print what they left off.
+
 **All annotation carries a background mask** (`set_bg_color("canvas",
 scale=1.1)`), so a label crossing a building outline or a road edge cuts
 through it instead of overprinting. Note `set_bg_color(None)` *removes* a
