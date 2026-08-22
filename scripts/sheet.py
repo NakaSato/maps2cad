@@ -234,6 +234,13 @@ def _corner_table(psp, rows, x, y, layer_frame, layer_text, max_rows=12):
     return height
 
 
+# Signature rows: the natural spacing, and the tightest that still reads.
+# A label at 1.8 mm over a ruled line at 2.2 mm needs 3.2 mm between them,
+# so the minimum leaves ~3 mm of clear space under the rule.
+SIGNATURE_STEP = 9.7
+SIGNATURE_STEP_MIN = 6.4
+
+
 def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
               name: str = "SHEET"):
     """Create a paper-space layout with a viewport at 1:`scale`.
@@ -371,26 +378,49 @@ def add_sheet(doc, info: dict, size: str = "A3", scale: int = 2000,
 
     _line(psp, bx, y + 2, pw - margin, y + 2, LAYERS["frame"], 25)
     y -= 3
-    for role_th, role_en, key in (("ผู้จัดทำ", "PREPARED BY", "prepared_by"),
-                                  ("ผู้ตรวจสอบ", "CHECKED BY", "checked_by"),
-                                  ("ผู้อนุมัติ", "APPROVED BY", "approved_by")):
-        _text(psp, f"{role_th} / {role_en}", tx, y, 1.8, tl)
-        y -= 3.2
-        _text(psp, info.get(key) or "_" * 22, tx, y, 2.2, tl)
-        y -= 6.5
 
-    _line(psp, bx, y + 2, pw - margin, y + 2, LAYERS["frame"], 25)
-    y -= 4
     # Attribution. `source` may be one string or several lines, because a
     # composed drawing credits every source that supplied a line — see
-    # stage_db.credit_lines(). Lines that would fall through the bottom of
-    # the frame are dropped rather than drawn outside it, and the field
-    # survey note keeps its place: it is the last thing a reader should see.
+    # stage_db.credit_lines().
     credits = info.get("source") or "Data © OpenStreetMap contributors (ODbL)"
     if isinstance(credits, str):
         credits = [credits]
+
+    # The credit is not discretionary — ODbL requires it, and this block
+    # used to be laid out last and simply dropped whatever fell through the
+    # bottom of the frame. On A4 that was the whole of it: every A4 sheet
+    # went out crediting nobody, with the "verify against field survey" note
+    # drawn below where the credit should have been, so the omission read as
+    # a design rather than a loss.
+    #
+    # So the signature rows give way instead. They are the block with slack
+    # in it — a ruled line and a role — and they compress only as far as the
+    # sheet actually demands, which leaves A3 and every larger sheet exactly
+    # as they were.
+    roles = (("ผู้จัดทำ", "PREPARED BY", "prepared_by"),
+             ("ผู้ตรวจสอบ", "CHECKED BY", "checked_by"),
+             ("ผู้อนุมัติ", "APPROVED BY", "approved_by"))
+    credit_h = len(credits) * 2.6 + 0.4
+    # 6.9 = the separator gap below the signatures (4) plus the clearance
+    # the note needs above the frame (2.9).
+    room = (y - 6.9 - credit_h - margin) / len(roles)
+    step = min(SIGNATURE_STEP, max(room, SIGNATURE_STEP_MIN))
+    for role_th, role_en, key in roles:
+        _text(psp, f"{role_th} / {role_en}", tx, y, 1.8, tl)
+        _text(psp, info.get(key) or "_" * 22, tx, y - 3.2, 2.2, tl)
+        y -= step
+
+    _line(psp, bx, y + 2, pw - margin, y + 2, LAYERS["frame"], 25)
+    y -= 4
     for line in credits:
-        if y - 3 < margin + 3:      # keep room for the note below
+        # A sheet too small to hold the credit even compressed is a sheet
+        # this drawing should not be plotted on; drawing outside the frame
+        # would not fix it. add_sheet already warns on a scale that will not
+        # fit, and this says the same thing about the attribution.
+        if y - 3 < margin:
+            print(f"WARNING: the {size} title block cannot hold the data "
+                  f"attribution ({len(credits)} lines); plot larger, or the "
+                  "sheet goes out crediting nobody.")
             break
         _text(psp, line, tx, y, 1.6, tl)
         y -= 2.6

@@ -387,6 +387,40 @@ ignored as a mapping error, and lanes are capped at 40 m. `road_cad_layer()`
 splits bridges and tunnels off the carriageway layers — a footbridge stays a
 footway, and a way tagged both bridge and tunnel is drawn as a tunnel.
 
+**The contour interval never beats the DEM.** The Copernicus DEM posts
+are 1 arc-second apart — ~30 m in Thailand, so a 250 x 200 m site is **48
+elevation samples** and every contour between them is interpolation. The
+binding figure is vertical: the Product Handbook specifies *relative*
+vertical accuracy better than **2 m** on slopes ≤ 20%, which is the right
+number for contours because a contour expresses shape across a site rather
+than height above a datum (absolute is < 4 m LE90, and measures ~7.7 m LE90
+against airborne LiDAR). `DEM_MIN_CONTOUR_M` is therefore 2.0 and
+`auto_contour_interval()` will not go below it. The interval used to start
+at 0.5 m and take whatever gave ~10 levels, so on the flat central plain —
+6.9 m of relief at Lopburi — a submission drawing carried 0.5 m contours
+drawn from data that cannot resolve 2 m. That site now draws 3 levels at
+2 m instead of 7 at 0.5 m, and the run prints the post count so the reader
+can judge. `--contour-interval` still forces a finer one *with a warning
+naming the accuracy*, because a deliverable that specifies an interval is
+someone making that call. `mapposter.py` imports the function rather than
+restating the ladder: a poster and a drawing of one site must not disagree
+about how much terrain the DEM supports. The credit reads "Copernicus DEM
+**30 m** (ESA)" for the same reason — contours off a global DEM and contours
+off a survey plot identically on paper.
+
+**The title block always credits its sources.** ODbL requires the
+attribution, and `sheet.py` used to lay the credit out last and drop
+whatever fell through the bottom of the frame. On A4 that was all of it:
+every A4 sheet went out crediting nobody, with the "Verify against field
+survey" note drawn where the credit should have been — so the omission read
+as a design rather than a loss. The signature rows give way instead
+(`SIGNATURE_STEP` / `SIGNATURE_STEP_MIN`), because they are the block with
+slack in them, and they compress *only as far as the sheet demands*, so A3
+and every larger sheet is byte-identical to before (test-covered both ways).
+A sheet too small even then warns rather than silently dropping the line.
+Note this is why a longer credit string is not free: check `credit_lines()`
+against every sheet size before adding to `SOURCE_CREDITS`.
+
 **Spot heights are staged because `db2dxf.py` has no DEM.** `topo2cad.py`
 samples the DEM on `stage_db.spot_grid()`'s inset 5 × 5 grid and writes both
 the mark and the level; the grid is inset so the numbers do not land on the

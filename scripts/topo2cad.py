@@ -344,6 +344,42 @@ def _post_overpass(query, cache=True, cache_dir=None, ttl=OSM_CACHE_TTL):
 MS_LINKS_URL = ("https://minedbuildings.z5.web.core.windows.net/"
                 "global-buildings/dataset-links.csv")
 
+# What the elevation source can actually support.
+#
+# The Copernicus DEM posts are 1 arc-second apart — about 30 m on the
+# ground in Thailand — so a 250 x 200 m site is 56 elevation samples, and
+# every contour between them is interpolation. The vertical figure is the
+# binding one: the Copernicus DEM Product Handbook specifies *relative*
+# vertical accuracy better than 2 m on slopes of 20% or less, which is the
+# right number for contours because a contour expresses shape across a
+# site rather than height above a datum. (Absolute accuracy is < 4 m LE90,
+# and measures ~7.7 m LE90 against airborne LiDAR.)
+#
+# So the automatic interval never goes below 2 m. It used to start at 0.5
+# m and pick whatever gave about ten levels, which on the flat Thai central
+# plain meant 0.5 m contours drawn from data that cannot resolve 2 m — a
+# submission drawing asserting shape nobody measured. --contour-interval
+# still forces a finer one, with a warning, because a deliverable that
+# specifies an interval is someone making that call deliberately.
+DEM_GROUND_SAMPLE_M = 30.0
+DEM_MIN_CONTOUR_M = 2.0
+CONTOUR_INTERVALS = (0.5, 1, 2, 5, 10, 20, 50)
+
+
+def auto_contour_interval(span, floor: float = DEM_MIN_CONTOUR_M,
+                          max_levels: int = 12) -> float:
+    """The finest round interval that is honest about `span` metres of relief.
+
+    Shared with mapposter.py rather than restated there: a poster and a
+    drawing of one site must not disagree about how much terrain detail the
+    DEM supports. Returns the coarsest interval when even the largest would
+    draw too many lines, which is the same thing the loop did before.
+    """
+    for interval in CONTOUR_INTERVALS:
+        if interval >= floor and span / interval <= max_levels:
+            return interval
+    return CONTOUR_INTERVALS[-1]
+
 
 def quadkey(lat, lon, z=9):
     sl = math.sin(math.radians(lat))
@@ -1342,12 +1378,22 @@ def main():
     smooth = gaussian_filter(dem, sigma=1.5)
     lo, hi = np.nanpercentile(smooth, [2, 98])
     span = max(hi - lo, 1.0)
-    # pick a "nice" interval giving ~10 levels
+    # How much ground each contour is actually built from. 250 x 200 m is
+    # 56 elevation posts, and a drawing does not say so anywhere: the lines
+    # come out looking exactly like surveyed contours.
+    print(f"DEM: {dem.size} post(s) across the extent at "
+          f"~{DEM_GROUND_SAMPLE_M:g} m spacing")
+    # pick a "nice" interval giving ~10 levels, but never finer than the
+    # source's own accuracy — see DEM_MIN_CONTOUR_M.
     interval = a.contour_interval or 0.0
     if interval <= 0:
-        for interval in (0.5, 1, 2, 5, 10, 20, 50):
-            if span / interval <= 12:
-                break
+        interval = auto_contour_interval(span)
+    elif interval < DEM_MIN_CONTOUR_M:
+        print(f"WARNING: a {interval:g} m interval is finer than the "
+              f"{DEM_GROUND_SAMPLE_M:g} m DEM's stated relative vertical "
+              f"accuracy ({DEM_MIN_CONTOUR_M:g} m); the shape between "
+              "contours is interpolation, not measurement. Drawing them "
+              "because you asked for them.")
     elif span / interval > 400:
         # 0.1 m contours over 40 m of relief is 400 lines nobody can read
         print(f"WARNING: a {interval:g} m interval over {span:.0f} m of "

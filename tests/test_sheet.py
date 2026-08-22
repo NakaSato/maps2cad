@@ -167,3 +167,54 @@ def test_dim_style_scales_with_the_drawing():
         height = doc.dimstyles.get(blocks.DIM_STYLE).dxf.dimtxt
         assert (height > 10.0) is expect_bigger
         assert height >= 2.0          # never smaller than legible
+
+
+def test_every_sheet_size_carries_the_data_attribution():
+    """ODbL requires the credit, and the title block used to lay it out last
+    and drop whatever fell through the bottom of the frame. On A4 that was
+    all of it: the sheet went out crediting nobody, with the field-survey
+    note drawn where the credit should have been, so the omission read as a
+    design rather than a loss.
+    """
+    ezdxf = pytest.importorskip("ezdxf")
+    import sheet as sheet_mod
+
+    credits = ["Data © OpenStreetMap contributors (ODbL);",
+               "   Microsoft ML footprints (ODbL); Copernicus",
+               "   DEM 30 m (ESA)"]
+    for size in ("A4", "A3", "A2", "A1", "A0"):
+        doc = ezdxf.new("R2010", setup=True)
+        sheet_mod.add_sheet(doc, {"centre": (0.0, 0.0), "extent": (250, 200),
+                                  "lat": 14.8, "lon": 100.5, "srid": 32647,
+                                  "source": credits},
+                            size=size, scale=1000)
+        psp = doc.layouts.get("SHEET")
+        texts = [e.text for e in psp if e.dxftype() == "MTEXT"]
+        for line in credits:
+            assert line in texts, f"{size} dropped {line!r}"
+        # and nothing was drawn outside the frame to achieve it
+        lowest = min(e.dxf.insert.y for e in psp if e.dxftype() == "MTEXT")
+        assert lowest >= 10, f"{size} drew text below the 10 mm margin"
+
+
+def test_a_large_sheet_keeps_its_signature_spacing():
+    """The credit is made to fit by compressing the signature rows, which
+    have slack in them — but only as far as the sheet demands, so A3 and
+    everything larger is untouched."""
+    ezdxf = pytest.importorskip("ezdxf")
+    import sheet as sheet_mod
+
+    def rows(size):
+        doc = ezdxf.new("R2010", setup=True)
+        sheet_mod.add_sheet(doc, {"centre": (0.0, 0.0), "extent": (250, 200),
+                                  "lat": 14.8, "lon": 100.5, "srid": 32647,
+                                  "source": ["Data © OpenStreetMap (ODbL)"]},
+                            size=size, scale=1000)
+        return sorted(round(e.dxf.insert.y, 2) for e in doc.layouts.get("SHEET")
+                      if e.dxftype() == "MTEXT" and "PREPARED" in e.text
+                      or e.dxftype() == "MTEXT" and "CHECKED" in e.text)
+
+    a3 = rows("A3")
+    assert len(a3) == 2
+    # the natural step, uncompressed
+    assert round(a3[1] - a3[0], 2) == sheet_mod.SIGNATURE_STEP

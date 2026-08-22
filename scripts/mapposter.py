@@ -32,7 +32,7 @@ from matplotlib import font_manager, patches
 
 from topo2cad import (bbox_around, fetch_osm, fetch_ms_buildings,
                       new_ml_rings, clip_runs, oneway_dir,
-                      best_name, utm_transformer)
+                      best_name, utm_transformer, auto_contour_interval)
 import stage_db          # arrow spacing, shared with the CAD writers
 
 ROAD_W = {"motorway": 3.0, "trunk": 3.0, "primary": 2.6, "secondary": 2.2,
@@ -146,9 +146,10 @@ def main():
     ZF = 8
     fine = zoom(smooth, ZF, order=3)
     lo, hi = np.nanpercentile(smooth, [2, 98])
-    for interval in (0.5, 1, 2, 5, 10, 20, 50):
-        if (hi - lo) / interval <= 12:
-            break
+    # The same rule the CAD route uses, imported rather than restated: a
+    # poster and a drawing of one site must not disagree about how much
+    # terrain detail the DEM supports.
+    interval = auto_contour_interval(hi - lo)
     for lev in np.arange(math.floor(lo), math.ceil(hi) + interval, interval):
         for seg in measure.find_contours(fine, lev):
             xs, ys = px2geo(wtrans, seg[:, 0] / ZF, seg[:, 1] / ZF)

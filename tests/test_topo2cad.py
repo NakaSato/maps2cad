@@ -705,3 +705,44 @@ def test_both_routes_can_suppress_the_building_codes():
     # matches nothing and --names-only becomes a no-op again.
     assert "'building_code'" in stage, "the view stopped emitting the class"
     assert '"building_code"' in db2, "db2dxf stopped filtering on the class"
+
+
+# ------------------------------------------------ what the DEM can support
+def test_the_automatic_interval_never_beats_the_dem():
+    """The Copernicus DEM Product Handbook specifies relative vertical
+    accuracy better than 2 m on slopes of 20% or less. The interval used to
+    start at 0.5 m and pick whatever gave about ten levels, so on the flat
+    Thai central plain — 6.9 m of relief over a 250 m site — a submission
+    drawing carried 0.5 m contours drawn from data that cannot resolve 2 m.
+    """
+    for span in (0.5, 1.0, 3.0, 6.9, 12.0, 24.0):
+        assert topo2cad.auto_contour_interval(span) >= \
+            topo2cad.DEM_MIN_CONTOUR_M, f"{span} m of relief"
+
+
+def test_the_interval_still_grows_with_the_relief():
+    """The floor is a floor, not a fixed interval: 400 m of relief must not
+    come back as 400 contour lines."""
+    assert topo2cad.auto_contour_interval(6.9) == 2
+    assert topo2cad.auto_contour_interval(40) == 5
+    assert topo2cad.auto_contour_interval(150) == 20
+    # Even relief nothing in the table divides finely enough stays bounded
+    assert topo2cad.auto_contour_interval(1e6) == max(
+        topo2cad.CONTOUR_INTERVALS)
+
+
+def test_a_survey_grade_source_could_go_finer():
+    """The floor is a property of the source, not of contours. Passing a
+    better one back opens the finer intervals up again, which is what makes
+    this a rule about the DEM rather than a hardcoded minimum."""
+    assert topo2cad.auto_contour_interval(3.0, floor=0.1) == 0.5
+
+
+def test_the_poster_and_the_drawing_share_the_rule():
+    """A poster and a CAD sheet of one site disagreeing about how much
+    terrain the DEM supports is the drift this import prevents."""
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "mapposter.py").read_text(encoding="utf-8")
+    assert "auto_contour_interval" in src
+    # ...and does not keep a copy of the ladder to drift against
+    assert "(0.5, 1, 2, 5, 10, 20, 50)" not in src

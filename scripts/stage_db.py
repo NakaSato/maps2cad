@@ -1261,7 +1261,11 @@ SOURCE_CREDITS = {
     "openstreetmap": "OpenStreetMap contributors (ODbL)",
     "microsoft_ml": "Microsoft ML footprints (ODbL)",
     "overture": "Overture Maps (ODbL/CDLA)",
-    "copernicus_dem": "Copernicus DEM (ESA)",
+    # The resolution belongs in the credit. Contours off a 30 m global DEM
+    # and contours off a survey plot the same on paper, and a reviewer is
+    # entitled to know which one they are reading before treating the shape
+    # as ground truth.
+    "copernicus_dem": "Copernicus DEM 30 m (ESA)",
 }
 # Characters that fit one line of the title block's smallest text at the
 # narrowest sheet. An honest credit that overruns the frame is not on the
