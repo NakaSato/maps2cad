@@ -113,7 +113,24 @@ def grid_ticks(centre_x, centre_y, width_m, height_m, spacing):
 # AutoCAD would draw. It lives here rather than in topo2cad because
 # db2dxf.py hatches the same rows and must not import the Overpass side to
 # find out how.
-HATCH_PATTERNS = {"water": ("ANSI31", 4.0), "green": ("AR-SAND", 0.6)}
+# A fill has to say which kind of ground it is at a glance, so the patterns
+# are chosen to be unlike one another rather than merely present: parallel
+# rule for water, stipple for planting, cross-hatch for built-up land,
+# widely-spaced dots for a car park, a concrete pattern for a paved square.
+# Two fills a reader has to compare side by side to tell apart are worse
+# than no fill at all.
+#
+# Scale is in drawing units — metres — so these are tuned for a site plan
+# read at 1:500 to 1:2000. The keys are `staging_context.kind`; a kind with
+# no entry is simply not filled, which is what keeps rail, barrier, power
+# and pipeline (all of them linear) out of this.
+HATCH_PATTERNS = {
+    "water": ("ANSI31", 4.0),        # parallel rule, the usual water fill
+    "green": ("AR-SAND", 0.6),       # stipple: planting, park, field
+    "zoning": ("ANSI37", 6.0),       # cross-hatch: built-up land use
+    "parking": ("DOTS", 12.0),       # open dots, light enough to read bays
+    "plaza": ("AR-CONC", 0.5),       # paving, for a pedestrian square
+}
 
 
 def hatch_area(msp, points, kind, layer):
@@ -123,6 +140,8 @@ def hatch_area(msp, points, kind, layer):
     and a drafter editing the outline expects to refresh the hatch rather
     than have it silently follow.
     """
+    if kind not in HATCH_PATTERNS:
+        return None
     pattern, scale = HATCH_PATTERNS[kind]
     hatch = msp.add_hatch(dxfattribs={"layer": layer})
     hatch.set_pattern_fill(pattern, scale=scale)
@@ -595,6 +614,61 @@ def annotation_scale(plot_scale) -> float:
     return scale / ANNOTATION_REFERENCE_SCALE if scale > 0 else 1.0
 
 
+# Metres across, by waterway class, where OSM does not say. A river is not
+# a ditch and drawing both as one line loses the difference; these are the
+# usual Thai orders of magnitude, deliberately modest so a bank line is
+# never wider than the water it stands for.
+WATERWAY_WIDTH_M = {
+    "river": 20.0,
+    "canal": 8.0,
+    "stream": 3.0,
+    "drain": 2.0,
+    "ditch": 1.5,
+}
+# Below this a channel is drawn as a single line: two banks a metre apart
+# are one thick line on paper and read as a mistake.
+MIN_BANK_WIDTH_M = 2.0
+
+
+def waterway_width(tags, kind=None) -> float:
+    """Metres across a watercourse, measured where OSM measured it.
+
+    `width` first — the same reading carriageway_width() applies, metres or
+    feet — then the class. Returns 0.0 for anything that should stay a
+    single line, which is every closed run (a pond has an outline already,
+    not a centreline) and every channel under MIN_BANK_WIDTH_M.
+    """
+    raw = str((tags or {}).get("width", "")).strip().lower()
+    if raw:
+        feet = raw.endswith("'") or raw.endswith("ft")
+        try:
+            value = float(raw.rstrip("'").removesuffix("ft").strip())
+        except ValueError:
+            value = 0.0
+        if feet:
+            value *= 0.3048
+        # A parsed width under a metre is a mapping error, not a channel
+        if value >= 1.0:
+            return value if value >= MIN_BANK_WIDTH_M else 0.0
+    guess = WATERWAY_WIDTH_M.get(str((tags or {}).get("waterway", "")).lower()
+                                 or str(kind or "").lower(), 0.0)
+    return guess if guess >= MIN_BANK_WIDTH_M else 0.0
+
+
+def water_banks(coords, width_m):
+    """Both banks of one watercourse, or nothing.
+
+    A closed run is a pond or a mapped riverbank polygon: it already has
+    its outline, and offsetting it would draw a second shape inside the
+    first. Only an open centreline gets banks.
+    """
+    if not width_m or width_m <= 0 or len(coords) < 2:
+        return []
+    if tuple(coords[0][:2]) == tuple(coords[-1][:2]):
+        return []
+    return road_edges(coords, width_m)
+
+
 def road_edges(coords, width_m):
     """Both edges of one carriageway, offset from its centreline.
 
@@ -1022,6 +1096,12 @@ LAYERS = {
     "contour_major": "C-TOPO-MAJR",
     "contour_minor": "C-TOPO-MINR",
     "water": "C-HYDR-WATR",
+    # The two banks of a river or canal, offset from its centreline the way
+    # C-ROAD-EDGE is offset from C-ROAD-CNTR. A แม่น้ำ drawn as one line
+    # says where the water runs and nothing about how wide it is, and a
+    # reviewer reading a ผังบริเวณ needs the bank, because that is the edge
+    # a setback is measured from.
+    "water_bank": "C-HYDR-BANK",
     "green": "C-LAND-VEGT",
     "rail": "C-RAIL-TRAK",
     "barrier": "C-BNDY-BARR",

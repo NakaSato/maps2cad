@@ -615,7 +615,8 @@ def main():
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
                            ("road_bridge", 7, 40), ("road_tunnel", 8, 18),
-                           ("water", 5, 18), ("green", 3, 13),
+                           ("water", 5, 18), ("water_bank", 5, 25),
+                           ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
                            ("power", 6, 25), ("pipeline", 4, 18),
@@ -1045,12 +1046,21 @@ def main():
 
     staged_context = []
 
+    n_banks = [0]
+
     def draw_lines(features, kind, layer, label=False, text_h=4.0):
         """Context linework — canals, parks, railways, walls. Each feature
         may survive clipping as several runs; every run is staged so
         db2dxf.py can redraw the same polylines."""
         for (th, en), pts, fid in sorted(features, key=lambda f: f[2]):
             name = th or en
+            # A watercourse is drawn with its banks as well as its
+            # centreline, the way a carriageway is: a river as one line
+            # says where the water runs and nothing about how wide it is,
+            # and the bank is the edge a setback is measured from.
+            width_m = (_anchor_rules.waterway_width(tag_index.get(fid) or {},
+                                                    kind)
+                       if kind == "water" else 0.0)
             runs = []
             for run in clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
@@ -1058,6 +1068,10 @@ def main():
                 closed = run[0] == run[-1]
                 attach(msp.add_lwpolyline(upts, close=closed,
                                           dxfattribs={"layer": layer}), fid)
+                for bank in _anchor_rules.water_banks(upts, width_m):
+                    msp.add_lwpolyline(
+                        bank, dxfattribs={"layer": LAYERS["water_bank"]})
+                    n_banks[0] += 1
                 runs.append(upts)
             if runs:
                 record(fid, kind, layer, name)
@@ -1065,10 +1079,13 @@ def main():
                     "feature_id": fid, "kind": kind, "cad_layer": layer,
                     "name_th": th or "", "name_en": en or "",
                     "display_name": name or "", "labelled": bool(label),
-                    "runs": runs})
+                    "width_m": width_m, "runs": runs})
 
     draw_lines(water, "water", LAYERS["water"], label=True)
     draw_lines(green, "green", LAYERS["green"], label=True)
+    if n_banks[0]:
+        print(f"Watercourse banks: {n_banks[0]} line(s) offset from the "
+              "centreline onto C-HYDR-BANK")
     if a.hatch:
         # Closed runs only: an open canal centreline has no area to fill.
         # db2dxf.py hatches the same rows, recovering "closed" the same way.

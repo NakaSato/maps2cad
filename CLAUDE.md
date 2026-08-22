@@ -506,6 +506,38 @@ to 2.19 m from where the re-issue drew them); or size its symbol locally
 `dxfdiff` until it learned to compare an INSERT's scale). `osm2cad.py` needs no
 refetch for it: the file already holds everything.
 
+**A river has two banks, and they are drawn.** A watercourse was a single
+centreline: it said where the water runs and nothing about how wide it is,
+and the bank is the edge a setback is measured from — which is what a
+reviewer reads a ผังบริเวณ for. `waterway_width()` reads `width` where OSM
+has it (metres, or feet ending `'`/`ft`, the same reading
+`carriageway_width()` applies) and otherwise the class:
+`WATERWAY_WIDTH_M` — river 20 m, canal 8 m, stream 3 m. `water_banks()`
+then offsets the two banks onto **`C-HYDR-BANK`**, drawn heavier than the
+centreline it came from.
+
+Three rules keep it honest. A **closed** run gets none: a pond, or a mapped
+riverbank polygon, already has its outline, and offsetting it would draw a
+second shape inside the first. Anything under `MIN_BANK_WIDTH_M` (2 m) gets
+none either — two banks a metre apart are one thick line on paper and read
+as a mistake, so a ditch stays a single line. And the width is **staged**
+(`staging_context.width_m`, a `MIGRATIONS` entry) so `db2dxf.py` offsets the
+same banks without re-reading the OSM tags: verified IDENTICAL on both
+routes, 2 banks for a 30 m river at Lopburi and 4 for a river-and-canal
+file, with the ditch correctly getting none.
+
+**A fill has to say which kind of ground it is at a glance.**
+`HATCH_PATTERNS` was water and vegetation; it now covers every kind that
+has an area, and the patterns are chosen to be unlike one another rather
+than merely present — parallel rule for water, stipple for planting,
+cross-hatch for built-up land use, open dots for a car park, a concrete
+pattern for a paved square. A test asserts no two kinds share a pattern:
+two fills a reader has to compare side by side to tell apart are worse than
+no fill at all. Linear kinds (rail, barrier, power, pipeline) have no entry
+and are not filled — hatching a fence fills a fence — and `hatch_area()`
+now *returns* on an unknown kind rather than raising, since it is called
+for every closed run.
+
 **A plaza is an area, and water has a direction.** `highway=pedestrian`
 with `area=yes` and a closed ring leaves the road bucket for `C-ROAD-PLAZ`
 and draws closed: as a path it traced the outline as though the square were

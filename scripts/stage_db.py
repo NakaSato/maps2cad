@@ -79,8 +79,10 @@ from cad_rules import (  # noqa: F401
     line_label_anchor, oneway_arrow_size, poi_kind_thai,
     polygon_corners, polygon_parts, repaired_polygon, ring_points,
     road_edges, set_drawing_extents, split_by_script, spot_grid,
-    write_attribute_csv, write_corner_csv, write_font_note,
-    write_poi_csv, write_road_csv, xdata_tags)
+    write_corner_csv, write_font_note,
+    water_banks, waterway_width, write_attribute_csv,
+    write_poi_csv, write_road_csv, xdata_tags,
+    MIN_BANK_WIDTH_M, WATERWAY_WIDTH_M)
 
 
 SCHEMA_SQL = """
@@ -180,6 +182,9 @@ CREATE TABLE IF NOT EXISTS staging_context (
     osm_id          INTEGER,
     source          TEXT    NOT NULL DEFAULT 'openstreetmap',
     kind            TEXT    NOT NULL,   -- water | green | rail | barrier
+    width_m         REAL,               -- watercourses: metres across, so
+                                        -- db2dxf.py can offset the banks
+                                        -- without re-reading the tags
     display_name    TEXT,
     name_th         TEXT,
     name_en         TEXT,
@@ -481,6 +486,7 @@ MIGRATIONS = {
                       ("oneway", "INTEGER NOT NULL DEFAULT 0"),
                       ("official_name", "TEXT")),
     "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
+    "staging_context": (("width_m", "REAL"),),
     # Provenance on the DEM-derived tables: a project can now hold features
     # from several sources at once, and a report that cannot name where a
     # row came from is not a report.
@@ -770,12 +776,13 @@ def stage_context(conn, project_id, records) -> int:
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("source", "openstreetmap"), r["kind"],
             r.get("display_name") or None, th, en, r["cad_layer"],
-            shp_wkb.dumps(geom), lx, ly, rot, geom.length))
+            shp_wkb.dumps(geom), lx, ly, rot, geom.length,
+            float(r.get("width_m") or 0.0) or None))
     conn.executemany(
         "INSERT OR REPLACE INTO staging_context (project_id, feature_id,"
         " osm_id, source, kind, display_name, name_th, name_en, cad_layer,"
-        " geom_wkb, label_x, label_y, label_rotation, length_m)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " geom_wkb, label_x, label_y, label_rotation, length_m, width_m)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
 

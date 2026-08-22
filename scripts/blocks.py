@@ -285,6 +285,10 @@ LAYER_STYLE = {
     "C-ANNO-TEXT-TH": (2, 25),
     "C-ANNO-TEXT-EN": (7, 25),
     "C-HYDR-WATR": (5, 18),      # context linework: canals, ponds
+    # Drawn heavier than the centreline it is offset from: the bank is the
+    # edge a setback is measured from, the centreline only says where the
+    # water runs.
+    "C-HYDR-BANK": (5, 25),      # the two banks of a river or canal
     "C-LAND-VEGT": (3, 13),      # parks, farmland, cemeteries
     "C-LAND-ZONE": (32, 13),     # built-up land use: residential, industrial
     "C-SITE-PARK": (140, 13),    # parking areas

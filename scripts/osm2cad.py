@@ -718,7 +718,8 @@ def main(argv=None) -> int:
                            ("road_edge", 30, 35), ("road_centre", 8, 9),
                            ("road_path", 8, 13), ("road_arrow", 30, 18),
                            ("road_bridge", 7, 40), ("road_tunnel", 8, 18),
-                           ("water", 5, 18), ("green", 3, 13),
+                           ("water", 5, 18), ("water_bank", 5, 25),
+                           ("green", 3, 13),
                            ("rail", 250, 18), ("barrier", 9, 13),
                            ("poi", 6, 18), ("site_poi", 5, 25),
                            ("power", 6, 25), ("pipeline", 4, 18),
@@ -1016,6 +1017,12 @@ def main(argv=None) -> int:
     def draw_lines(items, kind, base, label=False):
         for (th, en), pts, fid in sorted(items, key=lambda f: f[2]):
             cad_layer = layer_for(base, fid)
+            # A watercourse gets its banks, by the same rule the other two
+            # writers use: a river as one line says nothing about how wide
+            # it is, and the bank is the edge a setback is measured from.
+            width_m = (_anchor_rules.waterway_width(tags_for(tag_index, fid),
+                                                    kind)
+                       if kind == "water" else 0.0)
             runs = []
             for run in t2c.clip_runs(pts, s, w, n, e):
                 ux, uy = to_utm.transform(*zip(*run))
@@ -1024,6 +1031,10 @@ def main(argv=None) -> int:
                 attach(msp.add_lwpolyline(upts, close=closed,
                                           dxfattribs={"layer": cad_layer}),
                        fid)
+                for bank in _anchor_rules.water_banks(upts, width_m):
+                    msp.add_lwpolyline(
+                        bank,
+                        dxfattribs={"layer": t2c.LAYERS["water_bank"]})
                 runs.append(upts)
             if runs:
                 # The feature's own name, not `name` from the enclosing
@@ -1037,6 +1048,7 @@ def main(argv=None) -> int:
                     "source": source_label,
                     "name_th": th or "", "name_en": en or "",
                     "display_name": (th or en) or "", "labelled": bool(label),
+                    "width_m": width_m,
                     "runs": runs})
 
     draw_lines(water, "water", t2c.LAYERS["water"], label=True)

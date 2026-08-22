@@ -277,9 +277,10 @@ def main(argv=None) -> int:
     # Context linework. A run whose first and last vertex coincide was drawn
     # closed by topo2cad.py — a pond or a park boundary — so the closed flag
     # is recovered from the coordinates rather than stored beside them.
-    n_x = 0
-    for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer FROM"
-                            " staging_context WHERE project_id = ?", (pid,)):
+    n_x = n_bank = 0
+    for row in conn.execute("SELECT feature_id, geom_wkb, cad_layer, width_m"
+                            " FROM staging_context WHERE project_id = ?",
+                            (pid,)):
         for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
             coords = list(line.coords)
             if len(coords) < 2:
@@ -288,6 +289,13 @@ def main(argv=None) -> int:
                 coords, close=coords[0] == coords[-1],
                 dxfattribs={"layer": row["cad_layer"]}), row["feature_id"])
             n_x += 1
+            # Banks from the staged width, by the same rule topo2cad.py
+            # applies — the width is staged precisely so this route does
+            # not have to re-read the OSM tags to find it.
+            for bank in stage_db.water_banks(coords, row["width_m"]):
+                msp.add_lwpolyline(bank,
+                                   dxfattribs={"layer": "C-HYDR-BANK"})
+                n_bank += 1
 
     # Flow direction on waterways: derived, not staged — an open run on
     # the water layer has a direction, a closed one is a pond.
@@ -591,6 +599,8 @@ def main(argv=None) -> int:
     print(f"  {n_b} building outlines, {n_r} road centrelines "
           f"(+{n_e} edges, {n_a} one-way arrows), {n_c} contours, "
           f"{n_x} context lines, {n_p} POI symbols, {n_t} MTEXT")
+    if n_bank:
+        print(f"  {n_bank} watercourse bank line(s) on C-HYDR-BANK")
     if n_s or n_h or n_f:
         print(f"  {n_s} spot heights, {n_h} hatched area(s), "
               f"{n_f} flow arrows")

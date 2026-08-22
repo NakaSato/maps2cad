@@ -994,10 +994,69 @@ def test_spots_round_trip_and_are_cleared_on_re_extraction():
 
 
 def test_hatch_patterns_cover_the_kinds_that_are_areas():
-    """Rail and barrier are lines; hatching them would fill a fence."""
-    assert set(stage_db.HATCH_PATTERNS) == {"water", "green"}
+    """Rail, barrier, power and pipeline are lines; hatching them would
+    fill a fence. Everything with an area may be filled."""
+    kinds = set(stage_db.HATCH_PATTERNS)
+    assert not kinds & {"rail", "barrier", "power", "pipeline", "other"}
+    assert {"water", "green"} <= kinds
     for pattern, scale in stage_db.HATCH_PATTERNS.values():
         assert isinstance(pattern, str) and scale > 0
+
+
+def test_each_fill_is_unlike_the_others():
+    """A fill has to say which kind of ground it is at a glance. Two fills
+    a reader must compare side by side to tell apart are worse than no fill
+    at all, so no two kinds may share a pattern."""
+    patterns = [p for p, _s in stage_db.HATCH_PATTERNS.values()]
+    assert len(patterns) == len(set(patterns)), patterns
+
+
+def test_a_kind_with_no_pattern_is_simply_not_filled():
+    """hatch_area is called for every closed run; an unknown kind must
+    return rather than raise, or one unfilled category loses the drawing."""
+    assert stage_db.hatch_area(None, [(0, 0)], "rail", "0") is None
+
+
+# ------------------------------------------------------- watercourse banks
+@pytest.mark.parametrize("tags,expected", [
+    ({"waterway": "river"}, 20.0),
+    ({"waterway": "canal"}, 8.0),
+    ({"waterway": "stream"}, 3.0),
+    # measured where OSM measured it, and that wins over the class
+    ({"waterway": "stream", "width": "12"}, 12.0),
+    ({"waterway": "canal", "width": "30'"}, 30 * 0.3048),
+    # a ditch is drawn as one line: two banks a metre apart are one thick
+    # line on paper and read as a mistake
+    ({"waterway": "ditch"}, 0.0),
+    # an unreadable width falls back to the class rather than to nothing
+    ({"waterway": "river", "width": "wide"}, 20.0),
+    # a width under a metre is a mapping error, not a channel
+    ({"waterway": "river", "width": "0.4"}, 20.0),
+    ({}, 0.0),
+])
+def test_waterway_width(tags, expected):
+    assert stage_db.waterway_width(tags) == pytest.approx(expected)
+
+
+def test_an_open_watercourse_gets_two_banks():
+    """A แม่น้ำ drawn as one line says where the water runs and nothing
+    about how wide it is, and the bank is the edge a setback is measured
+    from."""
+    banks = stage_db.water_banks([(0, 0), (100, 0)], 20.0)
+    assert len(banks) == 2
+
+
+def test_a_pond_gets_no_banks():
+    """A closed run is a pond or a mapped riverbank polygon: it already has
+    its outline, and offsetting it would draw a second shape inside the
+    first."""
+    ring = [(0, 0), (50, 0), (50, 50), (0, 0)]
+    assert stage_db.water_banks(ring, 20.0) == []
+
+
+def test_a_channel_with_no_width_stays_a_single_line():
+    assert stage_db.water_banks([(0, 0), (100, 0)], 0.0) == []
+    assert stage_db.water_banks([(0, 0), (100, 0)], None) == []
 
 
 # --------------------------------------------------------- building storeys
