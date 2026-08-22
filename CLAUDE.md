@@ -216,6 +216,31 @@ within a minute of each other — the exact failure this file already
 describes. A test compares the two lists host for host and refuses the
 19-minute mirror.
 
+**osmnx's cache has to be told where to live.** `use_cache = True` was set
+and `cache_folder` was not, so osmnx wrote to `./cache` relative to the
+working directory — inside the container image, thrown away on every
+restart. The tile cache, the Overture cache and the CAD route's Overpass
+cache all honour `MAPS2CAD_DATA`, the mounted volume; this one was the
+exception, which meant the deploy re-fetched every extent forever and had
+nothing to fall back on when a fetch failed. It now points at
+`<data>/cache/osmnx` like the rest. Measured: 5 s cold, 1 s warm, and the
+response survives the restart.
+
+Know what that does and does not buy. osmnx keys its cache on the request
+URL, so a repeat of the same extent is served locally while the endpoint
+list is unchanged — a total outage costs nothing for ground already
+fetched. A **first** fetch of a new extent during an outage cannot be
+rescued by any cache, and that is the failure to expect.
+
+**"Connection refused" is not an outage.** A public HTTPS host that is down
+times out or answers 5xx; one that answers `ECONNREFUSED` immediately is
+refusing *this caller*. Overpass does that to an address that has asked for
+too much, and a shared cloud IP inherits it — which is what the Render
+deploy hit, `[Errno 111]` on two mirrors while the third returned 502 (the
+502 is the proof egress was fine). The old message said "Check network
+access and retry", which sends someone to look at entirely the wrong thing;
+it now names both readings and says which one waiting fixes.
+
 `generate_detailed_site_map.py` has none of that cache — osmnx keeps its
 own — but it had no *retry* either: one endpoint, no rotation, so a single
 "Connection refused" from `overpass-api.de` lost a whole run while the same

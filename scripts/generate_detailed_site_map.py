@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -349,6 +350,19 @@ def osm_error_kind(exc) -> tuple[str, str]:
 def fetch_features(rect_wgs):
     import osmnx as ox
     ox.settings.use_cache = True
+    # ...and put that cache where it survives. osmnx defaults cache_folder
+    # to ./cache relative to the working directory, which in a container is
+    # inside the image: thrown away on every restart, so a deploy never has
+    # one. Every other cache here already honours MAPS2CAD_DATA — the
+    # mounted volume — and this one was the exception.
+    #
+    # It is not a nicety. Overpass refused the connection outright from the
+    # deploy's address (ECONNREFUSED on two mirrors while the third answered
+    # 502) and the run died with nothing to fall back on, where the CAD
+    # route survives the same outage on its own cached snapshot.
+    ox.settings.cache_folder = str(
+        Path(os.environ.get("MAPS2CAD_DATA")
+             or Path(__file__).resolve().parent.parent) / "cache" / "osmnx")
     ox.settings.log_console = False
 
     last = None
@@ -374,10 +388,23 @@ def fetch_features(rect_wgs):
                 "features were found inside the requested extent.")
         return gdf
     name, e = last
+    # "Connection refused" from a public HTTPS host is not that host being
+    # down — a down server times out or answers 5xx. It is that host
+    # refusing this caller, which is what Overpass does to an address that
+    # has asked for too much. Say so, because "check network access" sends
+    # someone to look at the wrong thing entirely.
+    refused = "refused" in str(e).lower() or "ConnectionError" in name
+    hint = ("Two things look like this: no outbound network, or Overpass "
+            "declining this address — a shared cloud IP that has been rate "
+            "limited answers 'connection refused' while the network itself "
+            "is fine. Waiting and retrying is the fix for the second; an "
+            "extent fetched once is served from the cache afterwards."
+            if refused else
+            "Check network access and retry — an extent fetched once is "
+            "served from the cache afterwards.")
     raise SiteMapError(
         f"Could not reach the OpenStreetMap Overpass service — tried "
-        f"{len(OVERPASS_URLS)} endpoints, last error {name}: {e}. "
-        f"Check network access and retry.")
+        f"{len(OVERPASS_URLS)} endpoints, last error {name}: {e}. {hint}")
 
 
 def feature_id_of(idx) -> str:

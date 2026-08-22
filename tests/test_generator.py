@@ -663,3 +663,34 @@ def test_the_map_fills_the_frame_it_is_given_as_far_as_a_round_scale_allows():
         need = 500 / max(finer) / 0.0254
         assert need > fw * 0.63 or (400 / max(finer) / 0.0254) > fh * 0.86
     assert pos.width > 0 and pos.height > 0
+
+
+def test_the_osm_cache_is_written_where_it_survives(monkeypatch, tmp_path):
+    """osmnx defaults cache_folder to ./cache relative to the working
+    directory, which in a container is inside the image: thrown away on
+    every restart, so the deploy never had one. The tile cache, the Overture
+    cache and the CAD route's Overpass cache all honour MAPS2CAD_DATA — the
+    mounted volume — and this one was the exception.
+
+    It stopped being a nicety when Overpass began refusing the deploy's
+    address outright and a run died with nothing to fall back on.
+    """
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "generate_detailed_site_map.py").read_text(
+               encoding="utf-8")
+    assert "ox.settings.cache_folder" in src
+    assert 'os.environ.get("MAPS2CAD_DATA")' in src
+    # and the same shape the other three caches use
+    assert '"cache" / "osmnx"' in src
+
+
+def test_a_refused_connection_is_not_reported_as_a_network_fault():
+    """"Connection refused" from a public HTTPS host is not that host being
+    down — a down server times out or answers 5xx. It is that host refusing
+    this caller, which is what Overpass does to an address that has asked
+    for too much, and "check network access" sends someone to look at
+    entirely the wrong thing."""
+    src = (Path(__file__).resolve().parent.parent
+           / "scripts" / "generate_detailed_site_map.py").read_text(
+               encoding="utf-8")
+    assert "rate" in src and "refused" in src
