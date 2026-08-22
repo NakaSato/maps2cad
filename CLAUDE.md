@@ -270,6 +270,42 @@ linetype for a drafter to draw the legal right-of-way onto, since OSM has no
 source for one. `PATH_TYPES` decides the split; a path stages with
 `carriageway_m = 0`, which is what tells `db2dxf.py` to skip its edges too.
 
+**The kerb lines are trimmed where the roads meet.** Each road used to be
+offset on its own, so every junction was a cross of lines a drafter had to
+TRIM by hand: 197 edge/edge and 106 centreline/edge crossings over
+500 x 400 m at Pathum Wan. `stage_db.carriageway_edges()` takes the whole
+network — `[(key, coords, width_m, at_grade), ...]` — and subtracts the
+*other* carriageways from each edge, which produces the drafting convention
+rather than an approximation of it: a side road's kerb stops at the through
+road's kerb, and the through road's kerb breaks at the mouth of the
+junction, the opening traffic turns through. All four writers now do their
+roads in two passes (collect, then draw) because an edge cannot be drawn
+until every other carriageway is known, and all four call this one function
+— `road_edges()` moved here too, replacing four separate copies.
+
+Three details are load-bearing. **Flat caps** (`cap_style=2`) are what make
+a road split into several OSM ways safe: two collinear ways meeting end to
+end lose nothing, where a round cap eats half a carriageway width at every
+way boundary — a gap in a straight road, at a joint that exists for OSM's
+convenience. Measured 100.0 m kept of 100.0 flat against 97.0 round.
+**Only at grade** trims: a bridge crosses whatever is beneath it and a
+tunnel runs under it, so neither cuts nor is cut, and the caller decides
+from the layer the way is drawn on (note `osm2cad.py` reads the *base*
+layer, since `--layer-by` suffixes it). **A road never trims itself**, or
+the two ways of a divided carriageway would each erase the other's inner
+kerb.
+
+At Lopburi that is 12 crossings to 0. At Pathum Wan 197 to 57 — and the 57
+are entirely the 24 staged **tunnel** ways passing beneath, which is
+correct: forcing everything at grade drops it to 1. `gis2cad.py` trims too,
+and had to: its lines stage with the one `--width` the import was given, and
+`db2dxf.py` re-issues them through this rule, so a file whose lines crossed
+came back as a drawing that disagreed with its own import (caught by
+`dxfdiff`'s geometry pass the day it was added — 4 untrimmed edges against
+8 trimmed). It passes `at_grade=True` for everything, because nothing in a
+plain GeoJSON or shapefile says which of two crossing lines passes over the
+other.
+
 **One-way direction arrows come from the `oneway` tag, and paths never get
 them.** `oneway_dir()` reads yes/true/1 as +1, **-1/reverse as -1** — that
 second family means "against the way as digitised", and treating it as

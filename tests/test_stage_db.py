@@ -1215,3 +1215,73 @@ def test_the_drawing_reports_its_own_extents():
     back = ezdxf.read(stream)
     assert back.header["$EXTMIN"][0] == pytest.approx(10)
     assert back.header["$EXTMAX"][1] == pytest.approx(45)
+
+
+# ------------------------------------------------- junctions in the kerb
+def _edge_lengths(result):
+    from shapely.geometry import LineString
+
+    return {k: sorted(round(LineString(e).length, 1) for e in v)
+            for k, v in result.items()}
+
+
+def test_a_crossroads_breaks_both_kerb_lines():
+    """Each road is offset on its own, so the kerbs used to run straight
+    through every junction — 197 edge/edge crossings over 500 x 400 m at
+    Pathum Wan, each one a TRIM a drafter had to do by hand."""
+    out = stage_db.carriageway_edges([
+        ("ew", [(0, 0), (200, 0)], 6.0, True),
+        ("ns", [(100, -80), (100, 80)], 6.0, True)])
+    # 200 m of kerb less the 6 m the crossing carriageway occupies, in two
+    # pieces either side of the opening traffic turns through
+    assert _edge_lengths(out)["ew"] == [97.0, 97.0, 97.0, 97.0]
+    assert _edge_lengths(out)["ns"] == [77.0, 77.0, 77.0, 77.0]
+
+
+def test_one_road_split_into_two_ways_keeps_an_unbroken_kerb():
+    """The flat cap is what makes this safe. A road split at a node is two
+    OSM ways for OSM's convenience and one road on the ground; a round cap
+    would eat half a carriageway width of kerb at every such joint, putting
+    a gap in a straight road."""
+    out = stage_db.carriageway_edges([
+        ("west", [(0, 0), (100, 0)], 6.0, True),
+        ("east", [(100, 0), (200, 0)], 6.0, True)])
+    assert _edge_lengths(out) == {"west": [100.0, 100.0],
+                                  "east": [100.0, 100.0]}
+
+
+def test_a_bridge_is_not_trimmed_by_the_road_beneath_it():
+    """A bridge crosses whatever is under it. Cutting the road below would
+    draw a junction where there is none, and cutting the bridge would break
+    a deck that never touches the ground there."""
+    out = stage_db.carriageway_edges([
+        ("road", [(0, 0), (200, 0)], 6.0, True),
+        ("flyover", [(100, -80), (100, 80)], 8.0, False)])
+    assert _edge_lengths(out)["road"] == [200.0, 200.0]
+    assert _edge_lengths(out)["flyover"] == [160.0, 160.0]
+
+
+def test_a_road_never_trims_itself():
+    """Or the two ways of a divided carriageway would each erase the
+    other's inner kerb."""
+    out = stage_db.carriageway_edges([("solo", [(0, 0), (100, 0)], 8.0,
+                                       True)])
+    assert _edge_lengths(out) == {"solo": [100.0, 100.0]}
+
+
+def test_a_path_has_no_kerb_to_trim():
+    """A footway stages with carriageway_m = 0 — drawing a 1.5 m path with
+    two kerb lines makes it read as a road — so it neither gains edges nor
+    cuts anyone else's."""
+    out = stage_db.carriageway_edges([
+        ("road", [(0, 0), (200, 0)], 6.0, True),
+        ("footway", [(100, -80), (100, 80)], 0.0, True)])
+    assert out.get("footway", []) == []
+    assert _edge_lengths(out)["road"] == [200.0, 200.0]
+
+
+def test_a_stub_shorter_than_the_minimum_is_not_drawn():
+    """A trimmed fragment of a few centimetres is noise, not kerb."""
+    out = stage_db.carriageway_edges([
+        ("stub", [(0, 0), (0.2, 0)], 6.0, True)])
+    assert out.get("stub", []) == []

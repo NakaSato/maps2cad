@@ -163,24 +163,6 @@ def pick_name_field(columns, explicit):
     return None
 
 
-def road_edges(coords, width_m):
-    from shapely.geometry import LineString
-
-    line = LineString(coords)
-    if line.length < 0.5 or width_m <= 0:
-        return []
-    out = []
-    for side in (width_m / 2, -width_m / 2):
-        try:
-            off = line.offset_curve(side)
-        except Exception:
-            return []
-        for p in parts(off, "LineString"):
-            if len(p.coords) >= 2:
-                out.append(list(p.coords))
-    return out
-
-
 def stage(a, frames, epsg, centre, attrs=()):
     """Stage the imported features alongside anything already staged for
     this project, so one drawing can carry OSM data and your own survey."""
@@ -366,6 +348,7 @@ def main(argv=None) -> int:
         m.set_bg_color("canvas", scale=BG_MASK_SCALE)
 
     counts = {"polygon": 0, "line": 0, "point": 0, "label": 0, "edge": 0}
+    line_plan = []
     corner_parcels = []                 # every polygon, for --corners
     drawn, feature_tags = [], {}
     for path, gdf in frames:
@@ -429,17 +412,20 @@ def main(argv=None) -> int:
                     mtext(label, pt.x, pt.y)
                     counts["label"] += 1
 
-            for line in parts(geom, "LineString"):
+            for li, line in enumerate(parts(geom, "LineString")):
                 coords = list(line.coords)
                 layer = forced or LAYERS["line"]
                 attach(msp.add_lwpolyline(coords, dxfattribs={"layer": layer}))
                 counts["line"] += 1
                 record("line", layer)
                 if not forced:
-                    for edge in road_edges(coords, a.width):
-                        msp.add_lwpolyline(edge, dxfattribs={
-                            "layer": LAYERS["line_edge"]})
-                        counts["edge"] += 1
+                    # Collected, not drawn: the kerb lines are trimmed
+                    # against each other and the whole set has to exist
+                    # first. db2dxf.py re-issues these same staged
+                    # centrelines through the same rule, so a file whose
+                    # lines cross would otherwise come back as a drawing
+                    # that disagrees with its own import.
+                    line_plan.append(((path.stem, i, li), coords))
                 if label and line.length > 1:
                     mid = line.interpolate(0.5, normalized=True)
                     b = line.interpolate(min(1.0, 0.55), normalized=True)
@@ -461,6 +447,18 @@ def main(argv=None) -> int:
         print(f"  {path.name}: {len(gdf)} feature(s), CRS "
               f"{gdf.crs.to_string() if gdf.crs else '?'}"
               + (f", labels from '{field}'" if field else ", no label field"))
+
+    # Edges of pavement, trimmed where the supplied centrelines meet. Every
+    # line here carries the one --width the import was given, so the trim is
+    # the same rule the OSM routes apply and, being all at grade, it has no
+    # bridge to leave alone: nothing in a plain GeoJSON or shapefile says
+    # which of two crossing lines passes over the other.
+    for key, edges in stage_db.carriageway_edges(
+            [(k, pts, a.width, True) for k, pts in line_plan]).items():
+        for edge in edges:
+            msp.add_lwpolyline(edge,
+                               dxfattribs={"layer": LAYERS["line_edge"]})
+            counts["edge"] += 1
 
     attrs = stage_db.attribute_rows(drawn, feature_tags)
     if a.db:

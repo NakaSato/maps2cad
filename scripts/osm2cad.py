@@ -887,6 +887,7 @@ def main(argv=None) -> int:
 
     # ---- roads -----------------------------------------------------------
     staged_roads = []
+    road_plan = []
     for (th, en), ref, pts, highway, fid, oneway in roads:
         road_tags = tags_for(tag_index, fid)
         width_m = t2c.carriageway_width(road_tags, highway)
@@ -894,28 +895,22 @@ def main(argv=None) -> int:
         base = t2c.road_cad_layer(road_tags, highway)
         cad_layer = layer_for(base, fid)
         road_runs = []
-        for run in t2c.clip_runs(pts, s, w, n, e):
+        for i, run in enumerate(t2c.clip_runs(pts, s, w, n, e)):
             ux, uy = to_utm.transform(*zip(*run))
             upts = list(zip(ux, uy))
             if len(upts) < 2:
                 continue
             road_runs.append(upts)
-            if not is_path:
-                for edge in t2c.road_edges(upts, width_m):
-                    msp.add_lwpolyline(edge, dxfattribs={
-                        "layer": t2c.LAYERS["road_edge"]})
-            attach(msp.add_lwpolyline(upts, dxfattribs={"layer": cad_layer}),
-                   fid)
-            # Direction of travel, by the same shared rule the other two
-            # writers use. Paths are excluded: a one-way footpath is not a
-            # traffic instruction.
-            if oneway and not is_path:
-                size = _anchor_rules.oneway_arrow_size(width_m)
-                for ax, ay, rot in _anchor_rules.arrow_positions(upts):
-                    blocks.add_oneway_arrow(
-                        doc, msp, ax, ay, size,
-                        rot + (180.0 if oneway < 0 else 0.0),
-                        t2c.LAYERS["road_arrow"])
+            # Drawn in a second pass: the kerb lines are trimmed against
+            # each other, so the whole network has to exist first. Note
+            # `base`, not `cad_layer` — under --layer-by the layer carries a
+            # tag suffix, and whether a way is at grade is a property of the
+            # way, not of how the drawing chose to file it.
+            road_plan.append({"key": (fid, i), "pts": upts, "fid": fid,
+                              "width_m": 0.0 if is_path else width_m,
+                              "cad_layer": cad_layer, "is_path": is_path,
+                              "oneway": oneway,
+                              "at_grade": base == t2c.LAYERS["road_centre"]})
         if road_runs:
             drawn.append({"feature_id": fid,
                           "feature_type": "path" if is_path else "road",
@@ -932,6 +927,29 @@ def main(argv=None) -> int:
                 "cad_layer": base, "oneway": oneway,
                 "carriageway_m": 0.0 if is_path else width_m,
                 "runs": road_runs})
+
+    trimmed = _anchor_rules.carriageway_edges(
+        [(r["key"], r["pts"], r["width_m"], r["at_grade"])
+         for r in road_plan])
+    n_edges = 0
+    for r in road_plan:
+        for edge in trimmed.get(r["key"], ()):
+            msp.add_lwpolyline(
+                edge, dxfattribs={"layer": t2c.LAYERS["road_edge"]})
+            n_edges += 1
+        attach(msp.add_lwpolyline(r["pts"],
+                                  dxfattribs={"layer": r["cad_layer"]}),
+               r["fid"])
+        # Direction of travel, by the same shared rule the other two
+        # writers use. Paths are excluded: a one-way footpath is not a
+        # traffic instruction.
+        if r["oneway"] and not r["is_path"]:
+            size = _anchor_rules.oneway_arrow_size(r["width_m"])
+            for ax, ay, rot in _anchor_rules.arrow_positions(r["pts"]):
+                blocks.add_oneway_arrow(
+                    doc, msp, ax, ay, size,
+                    rot + (180.0 if r["oneway"] < 0 else 0.0),
+                    t2c.LAYERS["road_arrow"])
 
     def runs_geom(runs):
         lines = [LineString(r) for r in runs if len(r) >= 2]

@@ -96,26 +96,6 @@ def parts(geom, wanted):
             yield from parts(g, wanted)
 
 
-def road_edges(coords, width_m):
-    """Both carriageway edges; falls back to the centreline if offsetting
-    fails on a kinked line."""
-    from shapely.geometry import LineString
-
-    line = LineString(coords)
-    if line.length < 0.5:
-        return []
-    out = []
-    for side in (width_m / 2, -width_m / 2):
-        try:
-            off = line.offset_curve(side)
-        except Exception:
-            return [list(line.coords)]
-        for p in parts(off, "LineString"):
-            if len(p.coords) >= 2:
-                out.append(list(p.coords))
-    return out or [list(line.coords)]
-
-
 def resolve_project(conn, wanted):
     rows = conn.execute("SELECT * FROM projects ORDER BY id").fetchall()
     if not rows:
@@ -236,6 +216,11 @@ def main(argv=None) -> int:
             n_b += 1
 
     n_r = n_e = n_a = 0
+    # Read the whole network before drawing any of it: the kerb lines are
+    # trimmed against each other, so an edge cannot be drawn until every
+    # other carriageway is known. Same two passes, same shared rule, as
+    # topo2cad.py — which is what keeps the two drawings identical.
+    road_plan = []
     for row in conn.execute("SELECT feature_id, geom_wkb, carriageway_m,"
                             " cad_layer, oneway FROM staging_roads"
                             " WHERE project_id = ?", (pid,)):
@@ -244,28 +229,36 @@ def main(argv=None) -> int:
         # topo2cad.py, which never offsets a 1.5 m path.
         width = row["carriageway_m"]
         width = 5.0 if width is None else width
-        for line in parts(wkb.loads(row["geom_wkb"]), "LineString"):
-            coords = list(line.coords)
-            attach(msp.add_lwpolyline(
-                coords, dxfattribs={"layer": row["cad_layer"]}),
-                row["feature_id"])
-            n_r += 1
-            if width > 0:
-                for edge in road_edges(coords, width):
-                    msp.add_lwpolyline(edge,
-                                       dxfattribs={"layer": "C-ROAD-EDGE"})
-                    n_e += 1
-            # Direction arrows, placed by stage_db's rule — the same call
-            # the extraction route makes, so a re-issue puts them on the
-            # same metre. Paths stage with carriageway_m = 0 and get none.
-            if row["oneway"] and width > 0:
-                size = stage_db.oneway_arrow_size(width)
-                for ax, ay, rot in stage_db.arrow_positions(coords):
-                    blocks.add_oneway_arrow(
-                        doc, msp, ax, ay, size,
-                        rot + (180.0 if row["oneway"] < 0 else 0.0),
-                        "C-ROAD-ARRW")
-                    n_a += 1
+        for i, line in enumerate(parts(wkb.loads(row["geom_wkb"]),
+                                       "LineString")):
+            road_plan.append({"key": (row["feature_id"], i),
+                              "pts": list(line.coords),
+                              "fid": row["feature_id"], "width_m": width,
+                              "cad_layer": row["cad_layer"],
+                              "oneway": row["oneway"],
+                              "at_grade": row["cad_layer"] == "C-ROAD-CNTR"})
+
+    trimmed = stage_db.carriageway_edges(
+        [(r["key"], r["pts"], r["width_m"], r["at_grade"])
+         for r in road_plan])
+    for r in road_plan:
+        attach(msp.add_lwpolyline(
+            r["pts"], dxfattribs={"layer": r["cad_layer"]}), r["fid"])
+        n_r += 1
+        for edge in trimmed.get(r["key"], ()):
+            msp.add_lwpolyline(edge, dxfattribs={"layer": "C-ROAD-EDGE"})
+            n_e += 1
+        # Direction arrows, placed by stage_db's rule — the same call
+        # the extraction route makes, so a re-issue puts them on the
+        # same metre. Paths stage with carriageway_m = 0 and get none.
+        if r["oneway"] and r["width_m"] > 0:
+            size = stage_db.oneway_arrow_size(r["width_m"])
+            for ax, ay, rot in stage_db.arrow_positions(r["pts"]):
+                blocks.add_oneway_arrow(
+                    doc, msp, ax, ay, size,
+                    rot + (180.0 if r["oneway"] < 0 else 0.0),
+                    "C-ROAD-ARRW")
+                n_a += 1
 
     # Context linework. A run whose first and last vertex coincide was drawn
     # closed by topo2cad.py — a pond or a park boundary — so the closed flag

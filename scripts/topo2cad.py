@@ -1122,27 +1122,6 @@ def road_label(tags):
     return name or (f"ทล.{ref}" if ref else None)
 
 
-def road_edges(points, width_m):
-    """Both edges of a carriageway as coordinate lists. Falls back to the
-    centreline when the geometry is too kinked to offset cleanly."""
-    from shapely.geometry import LineString
-
-    line = LineString(points)
-    if line.length < 0.5:
-        return []
-    edges = []
-    for side in (width_m / 2, -width_m / 2):
-        try:
-            off = line.offset_curve(side)
-        except Exception:
-            return [list(line.coords)]
-        for part in (off.geoms if off.geom_type == "MultiLineString"
-                     else [off]):
-            if not part.is_empty and len(part.coords) >= 2:
-                edges.append(list(part.coords))
-    return edges or [list(line.coords)]
-
-
 # Fraction of an ML footprint that must already be covered by a building
 # before it counts as a duplicate rather than a new one. Half is well clear
 # of the metre-scale disagreement between a traced and a modelled outline,
@@ -1742,6 +1721,11 @@ def main():
     # labelled once per unique name with its route number.
     staged_roads = []
     import blocks as _blocks
+    # The kerb lines are trimmed against each other, so the whole network
+    # has to be projected and clipped before any of it is drawn. A run is
+    # keyed by (feature id, index): one way clipped into two runs is two
+    # separate carriageways as far as the trim is concerned.
+    plan = []
     for (th, en), ref, pts, highway, fid, oneway in roads:
         name = th or en
         road_tags = tag_index.get(fid) or {}
@@ -1750,28 +1734,19 @@ def main():
         is_path = highway in PATH_TYPES
         cad_layer = road_cad_layer(road_tags, highway)
         road_runs = []
-        for run in clip_runs(pts, s, w, n, e):
+        for i, run in enumerate(clip_runs(pts, s, w, n, e)):
             ux, uy = to_utm.transform(*zip(*run))
             upts = list(zip(ux, uy))
             if len(upts) < 2:
                 continue
             road_runs.append(upts)
-            if not is_path:
-                for edge in road_edges(upts, width_m):
-                    msp.add_lwpolyline(
-                        edge, dxfattribs={"layer": LAYERS["road_edge"]})
-            attach(msp.add_lwpolyline(upts, dxfattribs={"layer": cad_layer}),
-                   fid)
-            # Direction of travel, spaced along the run by the same rule
-            # db2dxf.py applies to the staged geometry. Paths are excluded:
-            # a one-way footpath is not a traffic instruction.
-            if oneway and not is_path:
-                size = _anchor_rules.oneway_arrow_size(width_m)
-                for ax, ay, rot in _anchor_rules.arrow_positions(upts):
-                    _blocks.add_oneway_arrow(
-                        doc, msp, ax, ay, size,
-                        rot + (180.0 if oneway < 0 else 0.0),
-                        LAYERS["road_arrow"])
+            plan.append({"key": (fid, i), "pts": upts, "fid": fid,
+                         "width_m": 0.0 if is_path else width_m,
+                         "cad_layer": cad_layer, "is_path": is_path,
+                         "oneway": oneway,
+                         # Only a carriageway at grade takes part in the
+                         # trim; a bridge crosses whatever is beneath it.
+                         "at_grade": cad_layer == LAYERS["road_centre"]})
         if road_runs:
             record(fid, "path" if is_path else "road", cad_layer, name)
             staged_roads.append({
@@ -1782,6 +1757,31 @@ def main():
                 # 0 tells the staging route not to offset edges either
                 "carriageway_m": 0.0 if is_path else width_m,
                 "runs": road_runs})
+
+    trimmed = _anchor_rules.carriageway_edges(
+        [(r["key"], r["pts"], r["width_m"], r["at_grade"]) for r in plan])
+    n_edges = 0
+    for r in plan:
+        for edge in trimmed.get(r["key"], ()):
+            msp.add_lwpolyline(edge,
+                               dxfattribs={"layer": LAYERS["road_edge"]})
+            n_edges += 1
+        attach(msp.add_lwpolyline(r["pts"],
+                                  dxfattribs={"layer": r["cad_layer"]}),
+               r["fid"])
+        # Direction of travel, spaced along the run by the same rule
+        # db2dxf.py applies to the staged geometry. Paths are excluded:
+        # a one-way footpath is not a traffic instruction.
+        if r["oneway"] and not r["is_path"]:
+            size = _anchor_rules.oneway_arrow_size(r["width_m"])
+            for ax, ay, rot in _anchor_rules.arrow_positions(r["pts"]):
+                _blocks.add_oneway_arrow(
+                    doc, msp, ax, ay, size,
+                    rot + (180.0 if r["oneway"] < 0 else 0.0),
+                    LAYERS["road_arrow"])
+    if plan:
+        print(f"Roads: {len(plan)} run(s), {n_edges} edge line(s) after "
+              "trimming at the junctions")
 
     # Linear labels are anchored by the same function the staging layer uses,
     # so a drawing and its re-issue put the name in the same place. Anchoring
