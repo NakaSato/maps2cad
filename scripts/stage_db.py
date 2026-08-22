@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS staging_roads (
     highway_type    TEXT,
     road_name       TEXT,
     road_ref        TEXT,               -- route number, kept separate
+    official_name   TEXT,               -- official_name:th, the formal
+                                        -- designation (ถนนพระรามที่ ๑),
+                                        -- which is not the everyday name
     display_name    TEXT,
     name_th         TEXT,               -- name:th, for C-ANNO-TEXT-TH
     name_en         TEXT,               -- name:en, for C-ANNO-TEXT-EN
@@ -400,15 +403,14 @@ CREATE VIEW cad_labels AS
      WHERE rn = 1 AND COALESCE(name_th, '') = ''
                   AND COALESCE(name_en, '') = ''
     UNION ALL
-    -- Route number. Unnamed roads carry the Thai 'ทล.' prefix (matching
-    -- topo2cad.py), which puts that form on the Thai layer; a bare number
-    -- alongside a name is Latin. Offset clears the name stack above it.
-    SELECT project_id, 'road_ref',
-           CASE WHEN road_name IS NULL THEN 'ทล.' || road_ref
-                ELSE road_ref END,
+    -- Route number, always with the Thai 'ทล.' prefix, so it sits on the
+    -- Thai layer. Offset clears the name stack above it.
+    -- A bare "311" beside a road name reads as a distance,
+    -- a lane count or a house number. ทล.311 is what the number is.
+    SELECT project_id, 'road_ref', 'ทล.' || road_ref,
            label_x, label_y, label_rotation, 4.0,
-           CASE WHEN road_name IS NULL THEN 'C-ANNO-TEXT-TH'
-                ELSE 'C-ANNO-TEXT-EN' END,
+           -- Thai now that it always carries a Thai prefix.
+           'C-ANNO-TEXT-TH',
            CASE WHEN road_name IS NULL THEN 0.0
                 WHEN COALESCE(name_th, '') <> '' AND
                      COALESCE(name_en, '') <> '' THEN 6.0 + 5.0 * 1.3
@@ -435,7 +437,8 @@ MIGRATIONS = {
                           ("addr_house", "TEXT"),
                           ("levels_label", "TEXT")),
     "staging_roads": (("name_th", "TEXT"), ("name_en", "TEXT"),
-                      ("oneway", "INTEGER NOT NULL DEFAULT 0")),
+                      ("oneway", "INTEGER NOT NULL DEFAULT 0"),
+                      ("official_name", "TEXT")),
     "staging_tags": (("appid", "TEXT NOT NULL DEFAULT 'OSM'"),),
     # Provenance on the DEM-derived tables: a project can now hold features
     # from several sources at once, and a report that cannot name where a
@@ -1558,6 +1561,7 @@ def stage_roads(conn, project_id, records) -> int:
             project_id, r["feature_id"], _osm_id(r["feature_id"]),
             r.get("source", "openstreetmap"),
             r.get("highway_type"), name, ref, display, th, en,
+            r.get("official_name") or None,
             r.get("cad_layer", "C-ROAD-CNTR"),
             r.get("carriageway_m"), int(r.get("oneway") or 0),
             shp_wkb.dumps(geom),
@@ -1565,12 +1569,191 @@ def stage_roads(conn, project_id, records) -> int:
     conn.executemany(
         "INSERT OR REPLACE INTO staging_roads (project_id, feature_id, osm_id,"
         " source, highway_type, road_name, road_ref, display_name,"
-        " name_th, name_en,"
+        " name_th, name_en, official_name,"
         " cad_layer, carriageway_m, oneway,"
         " geom_wkb, label_x, label_y, label_rotation, length_m,"
         " minx, miny, maxx, maxy)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
+    return len(rows)
+
+
+ROAD_FIELDS = ["feature_id", "road_ref", "highway_type", "road_name",
+               "name_th", "name_en", "official_name", "cad_layer",
+               "carriageway_m", "oneway", "length_m", "source"]
+
+
+def road_inventory_rows(conn, project_id) -> list[dict]:
+    """One row per staged road, longest first.
+
+    Buildings have had an inventory from the start and roads never did, so
+    the one thing a reader most often wants off a site plan — which road is
+    which, and what number it carries — could only be had by opening the
+    DXF and clicking a line. `official_name` is in here even though it is
+    rarely drawn: ถนนพระรามที่ ๑ is the formal designation and a submission
+    may need to quote it.
+    """
+    cols = ", ".join(ROAD_FIELDS)
+    return [dict(r) for r in conn.execute(
+        f"SELECT {cols} FROM staging_roads WHERE project_id = ?"
+        " ORDER BY length_m DESC, feature_id", (project_id,))]
+
+
+def write_road_csv(path, rows) -> int:
+    """The road inventory, beside the drawing."""
+    import csv as _csv
+
+    path = Path(path)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=ROAD_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for row in rows:
+            out = dict(row)
+            length = out.get("length_m")
+            if isinstance(length, (int, float)):
+                out["length_m"] = f"{length:.1f}"
+            w.writerow(out)
+    return len(rows)
+
+
+# The Thai word a reviewer reads, per OSM value. A ผังบริเวณ lists
+# สถานที่สำคัญใกล้เคียง by kind, and "place_of_worship" is not that word.
+POI_THAI = {
+    "place_of_worship": "วัด/ศาสนสถาน", "monastery": "วัด",
+    "school": "โรงเรียน", "university": "มหาวิทยาลัย",
+    "college": "วิทยาลัย", "kindergarten": "โรงเรียนอนุบาล",
+    "hospital": "โรงพยาบาล", "clinic": "คลินิก",
+    "police": "สถานีตำรวจ", "fire_station": "สถานีดับเพลิง",
+    "townhall": "ที่ว่าการอำเภอ/เทศบาล", "courthouse": "ศาล",
+    "embassy": "สถานทูต", "public_building": "อาคารราชการ",
+    "community_centre": "ศูนย์ชุมชน", "post_office": "ที่ทำการไปรษณีย์",
+    "prison": "เรือนจำ", "marketplace": "ตลาด",
+    "bus_station": "สถานีขนส่ง", "library": "ห้องสมุด", "fuel": "ปั๊มน้ำมัน",
+    "museum": "พิพิธภัณฑ์", "attraction": "สถานที่ท่องเที่ยว",
+    "viewpoint": "จุดชมวิว", "zoo": "สวนสัตว์", "aquarium": "สถานแสดงพันธุ์สัตว์น้ำ",
+    "theme_park": "สวนสนุก", "monument": "อนุสาวรีย์", "memorial": "อนุสรณ์สถาน",
+    "ruins": "โบราณสถาน", "city_gate": "ประตูเมือง", "temple": "วัด",
+}
+
+# Overture names its categories differently and adds taxonomy leaves between
+# releases, so these are matched as substrings — the same reason
+# overture.keep_place() does. Longest first, or "school" would claim
+# "language_school" before the more specific word got a look.
+POI_THAI_PARTS = (
+    ("buddhist_temple", "วัด"), ("language_school", "โรงเรียนสอนภาษา"),
+    ("shopping_center", "ศูนย์การค้า"), ("department_store", "ห้างสรรพสินค้า"),
+    ("art_museum", "พิพิธภัณฑ์ศิลปะ"), ("train_station", "สถานีรถไฟ"),
+    ("bus_station", "สถานีขนส่ง"), ("gas_station", "ปั๊มน้ำมัน"),
+    ("fire_station", "สถานีดับเพลิง"), ("post_office", "ที่ทำการไปรษณีย์"),
+    ("city_hall", "ศาลากลาง/ที่ว่าการ"), ("courthouse", "ศาล"),
+    ("government", "หน่วยงานราชการ"), ("municipal", "หน่วยงานเทศบาล"),
+    ("university", "มหาวิทยาลัย"), ("kindergarten", "โรงเรียนอนุบาล"),
+    ("hospital", "โรงพยาบาล"), ("clinic", "คลินิก"), ("museum", "พิพิธภัณฑ์"),
+    ("library", "ห้องสมุด"), ("stadium", "สนามกีฬา"), ("monument", "อนุสาวรีย์"),
+    ("landmark", "สถานที่สำคัญ"), ("subway", "สถานีรถไฟฟ้าใต้ดิน"),
+    ("airport", "สนามบิน"), ("ferry", "ท่าเรือ"), ("transit", "สถานีขนส่ง"),
+    ("worship", "ศาสนสถาน"), ("church", "โบสถ์"), ("mosque", "มัสยิด"),
+    ("shrine", "ศาลเจ้า"), ("temple", "วัด"), ("school", "โรงเรียน"),
+    ("college", "วิทยาลัย"), ("education", "สถานศึกษา"), ("police", "สถานีตำรวจ"),
+    ("embassy", "สถานทูต"), ("park", "สวนสาธารณะ"), ("petrol", "ปั๊มน้ำมัน"),
+)
+
+
+def poi_kind_thai(poi_type: str) -> str:
+    """The Thai word a reviewer reads for one landmark, or ''.
+
+    A ผังบริเวณ lists สถานที่สำคัญใกล้เคียง by kind, and
+    "place_of_worship" is not that word. Empty when nothing matches rather
+    than guessed — the row still carries its raw poi_type.
+    """
+    key = (poi_type or "").lower()
+    if not key:
+        return ""
+    if key in POI_THAI:
+        return POI_THAI[key]
+    for part, word in POI_THAI_PARTS:
+        if part in key:
+            return word
+    return ""
+
+# Which staged points are landmarks. staging_pois also carries the map
+# furniture — trees, pylons, gates — which stages with an empty
+# display_name so cad_labels drops it. A list of สถานที่สำคัญใกล้เคียง that
+# opens with 90 trees is not a list anybody reads.
+LANDMARK_LAYERS = ("C-ANNO-SYMB", "C-ANNO-OVTR")
+
+POI_FIELDS = ["feature_id", "poi_key", "poi_type", "kind_th", "display_name",
+              "name_th", "name_en", "distance_m", "bearing", "latitude",
+              "longitude", "cad_layer", "source"]
+
+
+def bearing_text(d_east: float, d_north: float) -> str:
+    """North-based clockwise bearing, as a surveyor writes it.
+
+    atan2(dE, dN), not the atan2(dy, dx) a plotting library wants — that
+    swaps east and north on every reading. Same convention as corner_table().
+    """
+    deg = math.degrees(math.atan2(d_east, d_north)) % 360.0
+    whole = int(deg)
+    minutes = int(round((deg - whole) * 60))
+    if minutes == 60:
+        whole, minutes = (whole + 1) % 360, 0
+    return f"{whole:03d}°{minutes:02d}′"
+
+
+def poi_inventory_rows(conn, project_id, centre=None) -> list[dict]:
+    """Nearby landmarks, nearest first, with how far and which way.
+
+    The drawing has always carried these — วัด, โรงเรียน, โรงพยาบาล,
+    สถานีตำรวจ are exactly what POI_SUBMISSION curates for — but only as
+    symbols on C-ANNO-SYMB. A ผังบริเวณ is read alongside a list of
+    สถานที่สำคัญใกล้เคียง, and there was no list: you could see a symbol on
+    the sheet and had no way to say what it was, how far off, or in which
+    direction without measuring it yourself.
+
+    `centre` is the project's own (x, y) in its SRID. Without it the
+    distance and bearing columns are left empty rather than guessed.
+    """
+    from shapely import wkb as shp_wkb
+
+    out = []
+    for row in conn.execute(
+            "SELECT feature_id, poi_key, poi_type, display_name, name_th,"
+            " name_en, cad_layer, geom_wkb, latitude, longitude, source"
+            " FROM staging_pois WHERE project_id = ?"
+            " AND display_name <> '' AND cad_layer IN "
+            "('" + "','".join(LANDMARK_LAYERS) + "')", (project_id,)):
+        rec = {k: row[k] for k in
+               ("feature_id", "poi_key", "poi_type", "display_name",
+                "name_th", "name_en", "cad_layer", "latitude", "longitude",
+                "source")}
+        rec["kind_th"] = poi_kind_thai(row["poi_type"])
+        rec["distance_m"] = ""
+        rec["bearing"] = ""
+        if centre is not None:
+            try:
+                pt = shp_wkb.loads(row["geom_wkb"])
+                de, dn = pt.x - centre[0], pt.y - centre[1]
+                rec["distance_m"] = round(math.hypot(de, dn), 1)
+                rec["bearing"] = bearing_text(de, dn)
+            except Exception:
+                pass
+        out.append(rec)
+    out.sort(key=lambda r: (r["distance_m"] if isinstance(r["distance_m"],
+                                                          float) else 1e9,
+                            r["feature_id"]))
+    return out
+
+
+def write_poi_csv(path, rows) -> int:
+    """The landmark list, beside the drawing."""
+    import csv as _csv
+
+    path = Path(path)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=POI_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
     return len(rows)
 
 

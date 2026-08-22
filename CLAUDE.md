@@ -572,6 +572,42 @@ carries both, English is stacked one line above Thai via
 `offset_along_normal()`, which offsets square to the label's own rotation —
 a plain -Y nudge would drift off a rotated road label.
 
+**Roads and landmarks get inventories, the way buildings always did.**
+`building_inventory.csv` existed from the start; roads and nearby places had
+no table at all, so the two things most often wanted off a site plan — which
+road is which and what number it carries, and what is nearby — could only be
+had by opening the DXF and clicking. `road_inventory.csv` lists every
+centreline (ref, name th/en, `official_name`, class, carriageway width,
+one-way, length, source), longest first.
+`landmark_inventory.csv` lists สถานที่สำคัญใกล้เคียง **nearest first with
+distance and bearing** from the site coordinate — north-based and clockwise
+via `bearing_text()`, `atan2(dE, dN)` and not the `atan2(dy, dx)` a plotting
+library wants, the same convention `corner_table()` uses. Both are written
+by `topo2cad.py`, `osm2cad.py` and `db2dxf.py`, so a re-issue hands back the
+tables as well as the drawing, and both are downloadable and browsable in
+the web app.
+
+Two rules keep the landmark list readable. `staging_pois` also carries the
+map furniture — trees, pylons, gates — which stages with an empty
+`display_name` precisely so it never grows a label, and a list of nearby
+places opening with ninety trees is not a list, so only named points on
+`LANDMARK_LAYERS` are tabled. And the kind is given in Thai
+(`poi_kind_thai()`): a ผังบริเวณ lists places by kind and
+"place_of_worship" is not that word. Overture's categories are matched as
+substrings, longest first — `language_school` must not be claimed by
+`school` — and anything unmatched is left blank rather than guessed, the row
+still carrying its raw `poi_type`. At Siam Square that is 65 landmarks, all
+65 with a Thai kind.
+
+**A route number always reads as a highway designation.** A named road used
+to show a bare `311` beside its name, which reads as a distance, a lane
+count or a house number; only an unnamed one got the `ทล.` prefix. It always
+carries it now, in all three writers and in the `cad_labels` view, which
+also puts it on `C-ANNO-TEXT-TH` rather than the Latin layer. `official_name`
+(`ถนนพระรามที่ ๑`) is staged in a `MIGRATIONS` column, always exported, and
+stands in as the label where OSM records no plain name — so a highway named
+only officially stops drawing as a bare number.
+
 **Source attributes ride with the drawing, and they are staged too.** Every
 drawn entity carries its OSM tags as XDATA under the appid `OSM` (select it
 in AutoCAD, `LIST`, read the tags), and the same rows are written to

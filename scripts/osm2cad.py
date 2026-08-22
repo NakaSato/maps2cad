@@ -906,6 +906,10 @@ def main(argv=None) -> int:
         is_path = highway in t2c.PATH_TYPES
         base = t2c.road_cad_layer(road_tags, highway)
         cad_layer = layer_for(base, fid)
+        official = (road_tags.get("official_name:th")
+                    or road_tags.get("official_name") or "")
+        if not (th or en) and official:
+            th, en = t2c.names_by_lang({"name": official})
         road_runs = []
         for i, run in enumerate(t2c.clip_runs(pts, s, w, n, e)):
             ux, uy = to_utm.transform(*zip(*run))
@@ -937,6 +941,7 @@ def main(argv=None) -> int:
                 # fixed layer table, so a --layer-by variant staged here
                 # would re-issue onto a layer that table has no entry for.
                 "cad_layer": base, "oneway": oneway,
+                "official_name": official,
                 "carriageway_m": 0.0 if is_path else width_m,
                 "runs": road_runs})
 
@@ -992,12 +997,12 @@ def main(argv=None) -> int:
                         x, y, 5.0, rotation=rot)
 
     def emit_road_ref(rec, x, y, rot):
+        # Always 'ทล.', matching cad_labels and topo2cad.py: a bare "311"
+        # beside a road name reads as a distance or a lane count.
         th, en, name = rec["name_th"], rec["name_en"], rec["road_name"]
-        if not name:
-            text, off = f"ทล.{rec['road_ref']}", 0.0
-        else:
-            text = rec["road_ref"]
-            off = (6.0 + (5.0 * t2c.LANG_OFFSET if th and en else 0.0)) * anno
+        text = f"ทล.{rec['road_ref']}"
+        off = 0.0 if not name else (
+            (6.0 + (5.0 * t2c.LANG_OFFSET if th and en else 0.0)) * anno)
         rx, ry = t2c.offset_along_normal(x, y, rot, off)
         mtext(text, rx, ry, 4.0, rotation=rot,
               layer=t2c.LAYERS["anno_th" if t2c.is_thai(text) else "anno_en"])
@@ -1239,6 +1244,48 @@ def main(argv=None) -> int:
     _anchor_rules.set_drawing_extents(doc)
     doc.saveas(out)
     print(f"Saved: {out}")
+
+    # The same two tables the other routes write. An .osm export carries
+    # roads and landmarks like any other source, and a reader wants the
+    # list either way.
+    road_rows = [{"feature_id": r["feature_id"], "road_ref": r["road_ref"],
+                  "highway_type": r["highway_type"],
+                  "road_name": r["road_name"], "name_th": r["name_th"],
+                  "name_en": r["name_en"],
+                  "official_name": r.get("official_name", ""),
+                  "cad_layer": r["cad_layer"],
+                  "carriageway_m": r["carriageway_m"], "oneway": r["oneway"],
+                  "length_m": sum(LineString(run).length
+                                  for run in r["runs"] if len(run) >= 2),
+                  "source": source_label}
+                 for r in staged_roads]
+    if road_rows:
+        rp = out.with_name("road_inventory.csv")
+        _anchor_rules.write_road_csv(rp, road_rows)
+        print(f"Roads: {len(road_rows)} -> {rp}")
+    poi_rows = []
+    for rec in staged_pois:
+        layer = rec.get("cad_layer") or "C-ANNO-SYMB"
+        if (not rec.get("display_name")
+                or layer not in _anchor_rules.LANDMARK_LAYERS):
+            continue
+        de, dn = rec["x"] - cx, rec["y"] - cy
+        poi_rows.append({
+            "feature_id": rec["feature_id"], "poi_key": rec.get("poi_key"),
+            "poi_type": rec.get("poi_type"),
+            "kind_th": _anchor_rules.poi_kind_thai(rec.get("poi_type")),
+            "display_name": rec.get("display_name", ""),
+            "name_th": rec.get("name_th", ""),
+            "name_en": rec.get("name_en", ""),
+            "distance_m": round(math.hypot(de, dn), 1),
+            "bearing": _anchor_rules.bearing_text(de, dn),
+            "latitude": rec.get("latitude"), "longitude": rec.get("longitude"),
+            "cad_layer": layer, "source": rec.get("source", source_label)})
+    if poi_rows:
+        poi_rows.sort(key=lambda r: (r["distance_m"], r["feature_id"]))
+        pp = out.with_name("landmark_inventory.csv")
+        _anchor_rules.write_poi_csv(pp, poi_rows)
+        print(f"Landmarks: {len(poi_rows)} nearby place(s) -> {pp}")
 
     inv_path = out.with_name("building_inventory.csv")
     with open(inv_path, "w", newline="", encoding="utf-8") as f:

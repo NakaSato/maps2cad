@@ -695,7 +695,7 @@ def run_generator(p: dict, progress: "Progress | None" = None) -> dict:
         record["project"] = project
         record["dxf"] = dxf
         # Files the CAD step writes beside the drawing, when it wrote them
-        for kind in ("tif", "attrs"):
+        for kind in ("tif", "attrs", "roads", "landmarks"):
             if (run / KINDS[kind]).is_file():
                 record[kind] = str(run / KINDS[kind])
         plot = str(run / "site_preview.pdf")
@@ -750,6 +750,14 @@ def run_generator(p: dict, progress: "Progress | None" = None) -> dict:
 # ------------------------------------------------------------------ history
 KINDS = {"pdf": "site_map.pdf", "png": "site_map.png",
          "csv": "building_inventory.csv", "dxf": "site.dxf",
+         # Which road is which and what number it carries. Buildings have
+         # had an inventory from the start; roads had none, so the most
+         # asked-for fact on a site plan meant opening the DXF.
+         "roads": "road_inventory.csv",
+         # สถานที่สำคัญใกล้เคียง — what is nearby, how far, and which way.
+         # The sheet has always carried the symbols; this is the list a
+         # ผังบริเวณ is read alongside.
+         "landmarks": "landmark_inventory.csv",
          "plot": "site_preview.pdf",
          # The DXF stores a path to the background map, not its pixels, so
          # the GeoTIFF has to be downloadable beside it or the drawing opens
@@ -1486,7 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(b"File missing", 404, "text/plain")
 
         # Both CSVs render as a grid; only the words around them differ.
-        if kind in ("csv", "attrs"):
+        if kind in ("csv", "attrs", "roads", "landmarks"):
             rows = list(csv.reader(
                 target.read_text(encoding="utf-8").splitlines()))
             head = rows[0] if rows else []
@@ -1500,6 +1508,31 @@ class Handler(BaseHTTPRequestHandler):
             table.append("</tbody></table>")
             more = (f"<p class='note'>Showing the first 500 of {len(body)} "
                     "rows.</p>") if len(body) > 500 else ""
+            if kind == "landmarks":
+                return self._send(page("Landmarks", f"""
+<p class="eyebrow">{len(body)} place(s) near the site</p>
+<h1>สถานที่สำคัญใกล้เคียง / Nearby landmarks</h1>
+<p class="lede">Every landmark the drawing carries, nearest first, with how
+far it is from the site coordinate and the bearing to it — north-based and
+clockwise, the way a surveyor reads one. The sheet shows these as symbols;
+this is the list a ผังบริเวณ is read alongside.</p>
+{"".join(table)}
+{more}
+<a class="back" href="/run/{html.escape(parts[1])}">← Back to the run</a>
+"""))
+            if kind == "roads":
+                return self._send(page("Roads", f"""
+<p class="eyebrow">{len(body)} road(s) in the extent</p>
+<h1>Roads</h1>
+<p class="lede">Every centreline the drawing carries, longest first: its
+route number, its name in Thai and Latin, the formal
+<code>official_name</code> where OpenStreetMap records one, the carriageway
+width the edges were offset by, and its length. The sheet labels a road
+once per name; this lists every way.</p>
+{"".join(table)}
+{more}
+<a class="back" href="/run/{html.escape(parts[1])}">← Back to the run</a>
+"""))
             if kind == "attrs":
                 features = len({r[0] for r in body if r})
                 return self._send(page("Attributes", f"""
@@ -1634,8 +1667,9 @@ drawing.</p>
             rec["plot"] = plot
         # db2dxf re-attaches the staged tags and rewrites the table, so a
         # re-issue offers the same attribute grid the first run did
-        if (run / KINDS["attrs"]).is_file():
-            rec["attrs"] = str(run / KINDS["attrs"])
+        for kind in ("attrs", "roads", "landmarks"):
+            if (run / KINDS[kind]).is_file():
+                rec[kind] = str(run / KINDS[kind])
         conn = db_conn()
         if conn is not None:
             p = conn.execute("SELECT * FROM projects WHERE id = ?",

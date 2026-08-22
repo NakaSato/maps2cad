@@ -1773,6 +1773,16 @@ def main():
         width_m = carriageway_width(road_tags, highway)
         is_path = highway in PATH_TYPES
         cad_layer = road_cad_layer(road_tags, highway)
+        # The formal designation — ถนนพระรามที่ ๑ — which OSM keeps apart
+        # from the everyday name. It goes in the road inventory either way,
+        # and stands in as the label where the road has no plain name, so a
+        # highway that OSM only names officially stops drawing as a bare
+        # number.
+        official = (road_tags.get("official_name:th")
+                    or road_tags.get("official_name") or "")
+        if not (th or en) and official:
+            th, en = names_by_lang({"name": official})
+            name = th or en     # recomputed: the fallback just supplied one
         road_runs = []
         for i, run in enumerate(clip_runs(pts, s, w, n, e)):
             ux, uy = to_utm.transform(*zip(*run))
@@ -1794,6 +1804,7 @@ def main():
                 "road_name": name, "road_ref": ref,
                 "name_th": th or "", "name_en": en or "",
                 "cad_layer": cad_layer, "oneway": oneway,
+                "official_name": official,
                 # 0 tells the staging route not to offset edges either
                 "carriageway_m": 0.0 if is_path else width_m,
                 "runs": road_runs})
@@ -1857,14 +1868,15 @@ def main():
                         x, y, 5.0, rotation=rot)
 
     def emit_road_ref(rec, x, y, rot):
-        # Mirrors the road_ref branch of cad_labels: an unnamed road carries
-        # the Thai 'ทล.' prefix and sits on the anchor, a named one shows a
-        # bare number clear of the name stack above it.
+        # Mirrors the road_ref branch of cad_labels: the number always
+        # carries the Thai 'ทล.' prefix, because a bare "311" beside a road
+        # name reads as a distance, a lane count or a house number rather
+        # than as the highway designation it is.
         th, en, name = rec["name_th"], rec["name_en"], rec["road_name"]
+        text = f"ทล.{rec['road_ref']}"
         if not name:
-            text, off = f"ทล.{rec['road_ref']}", 0.0
+            off = 0.0
         else:
-            text = rec["road_ref"]
             off = 6.0 + (5.0 * LANG_OFFSET if th and en else 0.0)
         # Every offset here is a distance on the sheet, not on the ground:
         # the number sits clear of the name stack above it, and that gap has
@@ -2227,6 +2239,65 @@ def main():
         _anchor_rules.write_attribute_csv(attr_path, attrs)
         print(f"Attributes: {len(attrs)} tags on {len(drawn)} drawn features "
               f"-> {attr_path}")
+
+    # Roads have never had an inventory while buildings always did, so the
+    # thing a reader most often wants off a site plan — which road is which
+    # and what number it carries — could only be had by opening the DXF and
+    # clicking a line.
+    road_rows = [{"feature_id": r["feature_id"], "road_ref": r["road_ref"],
+                  "highway_type": r["highway_type"],
+                  "road_name": r["road_name"], "name_th": r["name_th"],
+                  "name_en": r["name_en"],
+                  "official_name": r.get("official_name", ""),
+                  "cad_layer": r["cad_layer"],
+                  "carriageway_m": r["carriageway_m"],
+                  "oneway": r["oneway"],
+                  "length_m": sum(LineString(run).length
+                                  for run in r["runs"] if len(run) >= 2),
+                  "source": "openstreetmap"}
+                 for r in staged_roads]
+    if road_rows:
+        road_path = Path(a.out).with_name("road_inventory.csv")
+        _anchor_rules.write_road_csv(road_path, road_rows)
+        named = sum(1 for r in road_rows if r["road_name"])
+        refd = sum(1 for r in road_rows if r["road_ref"])
+        print(f"Roads: {len(road_rows)} ({named} named, {refd} numbered) "
+              f"-> {road_path}")
+
+    # สถานที่สำคัญใกล้เคียง: what is nearby, how far, and which way. The
+    # drawing has always carried these as symbols; a ผังบริเวณ is read
+    # alongside a list of them, and there was none.
+    if staged_pois:
+        poi_rows = []
+        for rec in staged_pois:
+            # Named landmarks only. staging_pois also carries trees, pylons
+            # and gates, which stage with an empty display_name precisely so
+            # they never grow a label; a list of nearby places that opens
+            # with ninety trees is not a list anybody reads.
+            # The curated OSM branch leaves cad_layer to stage_pois's
+            # default, so read it the same way that table does.
+            layer = rec.get("cad_layer") or "C-ANNO-SYMB"
+            if (not rec.get("display_name")
+                    or layer not in _anchor_rules.LANDMARK_LAYERS):
+                continue
+            de, dn = rec["x"] - cx, rec["y"] - cy
+            poi_rows.append({
+                "feature_id": rec["feature_id"], "poi_key": rec.get("poi_key"),
+                "poi_type": rec.get("poi_type"),
+                "kind_th": _anchor_rules.poi_kind_thai(rec.get("poi_type")),
+                "display_name": rec.get("display_name", ""),
+                "name_th": rec.get("name_th", ""),
+                "name_en": rec.get("name_en", ""),
+                "distance_m": round(math.hypot(de, dn), 1),
+                "bearing": _anchor_rules.bearing_text(de, dn),
+                "latitude": rec.get("latitude"),
+                "longitude": rec.get("longitude"),
+                "cad_layer": layer,
+                "source": rec.get("source", "openstreetmap")})
+        poi_rows.sort(key=lambda r: (r["distance_m"], r["feature_id"]))
+        poi_path = Path(a.out).with_name("landmark_inventory.csv")
+        _anchor_rules.write_poi_csv(poi_path, poi_rows)
+        print(f"Landmarks: {len(poi_rows)} nearby place(s) -> {poi_path}")
 
     if a.db:
         stage_to_db(a, utm_epsg, inventory, staged_geoms, staged_roads,

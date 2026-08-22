@@ -570,6 +570,21 @@ def main(argv=None) -> int:
             " ORDER BY feature_id, key", (pid,))]
         n_at = stage_db.write_attribute_csv(
             out.with_name("attributes.csv"), rows)
+    # The same table the extraction route writes, from the same rows, so a
+    # re-issue hands back the road list as well as the drawing.
+    road_rows = stage_db.road_inventory_rows(conn, pid)
+    if road_rows:
+        road_path = out.with_name("road_inventory.csv")
+        stage_db.write_road_csv(road_path, road_rows)
+        named = sum(1 for r in road_rows if r["road_name"])
+        refd = sum(1 for r in road_rows if r["road_ref"])
+        print(f"  {len(road_rows)} road(s) ({named} named, {refd} numbered)"
+              f" -> {road_path.name}")
+    poi_rows = stage_db.poi_inventory_rows(conn, pid, centre=(cx, cy))
+    if poi_rows:
+        poi_path = out.with_name("landmark_inventory.csv")
+        stage_db.write_poi_csv(poi_path, poi_rows)
+        print(f"  {len(poi_rows)} landmark(s) -> {poi_path.name}")
     conn.close()
     print(f"Project '{proj['name']}' (EPSG:{proj['srid']}, "
           f"{proj['width_m']:.0f} x {proj['height_m']:.0f} m)")

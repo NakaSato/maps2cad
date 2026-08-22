@@ -151,7 +151,7 @@ def test_cad_labels_dedupes_divided_carriageway(db):
     assert names[0]["label_y"] == 8
     refs = conn.execute("SELECT text FROM cad_labels WHERE feature_class ="
                         " 'road_ref'").fetchall()
-    assert [r["text"] for r in refs] == ["202"]
+    assert [r["text"] for r in refs] == ["ทล.202"]
 
 
 def _unnamed(i):
@@ -449,13 +449,27 @@ def test_unnamed_road_ref_keeps_its_thai_prefix(db):
     assert row["cad_layer"] == "C-ANNO-TEXT-TH"
 
 
-def test_named_road_ref_is_a_bare_number_on_the_english_layer(db):
+def test_a_route_number_always_reads_as_a_highway_designation(db):
+    """A named road used to show a bare "202" beside its name, which reads
+    as a distance, a lane count or a house number. ทล.202 is what the
+    number is, so it carries the prefix whether the road is named or not —
+    and that puts it on the Thai layer either way."""
     conn, pid = db
     stage_roads(conn, pid, [_road("way/9", "ถนนอรุณประเสริฐ", "202")])
     row = conn.execute("SELECT text, cad_layer FROM cad_labels WHERE"
                        " feature_class = 'road_ref'").fetchone()
-    assert row["text"] == "202"
-    assert row["cad_layer"] == "C-ANNO-TEXT-EN"
+    assert row["text"] == "ทล.202"
+    assert row["cad_layer"] == "C-ANNO-TEXT-TH"
+
+
+def test_an_unnamed_road_carries_the_same_prefix(db):
+    conn, pid = db
+    stage_roads(conn, pid, [_road("way/9", None, "202")])
+    row = conn.execute("SELECT text, cad_layer, label_offset FROM cad_labels"
+                       " WHERE feature_class = 'road_ref'").fetchone()
+    assert row["text"] == "ทล.202"
+    # nothing above it to clear, so it sits on the anchor
+    assert row["label_offset"] == 0.0
 
 
 def test_bilingual_road_ref_clears_both_name_labels(db):
@@ -470,7 +484,9 @@ def test_bilingual_road_ref_clears_both_name_labels(db):
                                      " label_offset FROM cad_labels")}
     assert offsets["road_name:C-ANNO-TEXT-TH"] == 0.0
     assert offsets["road_name:C-ANNO-TEXT-EN"] == pytest.approx(5.0 * 1.3)
-    assert offsets["road_ref:C-ANNO-TEXT-EN"] == pytest.approx(6.0 + 5.0 * 1.3)
+    # The ref sits on the Thai layer now that it always carries ทล.; what
+    # matters is unchanged — it clears the taller of the two name lines.
+    assert offsets["road_ref:C-ANNO-TEXT-TH"] == pytest.approx(6.0 + 5.0 * 1.3)
 
 
 def test_verified_thai_name_moves_off_the_neutral_layer(db):
@@ -1331,3 +1347,82 @@ def test_a_label_with_nothing_to_fit_inside_is_kept():
     label would lose it for no reason."""
     assert stage_db.label_fits("B001", 17.5, None, None)
     assert stage_db.label_fits("", 3.5, 1.0, 1.0)
+
+
+# ------------------------------------------- roads and landmarks as tables
+def test_the_road_inventory_lists_every_way(db):
+    """Buildings have had an inventory from the start and roads never did,
+    so the thing most often wanted off a site plan — which road is which and
+    what number it carries — meant opening the DXF and clicking a line."""
+    from shapely.geometry import LineString
+
+    conn, pid = db
+    stage_roads(conn, pid, [
+        {"feature_id": "way/1", "geom": LineString([(0, 0), (300, 0)]),
+         "highway_type": "primary", "road_name": "ถนนลพบุรี-ชัยนาท",
+         "road_ref": "311", "official_name": "ถนนพระรามที่ ๑",
+         "carriageway_m": 14.0, "oneway": 0},
+        {"feature_id": "way/2", "geom": LineString([(0, 40), (60, 40)]),
+         "highway_type": "residential", "road_name": None, "road_ref": None,
+         "carriageway_m": 6.0, "oneway": 0}])
+    rows = stage_db.road_inventory_rows(conn, pid)
+    assert [r["feature_id"] for r in rows] == ["way/1", "way/2"]  # longest 1st
+    assert rows[0]["road_ref"] == "311"
+    # The formal designation is a different string from the everyday name
+    # and never reached anything a reader could open.
+    assert rows[0]["official_name"] == "ถนนพระรามที่ ๑"
+    assert rows[0]["length_m"] == pytest.approx(300.0)
+
+
+def test_the_landmark_list_leaves_out_the_map_furniture(db):
+    """staging_pois also carries trees, pylons and gates, which stage with
+    an empty display_name precisely so they never grow a label. A list of
+    สถานที่สำคัญใกล้เคียง that opens with ninety trees is not a list."""
+    conn, pid = db
+    stage_db.stage_pois(conn, pid, [
+        {"feature_id": "node/1", "x": 30.0, "y": 40.0, "poi_key": "amenity",
+         "poi_type": "school", "display_name": "โรงเรียนบ้านนา"},
+        {"feature_id": "node/2", "x": 10.0, "y": 0.0, "poi_key": "natural",
+         "poi_type": "tree", "display_name": "",
+         "cad_layer": "C-LAND-TREE"}])
+    rows = stage_db.poi_inventory_rows(conn, pid, centre=(0.0, 0.0))
+    assert [r["feature_id"] for r in rows] == ["node/1"]
+    assert rows[0]["kind_th"] == "โรงเรียน"
+    assert rows[0]["distance_m"] == pytest.approx(50.0)
+
+
+def test_landmark_bearings_are_north_based_and_clockwise():
+    """atan2(dE, dN), not the atan2(dy, dx) a plotting library wants —
+    that swaps east and north on every reading. Same convention as
+    corner_table()."""
+    assert stage_db.bearing_text(0, 100).startswith("000°")
+    assert stage_db.bearing_text(100, 0).startswith("090°")
+    assert stage_db.bearing_text(0, -100).startswith("180°")
+    assert stage_db.bearing_text(-100, 0).startswith("270°")
+
+
+def test_a_landmark_kind_reads_in_thai():
+    """A ผังบริเวณ lists nearby places by kind, and "place_of_worship" is
+    not that word. Overture adds taxonomy leaves between releases, so its
+    categories are matched as substrings, longest first — or "school" would
+    claim "language_school" before the more specific word got a look."""
+    assert stage_db.poi_kind_thai("place_of_worship") == "วัด/ศาสนสถาน"
+    assert stage_db.poi_kind_thai("school") == "โรงเรียน"
+    assert stage_db.poi_kind_thai("language_school") == "โรงเรียนสอนภาษา"
+    assert stage_db.poi_kind_thai("buddhist_temple") == "วัด"
+    assert stage_db.poi_kind_thai("shopping_center") == "ศูนย์การค้า"
+    # Nothing matched is left empty rather than guessed; the row still
+    # carries its raw poi_type.
+    assert stage_db.poi_kind_thai("nail_salon") == ""
+    assert stage_db.poi_kind_thai("") == ""
+
+
+def test_a_landmark_list_without_a_centre_states_no_distance(db):
+    """Guessing a distance from a centre nobody supplied would be a number
+    stated as though someone had measured it."""
+    conn, pid = db
+    stage_db.stage_pois(conn, pid, [
+        {"feature_id": "node/1", "x": 30.0, "y": 40.0, "poi_key": "amenity",
+         "poi_type": "school", "display_name": "โรงเรียนบ้านนา"}])
+    rows = stage_db.poi_inventory_rows(conn, pid)
+    assert rows[0]["distance_m"] == "" and rows[0]["bearing"] == ""

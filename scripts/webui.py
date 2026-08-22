@@ -947,6 +947,8 @@ def result_page(rec: dict, kinds, zone: str, drive: bool,
         file_card("pdf", "Vector", "Site map PDF"),
         file_card("png", "300 DPI", "Site map PNG"),
         file_card("csv", "Inventory", "Buildings CSV"),
+        file_card("roads", "Inventory", "Roads CSV"),
+        file_card("landmarks", "Nearby", "Landmarks CSV"),
         file_card("attrs", "Attributes", "OSM tags table"),
         # Beside the combined drawing, never instead of it. Download-only:
         # the plot preview belongs to the drawing that gets issued.
