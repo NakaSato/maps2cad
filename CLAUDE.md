@@ -1038,6 +1038,38 @@ plot at on A3 and a test checks that claim against
 `webui.fitting_scale()` — a wrong number on a button is a promise the
 drawing then breaks.
 
+**A generation runs on its own thread and narrates itself.** `/generate`
+starts the work and redirects to `/run/<id>`, which polls
+`/run/<id>/status`; holding the POST open for 18–105 s is what left the
+browser with one indeterminate bar and nothing to say. `planned_steps()`
+derives the whole plan from the request up front, so the page shows what is
+still to come as well as what is running, and `run_step()` reads each
+subprocess line by line and reports it — the scripts already narrate
+themselves ("Supplementing with Microsoft ML footprints…", "Spot heights:
+25 sampled from the DEM"). That needs `PYTHONUNBUFFERED=1` in the child
+environment: Python block-buffers stdout when it is a pipe, so without it
+the narration arrives in one lump at exit and the live view stays blank
+through the slowest step. `run_state()` hands back a *copy*, because the
+worker writes while the browser reads. A failure records what was typed
+along with the message, so the form comes back with the other fields still
+in it. `RUNS` is bounded (`prune_runs()`), and holds only runs in flight or
+recently finished — `JOBS` is the history, rebuilt from disk, and a run
+with no files yet must not appear in it.
+
+**Vue 3 is loaded from a CDN, and only two pages depend on it.** No Node,
+no npm, no build step — the only way a front-end framework belongs in a
+repo whose premise is that it runs anywhere Python does. Two consequences.
+The page reaches unpkg at load, so where that is slow or blocked the
+interactive parts do not start: everything that matters is therefore still
+server-rendered HTML and plain forms, and Vue is used only where it earns
+its place — the generate form's live scale readout and the run watcher,
+which is rendered complete on the server before Vue makes it live and
+carries a `<noscript>` saying to reload. Templates use `v-text` and
+`v-bind` rather than `{{ }}`, because these pages are built in Python
+f-strings where a literal brace must be doubled. To drop the CDN: save
+`vue.global.js` beside `webui.py`, serve it, and point `VUE_SRC` at it —
+nothing else changes.
+
 ## Conventions
 
 - Generated output goes to `output/` (gitignored). DEM `.tif` tiles, `ms_cache/`,

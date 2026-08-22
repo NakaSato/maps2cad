@@ -35,6 +35,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -355,28 +356,197 @@ def parse_form(form: dict[str, list[str]]) -> dict:
     }
 
 
+# What a job is doing right now, keyed by job id. Separate from JOBS,
+# which holds finished runs and is rebuilt from disk at startup: a run in
+# flight has no files yet and must not appear in history as though it did.
+RUNS: dict[str, dict] = {}
+RUNS_LOCK = threading.Lock()
+
+
+def planned_steps(p: dict) -> list[dict]:
+    """The whole plan up front, so the page can show what is still to come
+    rather than one bar that says only "working"."""
+    steps = []
+    if p["export"] in ("both", "map"):
+        steps.append({"key": "map", "name": "Site map sheet"})
+    if p["export"] in ("both", "cad"):
+        steps.append({"key": "dem", "name": "Elevation tile"})
+        steps.append({"key": "cad", "name": "CAD drawing"})
+        steps.append({"key": "plot", "name": "Plot preview"})
+    if p.get("poster"):
+        steps.append({"key": "poster", "name": "B&W poster"})
+    for st in steps:
+        st["state"] = "waiting"
+        st["detail"] = ""
+    return steps
+
+
+class Progress:
+    """Handle a running job reports through. Every mutation takes the lock:
+    the worker thread writes while the browser's poll reads."""
+
+    def __init__(self, jid: str, p: dict):
+        self.jid = jid
+        with RUNS_LOCK:
+            RUNS[jid] = {"steps": planned_steps(p), "state": "running",
+                         "error": "", "values": {}, "started": time.time()}
+
+    def _edit(self, fn):
+        with RUNS_LOCK:
+            run = RUNS.get(self.jid)
+            if run:
+                fn(run)
+
+    def begin(self, key: str):
+        def go(run):
+            for st in run["steps"]:
+                if st["key"] == key:
+                    st["state"] = "running"
+        self._edit(go)
+        return lambda line: self.say(key, line)
+
+    def say(self, key: str, line: str):
+        self._edit(lambda run: [st.update(detail=line[:160])
+                                for st in run["steps"] if st["key"] == key])
+
+    def done(self, key: str, detail: str = ""):
+        def go(run):
+            for st in run["steps"]:
+                if st["key"] == key:
+                    st["state"] = "done"
+                    if detail:
+                        st["detail"] = detail
+        self._edit(go)
+
+    def skipped(self, key: str, why: str):
+        def go(run):
+            for st in run["steps"]:
+                if st["key"] == key:
+                    st["state"] = "skipped"
+                    st["detail"] = why
+        self._edit(go)
+
+    def finish(self):
+        self._edit(lambda run: run.update(state="done"))
+
+    def fail(self, message: str, values: dict):
+        def go(run):
+            run["state"] = "failed"
+            run["error"] = message
+            run["values"] = values
+            for st in run["steps"]:
+                if st["state"] == "running":
+                    st["state"] = "failed"
+        self._edit(go)
+
+
+RUNS_KEPT = 50
+
+
+def prune_runs():
+    """Keep the table bounded. A finished run's files are on disk and its
+    record is in JOBS, so dropping the oldest progress entries loses only
+    the step-by-step view of a run nobody is watching any more."""
+    with RUNS_LOCK:
+        finished = sorted(((r["started"], jid) for jid, r in RUNS.items()
+                           if r["state"] != "running"))
+        for _, jid in finished[:max(0, len(RUNS) - RUNS_KEPT)]:
+            RUNS.pop(jid, None)
+
+
+def start_run(p: dict) -> str:
+    """Begin a generation on its own thread and return its job id."""
+    jid = job_id(p)
+    prune_runs()
+    progress = Progress(jid, p)
+    values = dict(p)
+    values["coords"] = f"{p['lat']}, {p['lon']}"
+
+    def work():
+        try:
+            run_generator(p, progress)
+            progress.finish()
+        except BadRequest as e:
+            progress.fail(str(e), values)
+        except subprocess.TimeoutExpired:
+            progress.fail("Timed out after 10 minutes. Try a smaller area.",
+                          values)
+        except Exception as e:                          # noqa: BLE001
+            # A crash must reach the page. Losing it to a dead thread would
+            # leave the browser polling a run that is never going to move.
+            progress.fail(f"{type(e).__name__}: {e}", values)
+
+    threading.Thread(target=work, daemon=True).start()
+    return jid
+
+
+def run_state(jid: str) -> dict | None:
+    with RUNS_LOCK:
+        run = RUNS.get(jid)
+        return json.loads(json.dumps(run)) if run else None
+
+
 def job_id(p: dict) -> str:
     key = json.dumps(p, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def run_step(cmd: list[str], what: str, timeout=900) -> str:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    log = "\n".join(s for s in (proc.stdout, proc.stderr) if s.strip())
-    # matplotlib font chatter and uv install noise are not useful here
-    log = "\n".join(ln for ln in log.splitlines()
-                    if "UserWarning" not in ln and "savefig" not in ln
-                    and "fsSelection" not in ln
-                    and not ln.startswith(("Installed", "Resolved", "Built",
-                                           "Downloading", "Prepared",
-                                           " Downloaded", "Updating"))
-                    and ln.strip())
-    if proc.returncode != 0:
+def useful_line(line: str) -> bool:
+    """matplotlib font chatter and uv install noise are not progress."""
+    return bool(line.strip()) and "UserWarning" not in line \
+        and "savefig" not in line and "fsSelection" not in line \
+        and not line.startswith(("Installed", "Resolved", "Built",
+                                 "Downloading", "Prepared", " Downloaded",
+                                 "Updating"))
+
+
+def run_step(cmd: list[str], what: str, timeout=900, on_line=None) -> str:
+    """Run one script, handing each line of its output to `on_line` as it
+    arrives.
+
+    Read line by line rather than collected at the end because these steps
+    take 18-105 s and the scripts already narrate themselves — "Retrieving
+    OpenStreetMap features", "Reading the elevation tile". Waiting for the
+    process to exit before showing any of it is what left the browser with
+    an indeterminate bar and nothing to say.
+    """
+    # Python block-buffers stdout when it is a pipe rather than a terminal,
+    # so without this the child's narration arrives in one lump at exit and
+    # the live view stays blank for the whole of the slowest step.
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            env=env)
+    timed_out = threading.Event()
+
+    def give_up():
+        timed_out.set()
+        proc.kill()
+
+    killer = threading.Timer(timeout, give_up)
+    killer.start()
+    kept = []
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not useful_line(line):
+                continue
+            kept.append(line)
+            if on_line:
+                on_line(line)
+    finally:
+        proc.stdout.close()
+        code = proc.wait()
+        killer.cancel()
+    log = "\n".join(kept)
+    if timed_out.is_set():
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    if code != 0:
         raise BadRequest(f"{what} failed:\n{log or '(no output)'}")
     return log
 
 
-def run_generator(p: dict) -> dict:
+def run_generator(p: dict, progress: "Progress | None" = None) -> dict:
     """Render the requested exports into one job folder."""
     jid = job_id(p)
     run = OUT / jid
@@ -423,11 +593,21 @@ def run_generator(p: dict) -> dict:
             for key, _ in GOV_FIELDS:
                 if p["gov"].get(key):
                     cmd += [f"--{key.replace('_', '-')}", p["gov"][key]]
-        logs.append(run_step(cmd, "Site map"))
+        on = progress.begin("map") if progress else None
+        logs.append(run_step(cmd, "Site map", on_line=on))
+        if progress:
+            progress.done("map", "sheet, 300 DPI PNG and inventory CSV")
         record.update(pdf=pdf, png=png, csv=csv)
 
     if p["export"] in ("both", "cad"):
+        if progress:
+            progress.begin("dem")
+            progress.say("dem", "checking the Copernicus tile for this square")
+        cached = dem_tile_for(p["lat"], p["lon"])[0].is_file()
         dem = ensure_dem(p["lat"], p["lon"])
+        if progress:
+            progress.done("dem", "already downloaded" if cached
+                          else f"downloaded {Path(dem).name}")
         dxf = str(run / "site.dxf")
         cad_cmd = script_cmd(CAD) + [
             "--lat", repr(p["lat"]), "--lon", repr(p["lon"]),
@@ -451,7 +631,10 @@ def run_generator(p: dict) -> dict:
             cad_cmd.append("--overture")
         if p.get("mono"):
             cad_cmd.append("--mono")
-        logs.append(run_step(cad_cmd, "CAD export"))
+        on = progress.begin("cad") if progress else None
+        logs.append(run_step(cad_cmd, "CAD export", on_line=on))
+        if progress:
+            progress.done("cad")
         record["project"] = project
         record["dxf"] = dxf
         # Files the CAD step writes beside the drawing, when it wrote them
@@ -469,10 +652,15 @@ def run_generator(p: dict) -> dict:
             # black as *its* default, which is right for a plotted sheet.
             if p.get("plot_colour", True):
                 pdf_cmd.append("--color")
-            logs.append(run_step(pdf_cmd, "DXF plot preview"))
+            on = progress.begin("plot") if progress else None
+            logs.append(run_step(pdf_cmd, "DXF plot preview", on_line=on))
+            if progress:
+                progress.done("plot")
             record["plot"] = plot
         except BadRequest as e:      # preview is a convenience, not the export
             logs.append(f"NOTE: plot preview unavailable — {e}")
+            if progress:
+                progress.skipped("plot", "unavailable — the drawing is fine")
 
     if p.get("poster"):
         # Its own deliverable, not a variant of the others: a B&W print map
@@ -487,7 +675,10 @@ def run_generator(p: dict) -> dict:
             cmd.append("--arrows")
         if p.get("basemap"):
             cmd += ["--basemap", p["basemap"]]
-        logs.append(run_step(cmd, "Poster"))
+        on = progress.begin("poster") if progress else None
+        logs.append(run_step(cmd, "Poster", on_line=on))
+        if progress:
+            progress.done("poster")
         record["poster"] = png
         if (run / "poster.pdf").is_file():
             record["poster_pdf"] = str(run / "poster.pdf")
@@ -610,6 +801,10 @@ def result_page(rec: dict) -> bytes:
     return webui.result_page(rec, KINDS,
                              utm_zone_label(p["lat"], p["lon"]),
                              gdrive.configured())
+
+
+def run_page(jid: str, state: dict) -> bytes:
+    return webui.run_page(jid, state)
 
 
 def utm_zone_label(lat: float, lon: float) -> str:
@@ -937,6 +1132,29 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
             self._send(form_page())
+        elif path.startswith("/run/"):
+            parts = path.strip("/").split("/")
+            jid = parts[1] if len(parts) > 1 else ""
+            if len(parts) == 3 and parts[2] == "status":
+                state = run_state(jid)
+                if state is None:
+                    return self._send(b'{"state":"unknown"}', 404,
+                                      "application/json")
+                return self._send(json.dumps(state).encode(), 200,
+                                  "application/json")
+            with JOBS_LOCK:
+                rec = JOBS.get(jid)
+            state = run_state(jid)
+            if state and state["state"] == "failed":
+                return self._send(
+                    form_page(state["values"], state["error"]), 400)
+            # A finished run is its result page; a run still going gets the
+            # watcher. Reloading either one is safe.
+            if state and state["state"] == "running":
+                return self._send(run_page(jid, state))
+            if rec:
+                return self._send(result_page(rec))
+            self._send(b"No such run", 404, "text/plain")
         elif path == "/history":
             self._send(page("Generation history", f"""
 <p class="eyebrow">{len(history())} run(s) on this machine</p>
@@ -1467,18 +1685,12 @@ drawing.</p>
         print(f"  rendering {params['lat']}, {params['lon']} "
               f"({params['width']:.0f}x{params['height']:.0f} m, "
               f"{params['profile']})")
-        try:
-            rec = run_generator(params)
-        except BadRequest as e:
-            values = dict(params)
-            values["coords"] = f"{params['lat']}, {params['lon']}"
-            return self._send(form_page(values, str(e)), 400)
-        except subprocess.TimeoutExpired:
-            values = dict(params)
-            values["coords"] = f"{params['lat']}, {params['lon']}"
-            return self._send(form_page(
-                values, "Timed out after 10 minutes. Try a smaller area."), 504)
-        self._send(result_page(rec))
+        # The run happens on its own thread and the browser is sent to a page
+        # that watches it. Holding the POST open for 18-105 s is what made
+        # the wait a blank bar: the steps narrate themselves, but nothing
+        # could show them until the response finally arrived.
+        jid = start_run(params)
+        self._redirect(f"/run/{jid}")
 
 
 def main(argv=None):

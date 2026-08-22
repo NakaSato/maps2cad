@@ -238,6 +238,36 @@ font-size:12.5px;color:var(--soft);font-variant-numeric:tabular-nums}
 .preset-why{font-size:12.5px;color:var(--soft);line-height:1.45}
 .extent{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}
 .extent>div{flex:0 1 170px}
+/* The run watcher. The plan is shown whole from the start — a step still to
+   come is as much information as the one running. */
+ol.steps{list-style:none;margin:24px 0 0;padding:0;max-width:76rem}
+ol.steps li{display:grid;grid-template-columns:26px minmax(150px,auto) 1fr;
+gap:12px;align-items:baseline;padding:13px 0;
+border-bottom:1px solid var(--faint)}
+ol.steps li:first-child{border-top:1px solid var(--faint)}
+.step-mark{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:15px;color:var(--rule);text-align:center}
+.step-name{font-size:15px;color:var(--soft)}
+.step-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:12.5px;color:var(--soft);overflow-wrap:anywhere}
+li.running .step-mark,li.running .step-name{color:var(--survey)}
+li.running .step-name{font-weight:600}
+li.done .step-mark{color:var(--teal)}
+li.done .step-name{color:var(--ink)}
+li.failed .step-mark,li.failed .step-name{color:var(--marker)}
+li.skipped .step-name,li.skipped .step-detail{color:var(--soft);opacity:.7}
+/* Indeterminate on purpose: the server cannot say what fraction of a
+   contour trace is done, and a percentage it invented would be a lie. */
+.runbar{position:relative;height:3px;background:var(--rule);margin-top:22px;
+overflow:hidden;max-width:76rem}
+.runbar::after{content:"";position:absolute;inset:0 auto 0 0;width:38%;
+background:var(--survey);animation:sweep 1.6s cubic-bezier(.4,0,.2,1) infinite}
+@media (prefers-reduced-motion:reduce){
+.runbar::after{animation:none;width:100%;opacity:.4}}
+.runfoot{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;
+margin-top:12px;font-size:13.5px;color:var(--soft);max-width:76rem}
+.runfoot b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
 """
 
 
@@ -274,10 +304,29 @@ def fitting_scale(width_m: float, height_m: float, size: str):
     return None
 
 
+# Vue 3, global build, straight from a CDN — no Node, no npm, no build step,
+# which is the only way a front-end framework belongs in a repo whose whole
+# premise is that it runs anywhere Python does.
+#
+# Two consequences to know rather than discover. The page reaches a third
+# party at load: where unpkg is slow or blocked the interactive parts do not
+# start, so the pages that matter most are still plain server-rendered HTML
+# and forms, and Vue is used only where it earns its place — the generate
+# form and the run watcher. And the templates below use `v-text` and
+# `v-bind` rather than `{{ }}` interpolation, because these pages are built
+# in Python f-strings where a literal brace has to be doubled; directives
+# keep the markup readable instead of a thicket of `{{{{`.
+#
+# To drop the CDN entirely: save vue.global.js beside this file, serve it,
+# and point VUE_SRC at it. Nothing else changes.
+VUE_SRC = "https://unpkg.com/vue@3/dist/vue.global.js"
+
+
 def page(title: str, body: str) -> bytes:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title><style>{CSS}</style></head>
+<title>{html.escape(title)}</title><style>{CSS}</style>
+<script src="{VUE_SRC}"></script></head>
 <body><div class="wrap"><div class="frame">{body}</div></div>
 <script>
 // Any form holding a #busy panel shows it on submit and runs a countdown
@@ -643,6 +692,98 @@ document.querySelectorAll('.preset').forEach(function(b){{
 document.addEventListener('DOMContentLoaded', formSync);
 formSync();
 </script>""")
+
+def run_page(jid: str, state: dict) -> bytes:
+    """The page a generation is watched on.
+
+    Server-rendered with the plan already in it, then Vue keeps it current
+    from /run/<id>/status. That order matters: if the CDN never answers, the
+    page still says what is being made and the browser's own reload still
+    reaches the result — the framework makes it live, it is not what makes
+    it work.
+    """
+    steps = "".join(
+        f'<li class="{html.escape(st["state"])}">'
+        f'<span class="step-mark">{"·"}</span>'
+        f'<span class="step-name">{html.escape(st["name"])}</span>'
+        f'<span class="step-detail">{html.escape(st["detail"])}</span></li>'
+        for st in state["steps"])
+    return page("Generating…", f"""
+<p class="eyebrow">Run {html.escape(jid)}</p>
+<h1>Generating…</h1>
+<p class="lede">Each step narrates itself as it goes. Leave this tab open —
+it turns into the download page by itself when the last one finishes.</p>
+<div id="run" data-job="{html.escape(jid)}">
+  <ol class="steps">
+    <li v-for="s in steps" :key="s.key" :class="s.state">
+      <span class="step-mark" v-text="mark(s)"></span>
+      <span class="step-name" v-text="s.name"></span>
+      <span class="step-detail" v-text="s.detail"></span>
+    </li>
+  </ol>
+  <div class="runbar" v-if="live"></div>
+  <div class="runfoot">
+    <span><b v-text="clock"></b> elapsed</span>
+    <span v-text="hint"></span>
+  </div>
+</div>
+<noscript><p class="note">This page does not refresh itself without
+JavaScript. Reload it to see how far the run has got — the run itself is
+unaffected.</p></noscript>
+<p class="note" style="margin-top:22px">A first export in a new 1°×1° square
+also downloads a ~40 MB elevation tile, which is the slowest thing here and
+happens once per square.</p>
+<a class="back" href="/">← Start another</a>
+<footer>Data © OpenStreetMap contributors (ODbL) · elevation © Copernicus</footer>
+<script>
+(function(){{
+  var el = document.getElementById('run');
+  if(!window.Vue || !el) return;      // no CDN: the server-rendered plan stands
+  var seeded = {json.dumps(state["steps"])};
+  Vue.createApp({{
+    data: function(){{
+      return {{steps: seeded, live: true, started: Date.now(), clock: '0:00',
+              hint: 'Working…'}};
+    }},
+    methods: {{
+      mark: function(s){{
+        return s.state === 'done' ? '✓' : s.state === 'running' ? '▸'
+             : s.state === 'failed' ? '✕' : s.state === 'skipped' ? '–' : '·';
+      }},
+      tick: function(){{
+        var secs = Math.floor((Date.now() - this.started) / 1000);
+        this.clock = Math.floor(secs / 60) + ':'
+                   + (secs % 60 < 10 ? '0' : '') + (secs % 60);
+      }},
+      poll: function(){{
+        var self = this;
+        fetch('/run/' + el.dataset.job + '/status')
+          .then(function(r){{ return r.json(); }})
+          .then(function(d){{
+            if(d.steps) self.steps = d.steps;
+            if(d.state === 'done' || d.state === 'failed'){{
+              self.live = false;
+              self.hint = d.state === 'done' ? 'Finished — opening the files…'
+                                             : 'Failed.';
+              // The same URL serves the result once the run is finished, so
+              // there is nowhere else to send the browser.
+              location.reload();
+            }} else {{
+              setTimeout(self.poll, 1200);
+            }}
+          }})
+          .catch(function(){{ setTimeout(self.poll, 3000); }});
+      }}
+    }},
+    mounted: function(){{
+      this.poll();
+      this.tick();
+      setInterval(this.tick, 1000);
+    }}
+  }}).mount('#run');
+}})();
+</script>""")
+
 
 def result_page(rec: dict, kinds, zone: str, drive: bool) -> bytes:
     p = rec["params"]
