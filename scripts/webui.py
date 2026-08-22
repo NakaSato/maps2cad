@@ -33,20 +33,30 @@ CSS = """
 body{margin:0;background:var(--paper);color:var(--ink);font-size:16px;
 line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
 Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1080px;margin:0 auto;padding:clamp(18px,4vw,44px)}
+/* Full width: the page fills the window rather than sitting in a 1080px
+   column. What benefits is everything with columns of its own — the
+   building table, the history, the file cards, the form grids, the map
+   preview. Running text does not benefit, so the prose rules below keep
+   their own measure in ch: a 34-inch monitor should widen the tables, not
+   stretch a sentence across two feet of glass. */
+.wrap{max-width:none;margin:0;padding:clamp(14px,2vw,28px)}
 .frame{border:1.5px solid var(--ink);background:var(--sheet);
-padding:clamp(18px,3vw,36px)}
+padding:clamp(18px,2.4vw,40px);min-height:calc(100vh - clamp(28px,4vw,56px))}
 .eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 letter-spacing:.16em;text-transform:uppercase;color:var(--soft);margin:0 0 10px}
-h1{font-size:clamp(25px,4vw,38px);letter-spacing:-.02em;margin:0 0 8px;
-line-height:1.1}
-.lede{color:var(--soft);margin:0 0 26px;max-width:60ch}
+h1{font-size:clamp(25px,3.2vw,40px);letter-spacing:-.02em;margin:0 0 8px;
+line-height:1.1;max-width:24ch}
+.lede{color:var(--soft);margin:0 0 26px;max-width:62ch}
 label{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
 color:var(--soft);margin:0 0 5px}
-input[type=text],input[type=number],select{width:100%;padding:9px 11px;
-border:1px solid var(--rule);background:var(--paper);color:var(--ink);
-font-size:15px;font-family:inherit;border-radius:0}
+/* Full-bleed suits tables, cards and the map preview. A single text field
+   is the one thing it does not suit: a 900px box for "Width (m)" is harder
+   to aim at, not easier. The cap lets a field stop growing while its row
+   keeps the width. */
+input[type=text],input[type=number],select{width:100%;max-width:34rem;
+padding:9px 11px;border:1px solid var(--rule);background:var(--paper);
+color:var(--ink);font-size:15px;font-family:inherit;border-radius:0}
 input:focus,select:focus{outline:2px solid var(--survey);outline-offset:1px}
 .grid{display:grid;gap:16px}
 .g2{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
@@ -145,11 +155,11 @@ margin:0 3px 3px 0;border:1px solid var(--rule);text-decoration:none;
 color:var(--ink)}
 .hist td.dl a:hover{border-color:var(--survey);color:var(--survey)}
 .wide{overflow-x:auto}
-.hist input[type=text]{width:100%;min-width:190px;padding:5px 8px;font-size:13px}
+.hist input[type=text]{width:100%;max-width:none;min-width:190px;padding:5px 8px;font-size:13px}
 .ok{border-left:3px solid var(--teal);background:var(--faint);padding:11px 15px;
 margin:0 0 20px;font-size:14.5px}
 .filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
-.filters input[type=text]{flex:1 1 260px;min-width:200px;padding:8px 11px}
+.filters input[type=text]{flex:1 1 260px;min-width:200px;max-width:44rem;padding:8px 11px}
 .filters select{width:auto;min-width:150px;padding:8px 11px}
 .filters button{margin-top:0;padding:8px 18px;font-size:14px}
 .filters .clear{font-size:13.5px;text-decoration:none}
@@ -189,7 +199,7 @@ details.adv .adv-body>*:first-child{margin-top:16px}
 /* The extent and the sheet are chosen independently, and the pairing decides
    the plot scale — 1000 x 750 on A3 is 1:5000, a locality map, which is not
    obvious from either field on its own. So the form says so as you type. */
-.readout{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+.readout{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;max-width:80ch;
 margin:14px 0 0;padding:11px 14px;background:var(--faint);
 border-left:3px solid var(--teal);font-size:13.5px;color:var(--soft)}
 .readout b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
