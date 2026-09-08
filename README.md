@@ -375,6 +375,20 @@ uv run scripts/serve.py                  # http://127.0.0.1:8765
 uv run scripts/serve.py --port 9000
 ```
 
+To run it in the background instead, `scripts/app.sh` wraps the same command
+with a pidfile and a health check:
+
+```bash
+./scripts/app.sh start        # or: start 9000
+./scripts/app.sh status
+./scripts/app.sh logs         # tails output/server.log
+./scripts/app.sh restart
+./scripts/app.sh stop
+```
+
+`HOST=0.0.0.0` exposes it beyond this machine and `MAPS2CAD_DATA` is passed
+through as `--data-dir`.
+
 Paste a coordinate, set the area, choose the export (CAD + site map, CAD only, or
 site map only) and download the DXF, its A3 plot preview, the site map PDF/PNG,
 and the inventory CSV. Each run gets its own folder under `output/web/`. The
